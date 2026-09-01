@@ -87,7 +87,7 @@ async function fetchEstoqueZenerp(zenToken, codigos) {
     console.warn(`[Estoque] ${naoEncontrados.length} codigo(s) NAO encontrados na resposta do ZenERP.`);
   }
 
-  return { porSku, matched, total: codigos.length };
+  return { porSku, matched, total: codigos.length, naoEncontrados };
 }
 
 module.exports = async function handler(req, res) {
@@ -215,6 +215,12 @@ module.exports = async function handler(req, res) {
       skus_no_catalogo: skus.length,
       skus_encontrados_zenerp: estoque.matched,
       skus_nao_encontrados_zenerp: estoque.total - estoque.matched,
+      // SKU nao encontrado no Zen vira estoque 0. Precisa ficar visivel:
+      // quando a trava de estoque entrar, esses produtos ficam impossiveis
+      // de pedir. Ver ?detalhar_nao_encontrados=1 pra lista completa.
+      skus_nao_encontrados_lista: req.query?.detalhar_nao_encontrados
+        ? estoque.naoEncontrados
+        : estoque.naoEncontrados.slice(0, 10),
       produtos_atualizados: atualizados,
       produtos_sem_mudanca: inalterados,
       duracao_ms: duracaoMs,

@@ -30,14 +30,19 @@ module.exports = async function handler(req, res) {
       : 'return=minimal'
   });
 
-  // --- autorizacao: cron secret ou admin/manager ---
+  // --- autorizacao: cron secret (header custom ou o Authorization: Bearer
+  // que o Vercel Cron manda sozinho quando CRON_SECRET esta configurado) ou
+  // admin/manager autenticado ---
   const cronSecret = req.headers['x-cron-secret'];
   const authHeader = req.headers.authorization;
+  const viaVercelCron = !!process.env.CRON_SECRET && authHeader === 'Bearer ' + process.env.CRON_SECRET;
 
   if (cronSecret) {
     if (!process.env.CRON_SECRET || cronSecret !== process.env.CRON_SECRET) {
       return res.status(401).json({ error: 'CRON_SECRET invalido' });
     }
+  } else if (viaVercelCron) {
+    // autorizado -- segue direto
   } else if (authHeader) {
     const userRes = await fetch(HUB_URL + '/auth/v1/user', {
       headers: { 'Authorization': authHeader, 'apikey': SB_SERVICE }
@@ -63,6 +68,11 @@ module.exports = async function handler(req, res) {
   // tocar a base inteira (~7700 clientes) de uma vez.
   const limitePorCanalRaw = req.query?.limite_por_canal ?? req.body?.limite_por_canal;
   const limitePorCanal = limitePorCanalRaw ? parseInt(limitePorCanalRaw, 10) : null;
+  // Teste pontual: busca so essas pessoas especificas (por Zen person.id),
+  // sem varrer a base toda -- usa isso pra validar mudancas rapido, sem
+  // esbarrar no timeout da funcao serverless numa varredura de ~7700 pessoas.
+  const somenteIdsRaw = req.query?.somente_erp_ids ?? req.body?.somente_erp_ids;
+  const somenteIds = somenteIdsRaw ? String(somenteIdsRaw).split(',').map(s => s.trim()).filter(Boolean) : null;
 
   try {
     // 1 — Buscar as pessoas dos canais desejados.
@@ -72,6 +82,11 @@ module.exports = async function handler(req, res) {
     let pessoas = [];
     const porCanal = {};
 
+    if (somenteIds) {
+      const q = '(' + somenteIds.map(id => `id==${id}`).join(',') + ')';
+      pessoas = await zenGet('/catalog/person/person', { q, max: somenteIds.length });
+      for (const p of pessoas) { const c = canalDe(p); porCanal[c] = (porCanal[c] || 0) + 1; }
+    } else {
     for (const canal of CANAIS) {
       let lote = [];
       try {
@@ -94,6 +109,7 @@ module.exports = async function handler(req, res) {
       console.log(`[ZEN] varredura completa: ${todas.length} pessoas`);
       pessoas = todas.filter(p => CANAIS.includes(canalDe(p)));
       for (const c of CANAIS) porCanal[c] = pessoas.filter(p => canalDe(p) === c).length;
+    }
     }
 
     // dedupe por id (uma pessoa nao deveria repetir, mas o anti-ciclo e barato)
@@ -207,17 +223,32 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
   const ids = bodies.map(b => b.erp_cliente_id).filter(Boolean);
   if (!ids.length) return { verificados: 0 };
 
-  // quem ja existe no Hub e ainda esta com limite zerado/nulo
-  const atuaisRes = await fetch(
-    HUB_URL + '/rest/v1/hub_clientes?erp_cliente_id=in.(' + ids.join(',') + ')&select=erp_cliente_id,limite_credito',
-    { headers: hubH('GET') }
-  );
-  const atuais = await atuaisRes.json();
-  const semLimite = (Array.isArray(atuais) ? atuais : [])
+  // quem ja existe no Hub e ainda esta com limite zerado/nulo. Busca em lotes
+  // -- com ~7700 clientes, um erp_cliente_id=in.(...) so com todos de uma vez
+  // estoura o limite de tamanho de URL e falha silenciosamente (foi um bug
+  // real: a primeira versao disso nunca atualizou ninguem porque o fetch
+  // falhava e o erro era engolido, tratado como "atuais = []").
+  let atuais = [];
+  const consultaErros = [];
+  for (let i = 0; i < ids.length; i += 300) {
+    const lote = ids.slice(i, i + 300);
+    const r = await fetch(
+      HUB_URL + '/rest/v1/hub_clientes?erp_cliente_id=in.(' + lote.join(',') + ')&select=erp_cliente_id,limite_credito',
+      { headers: hubH('GET') }
+    );
+    if (!r.ok) {
+      consultaErros.push({ lote: i, status: r.status, detalhe: (await r.text()).slice(0, 200) });
+      continue;
+    }
+    const parte = await r.json();
+    if (Array.isArray(parte)) atuais = atuais.concat(parte);
+  }
+
+  const semLimite = atuais
     .filter(c => !c.limite_credito || +c.limite_credito === 0)
     .map(c => c.erp_cliente_id);
 
-  if (!semLimite.length) return { verificados: atuais.length, sem_limite: 0 };
+  if (!semLimite.length) return { verificados: atuais.length, sem_limite: 0, consulta_erros: consultaErros.length ? consultaErros : undefined };
 
   // busca o limite real no Zen em lotes (RSQL OR por person.id)
   const porId = {};
@@ -253,7 +284,8 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
     verificados: atuais.length,
     sem_limite: semLimite.length,
     encontrados_no_zen: encontrados.length,
-    atualizados
+    atualizados,
+    consulta_erros: consultaErros.length ? consultaErros : undefined
   };
 }
 

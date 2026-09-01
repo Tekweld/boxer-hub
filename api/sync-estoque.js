@@ -114,10 +114,16 @@ module.exports = async function handler(req, res) {
   const cronSecret = req.headers['x-cron-secret'];
   const authHeader = req.headers.authorization;
 
+  // O Vercel Cron chama sozinho mandando "Authorization: Bearer $CRON_SECRET".
+  // O header x-cron-secret e a forma manual, usada em teste.
+  const viaVercelCron = !!process.env.CRON_SECRET && authHeader === 'Bearer ' + process.env.CRON_SECRET;
+
   if (cronSecret) {
     if (!process.env.CRON_SECRET || cronSecret !== process.env.CRON_SECRET) {
       return res.status(401).json({ error: 'CRON_SECRET invalido' });
     }
+  } else if (viaVercelCron) {
+    // autorizado pelo proprio agendador do Vercel
   } else if (authHeader) {
     const userRes = await fetch(HUB_URL + '/auth/v1/user', {
       headers: { 'Authorization': authHeader, 'apikey': SB_SERVICE }
@@ -149,10 +155,13 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  const t0 = Date.now();
+
   try {
     console.log('[SYNC ESTOQUE] Buscando produtos ativos do catalogo...');
     const produtos = await fetchAll(
-      HUB_URL + '/rest/v1/hub_produtos?ativo=eq.true&select=id,sku,nome', hubH('GET'), 'hub_produtos'
+      HUB_URL + '/rest/v1/hub_produtos?ativo=eq.true&select=id,sku,nome,estoque_disponivel',
+      hubH('GET'), 'hub_produtos'
     );
     const skus = [...new Set(produtos.map(p => normSku(p.sku)).filter(Boolean))];
     console.log(`[SYNC ESTOQUE] ${skus.length} SKU(s) no catalogo`);
@@ -163,9 +172,22 @@ module.exports = async function handler(req, res) {
     const estoque = await fetchEstoqueZenerp(zenToken, skus);
     if (!estoque) return res.status(502).json({ error: 'Falha ao consultar estoque no ZenERP' });
 
-    const bodies = produtos
-      .map(p => ({ sku: normSku(p.sku), nome: p.nome, qtd: estoque.porSku[normSku(p.sku)] }))
-      .filter(p => p.qtd !== undefined)
+    // So grava quem realmente mudou. Reescrever a base inteira toda hora pesa no
+    // Supabase a toa e ainda faz `atualizado_em` mentir — dizia "atualizado agora"
+    // pra produto cujo estoque nao muda ha semanas.
+    const candidatos = produtos
+      .map(p => ({
+        sku: normSku(p.sku),
+        nome: p.nome,
+        qtd: estoque.porSku[normSku(p.sku)],
+        anterior: p.estoque_disponivel
+      }))
+      .filter(p => p.qtd !== undefined);
+
+    const inalterados = candidatos.filter(p => Number(p.anterior) === Number(p.qtd)).length;
+
+    const bodies = candidatos
+      .filter(p => Number(p.anterior) !== Number(p.qtd))
       .map(p => ({
         sku: p.sku,
         nome: p.nome, // on_conflict=sku exige NOT NULL satisfeito mesmo quando so vai fazer UPDATE
@@ -185,12 +207,17 @@ module.exports = async function handler(req, res) {
       atualizados += batch.length;
     }
 
+    const duracaoMs = Date.now() - t0;
+    console.log(`[SYNC ESTOQUE] Concluido em ${duracaoMs}ms — ${atualizados} alterado(s), ${inalterados} sem mudanca.`);
+
     return res.status(200).json({
       ok: true,
       skus_no_catalogo: skus.length,
       skus_encontrados_zenerp: estoque.matched,
       skus_nao_encontrados_zenerp: estoque.total - estoque.matched,
       produtos_atualizados: atualizados,
+      produtos_sem_mudanca: inalterados,
+      duracao_ms: duracaoMs,
       timestamp: new Date().toISOString()
     });
 

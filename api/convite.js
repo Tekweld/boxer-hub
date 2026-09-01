@@ -1,3 +1,5 @@
+const { zenGet } = require('./_zen');
+
 const SB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 
 module.exports = async function handler(req, res) {
@@ -44,7 +46,30 @@ module.exports = async function handler(req, res) {
     );
     const clientes = await cliRes.json();
     if (!clientes?.[0]) return res.status(400).json({ error: 'Cliente nao encontrado' });
-    const cliente = clientes[0];
+    let cliente = clientes[0];
+
+    // 2b — Cliente convidado (existente no Zen) pode nunca ter passado por
+    // api/ativar.js, que e o unico lugar que grava limite_credito hoje --
+    // sem isso ele nunca consegue submeter pedido. Busca pontual (1 cliente
+    // so, rapido) no momento da ativacao, em vez de depender do sync em lote
+    // rodar de novo. Best-effort: nunca bloqueia o aceite do convite.
+    if ((!cliente.limite_credito || +cliente.limite_credito === 0) && cliente.erp_cliente_id) {
+      try {
+        const itens = await zenGet('/financial/credit/creditLineItem', {
+          q: `person.id==${cliente.erp_cliente_id}`, max: 20, limite: 20
+        });
+        const limite = itens.reduce((s, it) => s + (+it.value || 0), 0);
+        if (limite > 0) {
+          await fetch(SB_URL + '/rest/v1/hub_clientes?id=eq.' + cliente.id, {
+            method: 'PATCH', headers: sbHeaders('PATCH'),
+            body: JSON.stringify({ limite_credito: limite, limite_disponivel: limite })
+          });
+          cliente = { ...cliente, limite_credito: limite, limite_disponivel: limite };
+        }
+      } catch (e) {
+        console.warn('[convite] falha ao buscar limite de credito no Zen:', e.message.slice(0, 150));
+      }
+    }
 
     // 3 — Verificar se email ja tem usuario
     const existRes = await fetch(SB_URL + '/auth/v1/admin/users?page=1&per_page=1', {

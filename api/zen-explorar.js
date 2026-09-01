@@ -285,6 +285,136 @@ module.exports = async function handler(req, res) {
       achados.productPacking_teste[sku] = item;
     }
 
+    // 10b — verificacao pontual: confere o sale.Sale criado pelo teste real
+    // do push-pedido.js (2026-08-31, HUB-2026-00001 -> Zen sale 47662).
+    try {
+      const vendaId = req.query?.verificarSaleId || '47662';
+      const venda = await zenGet('/sale/sale', { q: `id==${vendaId}`, max: 1, limite: 1 });
+      const itensVenda = await zenGet('/sale/saleItem', { q: `sale.id==${vendaId}`, max: 10, limite: 10 });
+      achados.verificacao_sale_teste = { sale: venda[0] || null, itens: itensVenda };
+    } catch (e) {
+      achados.verificacao_sale_teste = { erro: e.message.slice(0, 200) };
+    }
+
+    // 10 — investigacao pontual: por que um cliente convidado (nao onboarding)
+    // continua com limite_credito=0 mesmo depois do sync rodar. ?creditPersonId=
+    // deixa reutilizar isso pra qualquer pessoa, nao so o caso de hoje.
+    const creditPersonIdRaw = req.query?.creditPersonId || '53310';
+    const creditPersonIds = String(creditPersonIdRaw).split(',').map(s => s.trim()).filter(Boolean);
+    try {
+      const q = creditPersonIds.length > 1
+        ? '(' + creditPersonIds.map(id => `person.id==${id}`).join(',') + ')'
+        : `person.id==${creditPersonIds[0]}`;
+      const semFiltro = await zenGet('/financial/credit/creditLineItem', { q, max: 50, limite: 50 });
+      achados.credito_pessoa_teste = {
+        person_ids: creditPersonIds,
+        qtd_encontrada: semFiltro.length,
+        itens: semFiltro.map(it => ({ id: it.id, value: it.value, creditLine: it.creditLine?.id ?? it.creditLine, person: it.person?.id ?? it.person }))
+      };
+    } catch (e) {
+      achados.credito_pessoa_teste = { person_ids: creditPersonIds, erro: e.message.slice(0, 200) };
+    }
+    // se nao ha CreditLineItem por pessoa, o limite pode estar no personGroup
+    // (a spec permite as duas formas) -- busca o Person e testa por grupo.
+    // So faz sentido pra 1 pessoa por vez.
+    try {
+      const pessoas = creditPersonIds.length === 1
+        ? await zenGet('/catalog/person/person', { q: `id==${creditPersonIds[0]}`, max: 1, limite: 1 })
+        : [];
+      const pessoa = pessoas[0] || null;
+      achados.credito_pessoa_teste.person = pessoa ? {
+        id: pessoa.id, name: pessoa.name,
+        personGroup: pessoa.personGroup ? { id: pessoa.personGroup.id, code: pessoa.personGroup.code, description: pessoa.personGroup.description } : null,
+        category1: pessoa.category1?.description ?? pessoa.category1 ?? null
+      } : null;
+      if (pessoa?.personGroup?.id) {
+        const porGrupo = await zenGet('/financial/credit/creditLineItem', { q: `personGroup.id==${pessoa.personGroup.id}`, max: 10, limite: 10 });
+        achados.credito_pessoa_teste.creditLineItem_por_grupo = porGrupo.map(it => ({ id: it.id, value: it.value }));
+      }
+    } catch (e) {
+      achados.credito_pessoa_teste.erro_grupo = e.message.slice(0, 200);
+    }
+
+    // 11 — workflow de venda: quais sao os status customizados reais.
+    // O `sale.status` e um enum duro (PREPARED/APPROVED/PICKING...). O status
+    // que interessa pro cliente e o no ATIVO do workflow, em
+    // workflowNode.description — mesma leitura que o BAV usa no modulo de
+    // pedido em aberto (Tekweld/bav-boxer, backend/app/zen_pedidos.py).
+    try {
+      const nodes = await zenGet('/system/workflow/workflowNode', { max: 200, limite: 400 });
+      achados.workflow_nodes = {
+        total: nodes.length,
+        nodes: nodes.map(n => ({
+          id: n.id,
+          description: n.description,
+          workflow: n.workflow?.description ?? n.workflow?.code ?? n.workflow?.id ?? n.workflow
+        }))
+      };
+    } catch (e) {
+      achados.workflow_nodes = { erro: e.message.slice(0, 200) };
+    }
+
+    // 11b — perfis de venda: qual saleProfile aponta pro workflow certo do Hub.
+    // O DEFAULT (1001) funcionou no teste, mas nunca foi confirmado como o certo.
+    try {
+      const perfis = await zenGet('/sale/saleProfile', { max: 100, limite: 200 });
+      achados.sale_profiles = perfis.map(p => ({
+        id: p.id, code: p.code, description: p.description,
+        workflow: p.workflow?.description ?? p.workflow?.code ?? p.workflow?.id ?? p.workflow
+      }));
+    } catch (e) {
+      achados.sale_profiles = { erro: e.message.slice(0, 200) };
+    }
+
+    // 11c — amostra real: vendas recentes e em que no do workflow cada uma esta.
+    // Mostra quais status customizados estao REALMENTE em uso hoje, nao so
+    // quais existem cadastrados.
+    try {
+      const vendas = await zenGet('/sale/sale', {
+        q: 'status=in=(PREPARED,APPROVED,PICKING)', order: '-id', max: 40, limite: 40
+      });
+      const ids = vendas.map(v => v.id).filter(Boolean);
+      let porVenda = {};
+      if (ids.length) {
+        const nos = await zenGet('/system/workflow/workpieceNode', {
+          q: `workpiece.id=in=(${ids.join(',')});status=="ACTIVE"`, max: 200, limite: 200
+        });
+        nos.forEach(n => {
+          const wid = n.workpiece?.id ?? n.workpiece;
+          if (wid) porVenda[wid] = n.workflowNode?.description ?? null;
+        });
+      }
+      achados.vendas_workflow_amostra = vendas.map(v => ({
+        id: v.id, status: v.status,
+        saleProfile: v.saleProfile?.id ?? v.saleProfile,
+        no_ativo: porVenda[v.id] ?? null
+      }));
+    } catch (e) {
+      achados.vendas_workflow_amostra = { erro: e.message.slice(0, 200) };
+    }
+
+    // 11d — o cubo de estoque reserva? Le UMA linha do stockAvailabilityCube
+    // so pra revelar quais colunas existem. Se houver coluna de reserva/pedido
+    // pendente separada de quantity_balance, da pra saber se venda em PREPARED
+    // ja segura estoque. Somente leitura.
+    try {
+      const headers = await zenAuth();
+      const r = await fetch(ZEN_BASE + '/system/data/dataSourceOpRead', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: '/salesbreath/stockAvailabilityCube',
+          parameters: { SHOW_PRODUCT: true, SHOW_PRODUCT_PACKING: true, SHOW_SCHEDULE: true }
+        })
+      });
+      const linhas = r.ok ? await r.json() : null;
+      achados.cubo_estoque_colunas = Array.isArray(linhas) && linhas.length
+        ? { total_linhas: linhas.length, colunas: Object.keys(linhas[0]), exemplo: linhas[0] }
+        : { status: r.status, aviso: 'resposta vazia ou em formato inesperado' };
+    } catch (e) {
+      achados.cubo_estoque_colunas = { erro: e.message.slice(0, 200) };
+    }
+
     console.log('[ZEN] achados:', JSON.stringify(achados, null, 2));
     return res.status(200).json({ ok: true, ...achados });
 

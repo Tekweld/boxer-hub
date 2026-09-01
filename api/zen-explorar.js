@@ -373,15 +373,20 @@ module.exports = async function handler(req, res) {
       const vendas = await zenGet('/sale/sale', {
         q: 'status=in=(PREPARED,APPROVED,PICKING)', order: '-id', max: 40, limite: 40
       });
-      const ids = vendas.map(v => v.id).filter(Boolean);
+      // ATENCAO: workpiece.id NAO e o id da venda. A venda carrega uma
+      // referencia `workpiece` propria, e o vinculo de volta vem em
+      // workpiece.source, no formato "/sale/sale:<saleId>".
+      const ids = vendas.map(v => v.workpiece?.id).filter(Boolean);
       let porVenda = {};
       if (ids.length) {
         const nos = await zenGet('/system/workflow/workpieceNode', {
-          q: `workpiece.id=in=(${ids.join(',')});status=="ACTIVE"`, max: 200, limite: 200
+          q: `workpiece.id=in=(${ids.join(',')});status=="ACTIVE"`, max: 500, limite: 500
         });
         nos.forEach(n => {
-          const wid = n.workpiece?.id ?? n.workpiece;
-          if (wid) porVenda[wid] = n.workflowNode?.description ?? null;
+          const src = n.workpiece?.source || '';
+          if (src.startsWith('/sale/sale:')) {
+            porVenda[src.split(':').pop()] = n.workflowNode?.description ?? null;
+          }
         });
       }
       achados.vendas_workflow_amostra = vendas.map(v => ({

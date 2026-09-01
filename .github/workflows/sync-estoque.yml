@@ -1,0 +1,46 @@
+# Sincroniza o estoque do ZenERP para o Hub de hora em hora, em horario
+# comercial. Nao usa o Vercel Cron porque o plano Hobby so permite cron
+# diario -- este agendador e gratuito e faz o mesmo, chamando o endpoint
+# que ja existe. Mesmo padrao usado no repo bav-boxer.
+name: Sync estoque ZenERP
+
+on:
+  schedule:
+    # 10:00-22:00 UTC = 07:00-19:00 BRT, de segunda a sexta.
+    - cron: '0 10-22 * * 1-5'
+  workflow_dispatch: # permite disparar na mao pela aba Actions
+
+concurrency:
+  group: sync-estoque
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar /api/sync-estoque
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          corpo=$(mktemp)
+          codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+            -X POST 'https://hub.boxersoldas.com.br/api/sync-estoque' \
+            -H "x-cron-secret: $CRON_SECRET" \
+            --max-time 120)
+
+          echo "HTTP $codigo"
+          cat "$corpo"
+          echo
+
+          # A funcao tem maxDuration de 60s. Se estourar, o Vercel devolve
+          # 504 e o estoque fica velho sem ninguem perceber -- por isso o
+          # job falha de verdade, pra aparecer como run vermelho.
+          if [ "$codigo" != "200" ]; then
+            echo "::error::sync-estoque respondeu $codigo"
+            exit 1
+          fi

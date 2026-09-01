@@ -4,8 +4,7 @@
     "api/sync-estoque.js": { "maxDuration": 60 }
   },
   "crons": [
-    { "path": "/api/sync-zen-clientes", "schedule": "0 6 * * *" },
-    { "path": "/api/sync-estoque", "schedule": "0 10-22 * * 1-5" }
+    { "path": "/api/sync-zen-clientes", "schedule": "0 6 * * *" }
   ],
   "rewrites": [
     { "source": "/(.*)", "destination": "/$1.html" }

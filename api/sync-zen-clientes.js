@@ -252,9 +252,22 @@ async function sincronizarEnderecos(pessoas, hubH, dryRun) {
   }
 
   const linhas = [];
+  // Assinatura do endereco, para nao gravar duas vezes a mesma coisa: na base
+  // real o `personAddress` costuma ser copia identica do endereco do proprio
+  // Person (mesmo CEP, rua, numero). Sem isso, todo cliente apareceria com dois
+  // enderecos iguais na tela de cadastro.
+  const assinatura = o => [o.zipcode, o.street, o.number, o.complement]
+    .map(v => String(v ?? '').trim().toUpperCase().replace(/\s+/g, ' '))
+    .join('|');
+  const vistos = {}; // clienteId -> Set de assinaturas
+
   const monta = (clienteId, erpId, tipo, o, padrao) => {
     // Sem CEP e sem logradouro nao ha endereco util -- nao poluir a tabela.
     if (!o.zipcode && !o.street) return;
+    const set = vistos[clienteId] || (vistos[clienteId] = new Set());
+    const sig = assinatura(o);
+    if (set.has(sig)) return;
+    set.add(sig);
     linhas.push({
       cliente_id: clienteId,
       erp_endereco_id: erpId,

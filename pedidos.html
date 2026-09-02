@@ -41,6 +41,12 @@ tbody tr:hover{background:#f0f7ff}
 .btn-danger{background:#fff;color:#e30613;border-color:#fecaca}.btn-danger:hover{background:#fee2e2}
 .btn-outline{background:#fff;color:#4a5568;border-color:#c3cfe2}.btn-outline:hover{border-color:#25bbee;color:#1d327b}
 .btn-warn{background:#f59e0b;color:#fff;border-color:#f59e0b}.btn-warn:hover{background:#d97706}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.cart-bloqueio{margin-top:16px;padding:14px 16px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b}
+.cart-bloqueio strong{display:block;font-size:14px;margin-bottom:4px}
+.cart-bloqueio p{font-size:13px;margin-bottom:8px;color:#7f1d1d}
+.cart-bloqueio ul{margin:0;padding-left:18px;font-size:13px}
+.cart-bloqueio li{margin-bottom:2px}
 .btn-sm{padding:4px 10px;font-size:12px}
 
 .status-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
@@ -227,6 +233,7 @@ async function renderCarrinho() {
   const faixa = Object.values(precos)[0];
 
   const totalVal = cart.reduce((s, i) => s + (precoDe(i) * i.quantidade), 0);
+  const semEstoque = itensSemEstoque(cart, stockMap);
 
   wrap.innerHTML = `
     <div>
@@ -260,10 +267,32 @@ async function renderCarrinho() {
       </div>
       <div class="cart-total-valor">${fmtMoeda(totalVal)}</div>
     </div>
+    ${semEstoque.length ? `
+    <div class="cart-bloqueio">
+      <strong>Pedido bloqueado por falta de estoque</strong>
+      <p>So entra pedido do que tem estoque disponivel. Ajuste a quantidade ou remova ${semEstoque.length > 1 ? 'os itens abaixo' : 'o item abaixo'}:</p>
+      <ul>${semEstoque.map(s => `<li>${esc(s.sku)} — pedido <strong>${s.pedida}</strong>, disponivel <strong>${s.disponivel}</strong></li>`).join('')}</ul>
+    </div>` : ''}
     <div class="cart-actions">
       <button class="btn btn-danger btn-sm" onclick="clearCart()">Limpar carrinho</button>
-      <button class="btn btn-primary" id="btnEnviarPedido" onclick="enviarPedido()">Enviar pedido</button>
+      <button class="btn btn-primary" id="btnEnviarPedido" onclick="enviarPedido()"
+              ${semEstoque.length ? 'disabled title="Ha itens sem estoque suficiente"' : ''}>Enviar pedido</button>
     </div>`;
+}
+
+// Espelha no carrinho a trava que o servidor aplica em hub_fn_validar_politica.
+// Aqui e so aviso antecipado -- quem garante e o banco. Se o estoque nao veio
+// (stockMap vazio, sync fora do ar), nao bloqueia nada: mesma decisao do
+// servidor, que suspende a trava quando o sync parece quebrado.
+function itensSemEstoque(cart, stockMap) {
+  return cart.reduce((acc, item) => {
+    const st = stockMap[item.produto_id];
+    const disp = Number(st?.estoque_disponivel);
+    if (Number.isFinite(disp) && item.quantidade > disp) {
+      acc.push({ sku: item.sku || item.nome, pedida: item.quantidade, disponivel: disp });
+    }
+    return acc;
+  }, []);
 }
 
 let _enviandoPedido = false;

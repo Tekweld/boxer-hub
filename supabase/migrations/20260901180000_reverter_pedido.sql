@@ -15,7 +15,7 @@ CREATE OR REPLACE FUNCTION comercial.hub_fn_reverter_pedido(p_pedido_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = comercial, public
+SET search_path = ''
 AS $$
 DECLARE
   v_pedido  record;

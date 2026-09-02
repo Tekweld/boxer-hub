@@ -416,6 +416,25 @@ module.exports = async function handler(req, res) {
       achados.cubo_estoque_colunas = Array.isArray(linhas) && linhas.length
         ? { total_linhas: linhas.length, colunas: Object.keys(linhas[0]), exemplo: linhas[0] }
         : { status: r.status, aviso: 'resposta vazia ou em formato inesperado' };
+
+      // Por stockCluster: docs/INTEGRACAO-ZEN-HUB.md decidiu em 2026-08-27 que
+      // so o cluster de maquinas novas vale para revenda (avariadas, Mercado
+      // Livre etc. NAO podem aparecer como disponiveis). O sync-estoque atual
+      // soma TODOS os clusters. Com a trava dura de estoque ligada, isso decide
+      // o que o revendedor consegue comprar -- precisa ser medido, nao suposto.
+      if (Array.isArray(linhas) && linhas.length) {
+        const porCluster = {};
+        linhas.forEach(row => {
+          const k = (row.stockCluster_code || row.stockCluster_id || 'SEM_CLUSTER') + '';
+          const c = porCluster[k] || (porCluster[k] = { linhas: 0, saldo: 0, skus: new Set() });
+          c.linhas++;
+          c.saldo += Number(row.quantity_balance) || 0;
+          if (row.product_code) c.skus.add(String(row.product_code).trim().toUpperCase());
+        });
+        achados.cubo_estoque_por_cluster = Object.entries(porCluster)
+          .map(([cluster, c]) => ({ cluster, linhas: c.linhas, saldo: Math.round(c.saldo), skus: c.skus.size }))
+          .sort((a, b) => b.linhas - a.linhas);
+      }
     } catch (e) {
       achados.cubo_estoque_colunas = { erro: e.message.slice(0, 200) };
     }

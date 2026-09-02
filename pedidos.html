@@ -40,6 +40,7 @@ tbody tr:hover{background:#f0f7ff}
 .btn-primary{background:#1d327b;color:#fff;border-color:#1d327b}.btn-primary:hover{background:#162666}
 .btn-danger{background:#fff;color:#e30613;border-color:#fecaca}.btn-danger:hover{background:#fee2e2}
 .btn-outline{background:#fff;color:#4a5568;border-color:#c3cfe2}.btn-outline:hover{border-color:#25bbee;color:#1d327b}
+.btn-warn{background:#f59e0b;color:#fff;border-color:#f59e0b}.btn-warn:hover{background:#d97706}
 .btn-sm{padding:4px 10px;font-size:12px}
 
 .status-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
@@ -466,11 +467,96 @@ async function openPedido(id) {
         </tr>`).join('')}</tbody>
       </table></div>` : '<p style="color:#718096;font-size:13px">Nenhum item</p>'}
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0">
+        ${acoesPedido(pedido)}
         <button class="btn btn-outline" onclick="closeModal()">Fechar</button>
       </div>
     `);
   } catch (e) {
     toast('Erro ao abrir pedido', 'error');
+  }
+}
+
+// Quais acoes o pedido aceita depende de onde ele esta no fluxo.
+// A fronteira que importa: assim que o pedido vira venda no Zen
+// (erp_pedido_id preenchido), quem manda nele e o Zen/Monitor -- o Hub vira
+// so registro, e editar aqui dessincronizaria os dois sistemas.
+function acoesPedido(p) {
+  if (p.status === 'rascunho') {
+    return `<button class="btn btn-danger" onclick="descartarRascunho('${p.id}')">Descartar</button>
+            <button class="btn btn-primary" onclick="retomarPedido('${p.id}')">Continuar este pedido</button>`;
+  }
+  const podeVoltar = p.status === 'submetido' && !p.erp_pedido_id;
+  return `${podeVoltar ? `<button class="btn btn-warn" onclick="reverterPedido('${p.id}')">Voltar a editar</button>` : ''}
+          <button class="btn btn-primary" onclick="repetirPedido('${p.id}')">Repetir pedido</button>`;
+}
+
+// Carrega os itens de um pedido no carrinho. `substituir` decide se o carrinho
+// atual e trocado ou se os itens sao somados a ele.
+async function itensParaCarrinho(pedidoId) {
+  const itens = await sb('/hub_pedido_itens?pedido_id=eq.' + pedidoId +
+    '&select=produto_id,quantidade,preco_unitario,sku,nome_produto,hub_produtos(nome,sku)&order=criado_em.asc');
+  if (!itens.length) { toast('Este pedido nao tem itens', 'error'); return false; }
+
+  saveCart(itens.map(i => ({
+    produto_id: i.produto_id,
+    sku: i.sku || i.hub_produtos?.sku || '',
+    nome: i.nome_produto || i.hub_produtos?.nome || '',
+    // Preco e so estimativa de tela: hub_fn_submeter_pedido reprecifica tudo
+    // no servidor, na faixa correta, no momento do envio.
+    preco_base: +i.preco_unitario || 0,
+    quantidade: i.quantidade
+  })));
+  return true;
+}
+
+function irParaCarrinho() {
+  closeModal();
+  showTab('novo', document.querySelectorAll('.tab')[1]);
+}
+
+async function retomarPedido(id) {
+  try {
+    if (!await itensParaCarrinho(id)) return;
+    irParaCarrinho();
+    toast('Itens carregados no carrinho');
+  } catch (e) {
+    toast('Erro ao retomar pedido', 'error');
+  }
+}
+
+async function repetirPedido(id) {
+  try {
+    if (!await itensParaCarrinho(id)) return;
+    irParaCarrinho();
+    toast('Pedido copiado para o carrinho');
+  } catch (e) {
+    toast('Erro ao repetir pedido', 'error');
+  }
+}
+
+async function reverterPedido(id) {
+  if (!confirm('Voltar este pedido para rascunho? O valor volta para o seu limite de credito e voce podera editar e reenviar.')) return;
+  try {
+    const r = await sbRpc('hub_fn_reverter_pedido', { p_pedido_id: id });
+    if (!r?.ok) { toast(r?.erro || 'Nao foi possivel reverter', 'error'); return; }
+    if (!await itensParaCarrinho(id)) return;
+    irParaCarrinho();
+    await loadPedidos();
+    toast('Pedido voltou para rascunho');
+  } catch (e) {
+    toast('Erro ao reverter pedido', 'error');
+  }
+}
+
+async function descartarRascunho(id) {
+  if (!confirm('Descartar este rascunho? Os itens serao perdidos.')) return;
+  try {
+    await sb('/hub_pedidos?id=eq.' + id, 'PATCH', { ativo: false });
+    closeModal();
+    await loadPedidos();
+    toast('Rascunho descartado');
+  } catch (e) {
+    toast('Erro ao descartar rascunho', 'error');
   }
 }
 </script>

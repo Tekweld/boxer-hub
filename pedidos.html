@@ -46,7 +46,9 @@ tbody tr:hover{background:#f0f7ff}
 .cart-bloqueio strong{display:block;font-size:14px;margin-bottom:4px}
 .cart-bloqueio p{font-size:13px;margin-bottom:8px;color:#7f1d1d}
 .cart-bloqueio ul{margin:0;padding-left:18px;font-size:13px}
-.cart-bloqueio li{margin-bottom:2px}
+.cart-bloqueio li{margin-bottom:4px}
+.cart-bloqueio hr{border:none;border-top:1px solid #fecaca;margin:12px 0}
+.cart-bloqueio p:last-child{margin-bottom:0}
 .btn-sm{padding:4px 10px;font-size:12px}
 
 .status-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
@@ -159,10 +161,29 @@ function getCart() {
 function saveCart(cart) {
   sessionStorage.setItem(cartKey(), JSON.stringify(cart));
   stockMap = {};
+  // O cliente mexeu no carrinho: as violacoes da tentativa anterior podem nao
+  // valer mais. Some com elas em vez de deixar alerta velho na tela.
+  ultimasViolacoes = [];
   renderCarrinho();
 }
 
 let stockMap = {};
+
+// === PEDIDO EM EDICAO ===
+// Todo envio criava um hub_pedidos novo, sempre. Consequencia: (a) reabrir um
+// pedido e reenviar deixava o rascunho reaberto para tras e criava uma copia;
+// (b) cada submissao que falhava na politica largava mais um rascunho orfao
+// (havia 8 presos no banco). Guardando qual rascunho esta em edicao, o envio
+// REUSA essa linha em vez de criar outra.
+function pedidoEdicaoKey() { return 'hub_pedido_edicao_' + getUserId() + '_' + (getClienteAtivo() || 'self'); }
+function getPedidoEmEdicao() { return sessionStorage.getItem(pedidoEdicaoKey()) || null; }
+function setPedidoEmEdicao(id) { sessionStorage.setItem(pedidoEdicaoKey(), id); }
+function clearPedidoEmEdicao() { sessionStorage.removeItem(pedidoEdicaoKey()); }
+
+// Violacoes devolvidas pelo servidor na ultima tentativa de envio. Ficam na
+// tela ate o carrinho mudar -- um toast de 3 segundos some antes de o cliente
+// terminar de ler, ainda mais numa lista de itens.
+let ultimasViolacoes = [];
 
 // Preco do carrinho vem da base mestre, na faixa correta.
 // A faixa (classe) do Varejo/Fisica depende do valor do pedido, entao e preciso
@@ -267,17 +288,45 @@ async function renderCarrinho() {
       </div>
       <div class="cart-total-valor">${fmtMoeda(totalVal)}</div>
     </div>
-    ${semEstoque.length ? `
-    <div class="cart-bloqueio">
-      <strong>Pedido bloqueado por falta de estoque</strong>
-      <p>So entra pedido do que tem estoque disponivel. Ajuste a quantidade ou remova ${semEstoque.length > 1 ? 'os itens abaixo' : 'o item abaixo'}:</p>
-      <ul>${semEstoque.map(s => `<li>${esc(s.sku)} — pedido <strong>${s.pedida}</strong>, disponivel <strong>${s.disponivel}</strong></li>`).join('')}</ul>
-    </div>` : ''}
+    ${renderBloqueios(semEstoque)}
     <div class="cart-actions">
       <button class="btn btn-danger btn-sm" onclick="clearCart()">Limpar carrinho</button>
       <button class="btn btn-primary" id="btnEnviarPedido" onclick="enviarPedido()"
               ${semEstoque.length ? 'disabled title="Ha itens sem estoque suficiente"' : ''}>Enviar pedido</button>
     </div>`;
+}
+
+// Um unico painel para tudo que impede o pedido de sair -- estoque, credito,
+// pedido minimo, boleto, parcelamento. Antes so o estoque tinha tratamento
+// visivel e o resto morria num toast de 3 segundos.
+function renderBloqueios(semEstoque) {
+  const blocos = [];
+
+  if (semEstoque.length) {
+    blocos.push(`
+      <strong>Falta estoque</strong>
+      <p>So entra pedido do que tem estoque disponivel. Ajuste a quantidade ou remova ${semEstoque.length > 1 ? 'os itens abaixo' : 'o item abaixo'}:</p>
+      <ul>${semEstoque.map(s => `<li><strong>${esc(s.sku)}</strong>${s.nome ? ' — ' + esc(s.nome) : ''}<br>pedido <strong>${s.pedida}</strong>, disponivel <strong>${s.disponivel}</strong></li>`).join('')}</ul>`);
+  }
+
+  // Violacoes do servidor, exceto estoque (ja detalhado acima com nome do produto).
+  ultimasViolacoes.filter(v => v.regra !== 'estoque').forEach(v => {
+    blocos.push(`<strong>${esc(rotuloRegra(v.regra))}</strong><p>${esc(v.mensagem || '')}</p>`);
+  });
+
+  if (!blocos.length) return '';
+  return '<div class="cart-bloqueio">' + blocos.join('<hr>') + '</div>';
+}
+
+function rotuloRegra(regra) {
+  return ({
+    estoque: 'Falta estoque',
+    pedido_minimo: 'Pedido abaixo do minimo',
+    credito: 'Limite de credito',
+    boleto_elegibilidade: 'Boleto/duplicata indisponivel',
+    parcelamento: 'Parcelamento fora da politica',
+    valor_minimo_duplicata: 'Valor minimo por duplicata'
+  })[regra] || 'Pedido bloqueado';
 }
 
 // Espelha no carrinho a trava que o servidor aplica em hub_fn_validar_politica.
@@ -289,7 +338,7 @@ function itensSemEstoque(cart, stockMap) {
     const st = stockMap[item.produto_id];
     const disp = Number(st?.estoque_disponivel);
     if (Number.isFinite(disp) && item.quantidade > disp) {
-      acc.push({ sku: item.sku || item.nome, pedida: item.quantidade, disponivel: disp });
+      acc.push({ sku: item.sku || '—', nome: item.nome || '', pedida: item.quantidade, disponivel: disp });
     }
     return acc;
   }, []);
@@ -346,7 +395,26 @@ async function _enviarPedidoInterno() {
       novoPedido.origem = 'admin';
     }
 
-    const [pedido] = await sb('/hub_pedidos', 'POST', novoPedido);
+    // Reusa o rascunho em edicao, se ainda existir e continuar sendo rascunho
+    // desta revenda. Evita duplicar o pedido a cada reenvio.
+    let pedido = null;
+    const emEdicao = getPedidoEmEdicao();
+    if (emEdicao) {
+      const [r] = await sb('/hub_pedidos?id=eq.' + emEdicao +
+        '&status=eq.rascunho&ativo=eq.true&cliente_id=eq.' + clienteId + '&select=id');
+      if (r) {
+        pedido = r;
+        // Troca os itens pelo conteudo atual do carrinho.
+        await sb('/hub_pedido_itens?pedido_id=eq.' + r.id, 'DELETE');
+      } else {
+        clearPedidoEmEdicao(); // sumiu, foi submetido ou e de outra revenda
+      }
+    }
+
+    if (!pedido) {
+      [pedido] = await sb('/hub_pedidos', 'POST', novoPedido);
+      setPedidoEmEdicao(pedido.id);
+    }
 
     await sb('/hub_pedido_itens', 'POST', cart.map(i => {
       const p = precos[i.produto_id];
@@ -368,11 +436,19 @@ async function _enviarPedidoInterno() {
     if (!resultado.ok) {
       const violacoes = resultado.violacoes || [];
       if (violacoes.length) {
-        // rascunho fica salvo: o revendedor ajusta o carrinho e reenvia
+        // O rascunho fica salvo e continua marcado como "em edicao": o
+        // revendedor ajusta o carrinho e reenvia NA MESMA linha, sem gerar
+        // um pedido novo a cada tentativa.
+        ultimasViolacoes = violacoes;
+        renderCarrinho();
         throw new Error(violacoes.map(v => v.mensagem).join(' '));
       }
       throw new Error(resultado.erro || 'Erro ao submeter pedido');
     }
+
+    // Submetido: o rascunho deixou de existir como rascunho.
+    clearPedidoEmEdicao();
+    ultimasViolacoes = [];
 
     const frete = resultado.politica?.frete;
     if (frete && +frete.valor > 0) {
@@ -422,6 +498,10 @@ function removeCartItem(idx) {
 
 function clearCart() {
   sessionStorage.removeItem(cartKey());
+  // Esvaziar o carrinho encerra a edicao: o proximo envio e um pedido novo.
+  // O rascunho antigo continua no historico, para retomar ou descartar de la.
+  clearPedidoEmEdicao();
+  ultimasViolacoes = [];
   renderCarrinho();
 }
 
@@ -571,10 +651,21 @@ function erroLegivel(e) {
   } catch { return txt.slice(0, 200); }
 }
 
+// Continuar/reabrir = seguir editando AQUELE pedido. Repetir = pedido novo.
+// A diferenca esta so em marcar (ou nao) o rascunho como "em edicao".
+function marcarEdicao(id, clienteDoPedido) {
+  if (clienteDoPedido && getClienteAtivo() && clienteDoPedido === getClienteAtivo()) {
+    setPedidoEmEdicao(id);
+  } else {
+    clearPedidoEmEdicao(); // de outra revenda: vira pedido novo da revenda ativa
+  }
+}
+
 async function retomarPedido(id, clienteDoPedido) {
   if (!confirmaTrocaDeRevenda(clienteDoPedido)) return;
   try {
     if (!await itensParaCarrinho(id)) return;
+    marcarEdicao(id, clienteDoPedido);
     irParaCarrinho();
     toast('Itens carregados no carrinho');
   } catch (e) {
@@ -586,6 +677,7 @@ async function repetirPedido(id, clienteDoPedido) {
   if (!confirmaTrocaDeRevenda(clienteDoPedido)) return;
   try {
     if (!await itensParaCarrinho(id)) return;
+    clearPedidoEmEdicao(); // copia gera pedido novo, nunca reescreve o original
     irParaCarrinho();
     toast('Pedido copiado para o carrinho');
   } catch (e) {
@@ -603,6 +695,7 @@ async function reverterPedido(id, clienteDoPedido) {
     // revenda e o usuario recusar, o pedido ja esta salvo como rascunho e
     // pode ser retomado depois pela propria revenda dona.
     if (confirmaTrocaDeRevenda(clienteDoPedido) && await itensParaCarrinho(id)) {
+      marcarEdicao(id, clienteDoPedido);
       irParaCarrinho();
     } else {
       closeModal();

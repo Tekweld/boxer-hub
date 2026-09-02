@@ -318,11 +318,31 @@ function renderBloqueios(semEstoque) {
   return '<div class="cart-bloqueio">' + blocos.join('<hr>') + '</div>';
 }
 
+function regraDoErro(erro) {
+  const e = String(erro || '').toLowerCase();
+  if (e.includes('limite')) return 'credito';
+  if (e.includes('cadastro')) return 'cadastro';
+  return 'outro';
+}
+
+// O erro de credito vem com os numeros separados; montar a frase aqui evita
+// mandar o cliente conferir o limite em outra tela para descobrir quanto falta.
+function mensagemDeCredito(r) {
+  if (regraDoErro(r.erro) !== 'credito' || r.excedente == null) return r.erro;
+  return 'Limite de credito insuficiente para este pedido. '
+    + 'Pedido ' + fmtMoeda(r.valor_pedido)
+    + ', disponivel ' + fmtMoeda(r.disponivel)
+    + ' de um limite de ' + fmtMoeda(r.limite_total) + '. '
+    + 'Faltam ' + fmtMoeda(r.excedente) + '. '
+    + 'Reduza o pedido ou solicite aumento de limite em Financeiro.';
+}
+
 function rotuloRegra(regra) {
   return ({
     estoque: 'Falta estoque',
     pedido_minimo: 'Pedido abaixo do minimo',
-    credito: 'Limite de credito',
+    credito: 'Limite de credito insuficiente',
+    cadastro: 'Cadastro do cliente',
     boleto_elegibilidade: 'Boleto/duplicata indisponivel',
     parcelamento: 'Parcelamento fora da politica',
     valor_minimo_duplicata: 'Valor minimo por duplicata'
@@ -434,16 +454,23 @@ async function _enviarPedidoInterno() {
     const resultado = await sbRpc('hub_fn_submeter_pedido', { p_pedido_id: pedido.id });
 
     if (!resultado.ok) {
-      const violacoes = resultado.violacoes || [];
-      if (violacoes.length) {
-        // O rascunho fica salvo e continua marcado como "em edicao": o
-        // revendedor ajusta o carrinho e reenvia NA MESMA linha, sem gerar
-        // um pedido novo a cada tentativa.
-        ultimasViolacoes = violacoes;
-        renderCarrinho();
-        throw new Error(violacoes.map(v => v.mensagem).join(' '));
+      // hub_fn_submeter_pedido devolve as regras da politica em `violacoes`,
+      // mas credito e cadastro voltam como `erro` solto. Para o cliente e tudo
+      // a mesma coisa -- motivo pelo qual o pedido nao saiu -- entao normaliza
+      // e mostra tudo no mesmo painel.
+      const violacoes = (resultado.violacoes || []).slice();
+      if (!violacoes.length && resultado.erro) {
+        violacoes.push({
+          regra: regraDoErro(resultado.erro),
+          mensagem: mensagemDeCredito(resultado)
+        });
       }
-      throw new Error(resultado.erro || 'Erro ao submeter pedido');
+      // O rascunho fica salvo e continua marcado como "em edicao": o
+      // revendedor ajusta o carrinho e reenvia NA MESMA linha, sem gerar
+      // um pedido novo a cada tentativa.
+      ultimasViolacoes = violacoes;
+      renderCarrinho();
+      throw new Error(violacoes.map(v => v.mensagem).join(' ') || 'Erro ao submeter pedido');
     }
 
     // Submetido: o rascunho deixou de existir como rascunho.

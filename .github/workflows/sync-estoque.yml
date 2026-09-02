@@ -6,8 +6,12 @@ name: Sync estoque ZenERP
 
 on:
   schedule:
-    # 10:00-22:00 UTC = 07:00-19:00 BRT, de segunda a sexta.
-    - cron: '0 10-22 * * 1-5'
+    # De hora em hora, 24/7. Era so horario comercial quando o estoque era
+    # apenas informativo; agora ele decide o que aparece no catalogo e o que
+    # pode ser pedido, entao janela fechada significa vitrine desatualizada
+    # justamente quando alguem quer comprar (ex: estoque que chega sexta a
+    # noite so apareceria na segunda).
+    - cron: '0 * * * *'
   workflow_dispatch: # permite disparar na mao pela aba Actions
 
 concurrency:

@@ -397,6 +397,17 @@ async function loadProdutos() {
 
   if (busca) {
     url += '&or=(nome.ilike.*' + encodeURIComponent(busca) + '*,sku.ilike.*' + encodeURIComponent(busca) + '*)';
+  } else {
+    // Vitrine mostra so o que da pra comprar agora: produto sem estoque some da
+    // navegacao (home, grupo e categoria) e volta sozinho quando o estoque entra,
+    // porque a view calcula status_estoque na hora a partir do sync.
+    // Na BUSCA nao filtramos -- quem procura pelo nome tem que achar, e ve o selo
+    // "Indisponivel" com a previsao de chegada.
+    //
+    // Filtra por status_estoque (nao por estoque_disponivel>0) de proposito: se o
+    // sync quebrar e zerar todo mundo, a view marca tudo como 'sem_info', e
+    // incluir 'sem_info' aqui evita que uma falha de sync esvazie o catalogo.
+    url += '&status_estoque=in.(disponivel,baixo,sem_info)';
   }
 
   try {

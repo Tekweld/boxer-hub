@@ -208,8 +208,13 @@ module.exports = async function handler(req, res) {
     // limite_disponivel na hora, e este sync nao sabe quanto foi reservado).
     const credito = await inicializarCreditoFaltante(bodies, hubH, dryRun);
 
+    // 5 — Enderecos. hub_enderecos estava VAZIA para os 5.378 clientes ativos:
+    // nada nunca escreveu nela. Efeito: a tela de cadastro mostrava vazio para
+    // todo mundo e o pedido nao tinha endereco de entrega para confirmar.
+    const enderecos = await sincronizarEnderecos(pessoas, hubH, dryRun);
+
     return res.status(200).json({
-      ok: erros.length === 0, ...resumo, gravados, credito,
+      ok: erros.length === 0, ...resumo, gravados, credito, enderecos,
       erros: erros.length ? erros : undefined
     });
 
@@ -218,6 +223,101 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ ok: false, erro: e.message });
   }
 };
+
+// Popula hub_enderecos a partir do Zen.
+//
+// Duas fontes, e a primeira e de graca: o proprio `Person` ja carrega o
+// endereco completo (zipcode/street/number/complement/district/city), e o
+// objeto ja esta na mao -- zero chamada extra a API. Vira o endereco
+// 'principal'. Depois, `personAddress` (entidade relacionada) traz os
+// adicionais, que entram como 'entrega'.
+//
+// Chave de upsert: `erp_endereco_id` (UNIQUE). O endereco do Person nao tem id
+// proprio no Zen, entao usa `person:<id>` -- estavel e sem colidir com os ids
+// numericos de personAddress.
+async function sincronizarEnderecos(pessoas, hubH, dryRun) {
+  const resultado = { pessoas_com_endereco: 0, adicionais_no_zen: 0, gravados: 0, erros: [] };
+  if (!pessoas.length) return resultado;
+
+  // Mapa erp_cliente_id -> uuid do hub. Em lotes: URL com milhares de ids
+  // estoura o tamanho e falha em texto puro (ja mordeu neste arquivo).
+  const erpIds = pessoas.map(p => String(p.id));
+  const idHub = {};
+  for (let i = 0; i < erpIds.length; i += 300) {
+    const lote = erpIds.slice(i, i + 300);
+    const r = await fetch(HUB_URL + '/rest/v1/hub_clientes?erp_cliente_id=in.(' +
+      lote.join(',') + ')&select=id,erp_cliente_id', { headers: hubH('GET') });
+    if (!r.ok) { resultado.erros.push({ etapa: 'map_clientes', lote: i, status: r.status }); continue; }
+    (await r.json()).forEach(c => { idHub[String(c.erp_cliente_id)] = c.id; });
+  }
+
+  const linhas = [];
+  const monta = (clienteId, erpId, tipo, o, padrao) => {
+    // Sem CEP e sem logradouro nao ha endereco util -- nao poluir a tabela.
+    if (!o.zipcode && !o.street) return;
+    linhas.push({
+      cliente_id: clienteId,
+      erp_endereco_id: erpId,
+      tipo,
+      cep: o.zipcode || null,
+      logradouro: o.street || null,
+      numero: o.number != null ? String(o.number) : null,
+      complemento: o.complement || null,
+      bairro: o.district || null,
+      cidade: o.city?.name || null,
+      uf: o.city?.state?.code || null,
+      padrao,
+      ativo: true
+    });
+  };
+
+  for (const p of pessoas) {
+    const clienteId = idHub[String(p.id)];
+    if (!clienteId) continue;
+    const antes = linhas.length;
+    monta(clienteId, 'person:' + p.id, 'principal', p, true);
+    if (linhas.length > antes) resultado.pessoas_com_endereco++;
+  }
+
+  // Adicionais: RSQL aceita OR com virgula dentro de parenteses.
+  const comHub = pessoas.filter(p => idHub[String(p.id)]);
+  for (let i = 0; i < comHub.length; i += 50) {
+    const lote = comHub.slice(i, i + 50);
+    try {
+      const adicionais = await zenGet('/catalog/person/personAddress', {
+        q: '(' + lote.map(p => 'person.id==' + p.id).join(',') + ')',
+        max: 200, limite: 1000
+      });
+      resultado.adicionais_no_zen += adicionais.length;
+      adicionais.forEach(a => {
+        const dono = idHub[String(a.person?.id ?? a.person)];
+        if (dono) monta(dono, String(a.id), 'entrega', a, false);
+      });
+    } catch (e) {
+      resultado.erros.push({ etapa: 'personAddress', lote: i, detalhe: e.message.slice(0, 150) });
+    }
+  }
+
+  resultado.a_gravar = linhas.length;
+  if (dryRun || !linhas.length) return resultado;
+
+  for (let i = 0; i < linhas.length; i += 200) {
+    const lote = linhas.slice(i, i + 200);
+    const r = await fetch(HUB_URL + '/rest/v1/hub_enderecos?on_conflict=erp_endereco_id', {
+      method: 'POST',
+      headers: { ...hubH('POST'), 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(lote)
+    });
+    if (!r.ok) {
+      resultado.erros.push({ etapa: 'gravar', lote: i, status: r.status, detalhe: (await r.text()).slice(0, 200) });
+      continue;
+    }
+    resultado.gravados += lote.length;
+  }
+
+  console.log(`[ZEN] enderecos: ${resultado.gravados} gravados de ${linhas.length}`);
+  return resultado;
+}
 
 async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
   const ids = bodies.map(b => b.erp_cliente_id).filter(Boolean);

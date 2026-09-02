@@ -166,3 +166,39 @@ rascunho → submetido → em_analise → aprovado → em_separacao → faturado
 
 Trigger `trg_hub_notif_status` gera notificacao automatica ao mudar status.
 Trigger `trg_hub_atualizar_credito` ajusta limite ao aprovar solicitacao de credito.
+
+---
+
+## MEMORIA DO PROJETO (Claude Code) — LER ANTES DE COMECAR
+
+Este projeto mantem **memoria persistente do Claude Code**, fora do repo. Ela
+guarda o que o codigo nao conta: decisoes de negocio e o porque delas, o que ja
+foi tentado e revertido, armadilhas que custaram tempo, e a fila de proximos
+passos. **Comece por ela, nao pelo codigo.**
+
+**Sao DOIS diretorios de memoria**, porque o mesmo repo esta clonado em mais de
+uma pasta local, e cada pasta gera a sua:
+
+```
+%USERPROFILE%\.claude\projects\
+  C--Users-<user>-BOXER-Dados---Documentos-Comercial-Geral-Tabelas-de-Pre-os-Plataforma-Comercial\memory\
+  C--Users-<user>-BOXER-Fileserver---Documentos-COMERCIAL-Gestor-hub-comercial\memory\
+```
+
+Em cada um, `MEMORY.md` e o indice. Regras de uso:
+
+1. **Ler os dois `MEMORY.md`** no inicio da sessao. O primeiro esta mais
+   atualizado sobre pedido/integracao Zen; o segundo tem a **formula de preco**
+   e o historico do catalogo.
+2. **Ao decidir algo novo, registrar** — e, se valer para os dois, escrever nos
+   dois lados ou anotar que o outro precisa de atualizacao.
+3. **Divergiu?** A data em `metadata.modified` do arquivo decide.
+4. `docs/` neste repo e **intencao registrada, nao estado**. Quando doc e
+   codigo divergirem, o codigo e o que esta no ar — mas a divergencia pode ser
+   bug, entao confirmar com o Andre antes de assumir que a doc envelheceu.
+5. **Trabalho concorrente e real** (Ayrton + outras sessoes, mesmo repo e mesmo
+   banco). Sempre `git fetch` e `git log HEAD..origin/main` antes de mexer, e
+   comparar migrations locais com `supabase_migrations.schema_migrations`.
+
+A memoria e local da maquina do Andre e **nao e versionada aqui** — este bloco
+existe so para que qualquer sessao saiba que ela existe e onde procurar.

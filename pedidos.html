@@ -49,6 +49,29 @@ tbody tr:hover{background:#f0f7ff}
 .cart-bloqueio li{margin-bottom:4px}
 .cart-bloqueio hr{border:none;border-top:1px solid #fecaca;margin:12px 0}
 .cart-bloqueio p:last-child{margin-bottom:0}
+/* Confirmacao do pedido */
+.rev-sec{margin-bottom:18px}
+.rev-sec h4{font-size:12px;font-weight:600;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.rev-linha{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;border-bottom:1px solid #edf2f7}
+.rev-linha:last-child{border-bottom:none}
+.rev-linha .v{font-weight:600;font-variant-numeric:tabular-nums}
+.rev-total{display:flex;justify-content:space-between;align-items:baseline;padding-top:10px;margin-top:4px;border-top:2px solid #e2e8f0}
+.rev-total .v{font-size:19px;font-weight:700;color:#1d327b;font-variant-numeric:tabular-nums}
+.rev-credito{padding:12px 14px;border-radius:8px;border:1px solid #d0d8e8;background:#f7fafc}
+.rev-credito.ok{border-color:#bbf7d0;background:#f0fdf4}
+.rev-credito.ruim{border-color:#fecaca;background:#fef2f2}
+.rev-credito .saldo{font-size:13px;font-weight:600;margin-top:6px;padding-top:6px;border-top:1px dashed #cbd5e0}
+.rev-credito.ok .saldo{color:#166534}
+.rev-credito.ruim .saldo{color:#991b1b}
+.rev-frete{padding:12px 14px;border-radius:8px;border:1px solid #d0d8e8;background:#f7fafc;font-size:13px;color:#4a5568}
+.rev-opcoes{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.rev-opcao{display:flex;gap:8px;align-items:flex-start;padding:10px;border:1px solid #c3cfe2;border-radius:8px;background:#fff;cursor:pointer;font-size:13px}
+.rev-opcao:hover{border-color:#25bbee}
+.rev-opcao input{margin-top:2px}
+.rev-opcao strong{display:block}
+.rev-opcao span{color:#718096;font-size:12px}
+textarea{font-family:Outfit;font-size:13px;padding:8px 12px;border:1px solid #c3cfe2;border-radius:6px;outline:none;width:100%;resize:vertical;min-height:64px}
+textarea:focus{border-color:#25bbee}
 .btn-sm{padding:4px 10px;font-size:12px}
 
 .status-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
@@ -292,7 +315,7 @@ async function renderCarrinho() {
     <div class="cart-actions">
       <button class="btn btn-danger btn-sm" onclick="clearCart()">Limpar carrinho</button>
       <button class="btn btn-primary" id="btnEnviarPedido" onclick="enviarPedido()"
-              ${semEstoque.length ? 'disabled title="Ha itens sem estoque suficiente"' : ''}>Enviar pedido</button>
+              ${semEstoque.length ? 'disabled title="Ha itens sem estoque suficiente"' : ''}>Revisar pedido</button>
     </div>`;
 }
 
@@ -397,7 +420,7 @@ async function _enviarPedidoInterno() {
 
   const btn = document.getElementById('btnEnviarPedido');
   btn.disabled = true;
-  btn.textContent = 'Enviando...';
+  btn.textContent = 'Preparando...';
 
   try {
     // Os precos abaixo sao so uma estimativa para o rascunho: quem decide e
@@ -451,7 +474,173 @@ async function _enviarPedidoInterno() {
       };
     }));
 
-    const resultado = await sbRpc('hub_fn_submeter_pedido', { p_pedido_id: pedido.id });
+    // Ate aqui o pedido esta salvo como rascunho, com itens e precos do
+    // servidor. Nada foi submetido: o proximo passo e a revisao.
+    const [politica, cliente] = await Promise.all([
+      sbRpc('hub_fn_validar_politica', { p_pedido_id: pedido.id }),
+      sb('/hub_clientes?id=eq.' + clienteId + '&select=limite_credito,limite_disponivel,uf')
+        .then(r => r[0] || {})
+    ]);
+
+    abrirRevisao(pedido.id, politica, cliente);
+  } catch (e) {
+    toast('Erro: ' + erroLegivel(e), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Revisar pedido';
+  }
+}
+
+// === REVISAO ANTES DE ENVIAR ===
+// O pedido so sai depois desta tela. Ela existe porque o cliente precisava
+// declarar OC, pagamento e frete, e porque descobrir o limite de credito na
+// mensagem de recusa e tarde demais -- ele tem que ver antes de tentar.
+
+let _revisao = null;
+
+function abrirRevisao(pedidoId, politica, cliente) {
+  const subtotal = +(politica.subtotal || 0);
+  const frete = politica.frete && politica.frete !== 'null' ? politica.frete : null;
+  const valorFrete = +(frete?.valor || 0);
+  const total = subtotal + valorFrete;
+
+  const disponivel = +(cliente.limite_disponivel || 0);
+  const limite = +(cliente.limite_credito || 0);
+  const saldo = disponivel - total;
+
+  _revisao = { pedidoId, subtotal, valorFrete, total, frete, cliente };
+
+  const violacoes = politica.violacoes || [];
+  const bloqueado = violacoes.length > 0;
+
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
+      <h3 style="font-size:18px;color:#1d327b">Revisar e enviar pedido</h3>
+      <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
+    </div>
+
+    ${bloqueado ? `<div class="cart-bloqueio" style="margin:0 0 18px">
+      ${violacoes.map(v => `<strong>${esc(rotuloRegra(v.regra))}</strong><p>${esc(v.mensagem || '')}</p>`).join('<hr>')}
+    </div>` : ''}
+
+    <div class="rev-sec">
+      <h4>Resumo</h4>
+      <div class="rev-linha"><span>${politica.itens || 0} item(ns)</span><span class="v">${fmtMoeda(subtotal)}</span></div>
+      <div class="rev-linha"><span>Frete</span><span class="v">${valorFrete > 0 ? fmtMoeda(valorFrete) : 'Sem custo'}</span></div>
+      <div class="rev-total"><span>Total</span><span class="v">${fmtMoeda(total)}</span></div>
+    </div>
+
+    <div class="rev-sec">
+      <h4>Limite de credito</h4>
+      <div class="rev-credito ${saldo >= 0 ? 'ok' : 'ruim'}">
+        <div class="rev-linha"><span>Limite total</span><span class="v">${fmtMoeda(limite)}</span></div>
+        <div class="rev-linha"><span>Disponivel hoje</span><span class="v">${fmtMoeda(disponivel)}</span></div>
+        <div class="rev-linha"><span>Este pedido</span><span class="v">${fmtMoeda(total)}</span></div>
+        <div class="saldo">${saldo >= 0
+          ? 'Sobra ' + fmtMoeda(saldo) + ' de limite apos este pedido.'
+          : 'Faltam ' + fmtMoeda(Math.abs(saldo)) + '. Reduza o pedido ou solicite aumento de limite em Financeiro.'}</div>
+      </div>
+    </div>
+
+    ${frete ? `<div class="rev-sec">
+      <h4>Frete</h4>
+      <div class="rev-frete">${esc(frete.motivo || '')}</div>
+      ${renderOpcoesFrete(frete, valorFrete)}
+    </div>` : ''}
+
+    <div class="rev-sec">
+      <h4>Pagamento</h4>
+      <div class="form-row-inline">
+        <div class="form-row">
+          <label>Forma de pagamento</label>
+          <select id="revPagamento" onchange="atualizarParcelas()">
+            <option value="boleto">Boleto / Duplicata a prazo</option>
+            <option value="cartao_credito">Cartao de credito</option>
+            <option value="pix">PIX / a vista</option>
+            <option value="transferencia">Transferencia</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Parcelas</label>
+          <select id="revParcelas"></select>
+        </div>
+      </div>
+    </div>
+
+    <div class="rev-sec">
+      <h4>Seus dados</h4>
+      <div class="form-row">
+        <label>Numero da sua ordem de compra (opcional)</label>
+        <input id="revOC" type="text" maxlength="60" placeholder="Ex: OC-2026-114">
+      </div>
+      <div class="form-row">
+        <label>Observacoes (opcional)</label>
+        <textarea id="revObs" maxlength="1000" placeholder="Instrucoes de entrega, transportadora preferida, etc."></textarea>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Voltar ao carrinho</button>
+      <button class="btn btn-primary" id="btnConfirmarEnvio" onclick="confirmarEnvio()"
+              ${bloqueado ? 'disabled title="Resolva os bloqueios acima"' : ''}>Confirmar e enviar</button>
+    </div>
+  `);
+
+  atualizarParcelas();
+}
+
+// Quando ha alternativa real (pedido abaixo do minimo de frete gratis, ou UF
+// FOB), o cliente escolhe. Quando nao ha -- CIF gratuito -- nao se pergunta.
+function renderOpcoesFrete(frete, valorFrete) {
+  const podeRetirar = frete.retirada_disponivel === true;
+  const podeEnviar = frete.envio_disponivel === true;
+  if (!podeRetirar) return ''; // so ha envio: nada a escolher
+
+  return `<div class="rev-opcoes">
+    ${podeEnviar ? `<label class="rev-opcao">
+      <input type="radio" name="revFrete" value="envio" checked>
+      <span><strong>Boxer envia</strong>
+      <span>Frete de ${fmtMoeda(valorFrete)} incluido na nota.</span></span>
+    </label>` : ''}
+    <label class="rev-opcao">
+      <input type="radio" name="revFrete" value="retirada" ${!podeEnviar ? 'checked' : ''}>
+      <span><strong>Retirada por conta propria</strong>
+      <span>Sem custo de frete. Retirada em Campinas, Sao Paulo ou Guarulhos, ou transportadora indicada por voce.</span></span>
+    </label>
+  </div>`;
+}
+
+// Cartao: 1 a 10x sem juros. Boleto/duplicata: ate 3x (28/56/84 dias).
+// PIX e transferencia: a vista. Espelha hub_politica_parametros -- quem decide
+// continua sendo hub_fn_validar_politica no envio.
+function atualizarParcelas() {
+  const forma = document.getElementById('revPagamento')?.value;
+  const sel = document.getElementById('revParcelas');
+  if (!sel) return;
+  const max = forma === 'cartao_credito' ? 10 : forma === 'boleto' ? 3 : 1;
+  sel.innerHTML = Array.from({ length: max }, (_, i) =>
+    `<option value="${i + 1}">${i + 1}x${max > 1 ? ' sem juros' : ' (a vista)'}</option>`).join('');
+  sel.disabled = max === 1;
+}
+
+async function confirmarEnvio() {
+  if (!_revisao) return;
+  const btn = document.getElementById('btnConfirmarEnvio');
+  btn.disabled = true;
+  btn.textContent = 'Enviando...';
+
+  try {
+    const modalidade = document.querySelector('input[name="revFrete"]:checked')?.value || null;
+
+    await sb('/hub_pedidos?id=eq.' + _revisao.pedidoId, 'PATCH', {
+      ordem_compra: document.getElementById('revOC').value.trim() || null,
+      observacoes: document.getElementById('revObs').value.trim() || null,
+      forma_pagamento: document.getElementById('revPagamento').value,
+      parcelas: +document.getElementById('revParcelas').value || 1,
+      frete_modalidade: modalidade
+    });
+
+    const resultado = await sbRpc('hub_fn_submeter_pedido', { p_pedido_id: _revisao.pedidoId });
 
     if (!resultado.ok) {
       // hub_fn_submeter_pedido devolve as regras da politica em `violacoes`,
@@ -469,6 +658,7 @@ async function _enviarPedidoInterno() {
       // revendedor ajusta o carrinho e reenvia NA MESMA linha, sem gerar
       // um pedido novo a cada tentativa.
       ultimasViolacoes = violacoes;
+      closeModal();
       renderCarrinho();
       throw new Error(violacoes.map(v => v.mensagem).join(' ') || 'Erro ao submeter pedido');
     }
@@ -476,21 +666,20 @@ async function _enviarPedidoInterno() {
     // Submetido: o rascunho deixou de existir como rascunho.
     clearPedidoEmEdicao();
     ultimasViolacoes = [];
+    _revisao = null;
 
-    const frete = resultado.politica?.frete;
-    if (frete && +frete.valor > 0) {
-      toast('Frete de ' + fmtMoeda(+frete.valor) + ' incluido no pedido');
-    }
-
+    closeModal();
     clearCart();
     toast('Pedido ' + resultado.numero + ' enviado!');
     showTab('lista', document.querySelectorAll('.tab')[0]);
     loadPedidos();
   } catch (e) {
-    toast('Erro: ' + e.message, 'error');
+    toast('Erro: ' + erroLegivel(e), 'error');
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Enviar pedido';
+    if (btn && document.body.contains(btn)) {
+      btn.disabled = false;
+      btn.textContent = 'Confirmar e enviar';
+    }
   }
 }
 

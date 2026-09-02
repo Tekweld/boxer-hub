@@ -481,13 +481,31 @@ async function openPedido(id) {
 // (erp_pedido_id preenchido), quem manda nele e o Zen/Monitor -- o Hub vira
 // so registro, e editar aqui dessincronizaria os dois sistemas.
 function acoesPedido(p) {
+  const dono = p.cliente_id || '';
   if (p.status === 'rascunho') {
     return `<button class="btn btn-danger" onclick="descartarRascunho('${p.id}')">Descartar</button>
-            <button class="btn btn-primary" onclick="retomarPedido('${p.id}')">Continuar este pedido</button>`;
+            <button class="btn btn-primary" onclick="retomarPedido('${p.id}','${dono}')">Continuar este pedido</button>`;
   }
   const podeVoltar = p.status === 'submetido' && !p.erp_pedido_id;
-  return `${podeVoltar ? `<button class="btn btn-warn" onclick="reverterPedido('${p.id}')">Voltar a editar</button>` : ''}
-          <button class="btn btn-primary" onclick="repetirPedido('${p.id}')">Repetir pedido</button>`;
+  return `${podeVoltar ? `<button class="btn btn-warn" onclick="reverterPedido('${p.id}','${dono}')">Voltar a editar</button>` : ''}
+          <button class="btn btn-primary" onclick="repetirPedido('${p.id}','${dono}')">Repetir pedido</button>`;
+}
+
+// Representante e admin enxergam pedidos de varias revendas, mas o carrinho
+// pertence a UMA revenda (a ativa). Copiar itens de um pedido de outra revenda
+// sem avisar e pedir confusao: o preco final e a politica valem para a revenda
+// ATIVA, nao para a dona do pedido original. Nao bloqueia -- ha caso legitimo
+// de usar um pedido como modelo -- mas exige confirmacao explicita.
+function confirmaTrocaDeRevenda(clienteDoPedido) {
+  const ativo = getClienteAtivo();
+  if (!clienteDoPedido || !ativo || clienteDoPedido === ativo) return true;
+  const nome = getClienteAtivoNome() || 'a revenda ativa';
+  return confirm(
+    'Este pedido e de OUTRA revenda.\n\n' +
+    'Os itens vao para o carrinho de ' + nome + ', e serao reprecificados ' +
+    'pela tabela e politica dessa revenda — os valores podem mudar.\n\n' +
+    'Continuar?'
+  );
 }
 
 // Carrega os itens de um pedido no carrinho. `substituir` decide se o carrinho
@@ -514,37 +532,55 @@ function irParaCarrinho() {
   showTab('novo', document.querySelectorAll('.tab')[1]);
 }
 
-async function retomarPedido(id) {
+// Mensagem de erro util em vez de generica: um "Erro ao reverter pedido" seco
+// escondeu um 400 de cache de schema do PostgREST e custou uma rodada de teste.
+function erroLegivel(e) {
+  const txt = String(e?.message || e || '');
+  try {
+    const j = JSON.parse(txt);
+    return j.message || j.hint || j.details || txt;
+  } catch { return txt.slice(0, 200); }
+}
+
+async function retomarPedido(id, clienteDoPedido) {
+  if (!confirmaTrocaDeRevenda(clienteDoPedido)) return;
   try {
     if (!await itensParaCarrinho(id)) return;
     irParaCarrinho();
     toast('Itens carregados no carrinho');
   } catch (e) {
-    toast('Erro ao retomar pedido', 'error');
+    toast('Erro ao retomar pedido: ' + erroLegivel(e), 'error');
   }
 }
 
-async function repetirPedido(id) {
+async function repetirPedido(id, clienteDoPedido) {
+  if (!confirmaTrocaDeRevenda(clienteDoPedido)) return;
   try {
     if (!await itensParaCarrinho(id)) return;
     irParaCarrinho();
     toast('Pedido copiado para o carrinho');
   } catch (e) {
-    toast('Erro ao repetir pedido', 'error');
+    toast('Erro ao repetir pedido: ' + erroLegivel(e), 'error');
   }
 }
 
-async function reverterPedido(id) {
-  if (!confirm('Voltar este pedido para rascunho? O valor volta para o seu limite de credito e voce podera editar e reenviar.')) return;
+async function reverterPedido(id, clienteDoPedido) {
+  if (!confirm('Voltar este pedido para rascunho? O valor volta para o limite de credito e o pedido podera ser editado e reenviado.')) return;
   try {
     const r = await sbRpc('hub_fn_reverter_pedido', { p_pedido_id: id });
     if (!r?.ok) { toast(r?.erro || 'Nao foi possivel reverter', 'error'); return; }
-    if (!await itensParaCarrinho(id)) return;
-    irParaCarrinho();
     await loadPedidos();
+    // Reverteu no banco. Levar pro carrinho e opcional: se for de outra
+    // revenda e o usuario recusar, o pedido ja esta salvo como rascunho e
+    // pode ser retomado depois pela propria revenda dona.
+    if (confirmaTrocaDeRevenda(clienteDoPedido) && await itensParaCarrinho(id)) {
+      irParaCarrinho();
+    } else {
+      closeModal();
+    }
     toast('Pedido voltou para rascunho');
   } catch (e) {
-    toast('Erro ao reverter pedido', 'error');
+    toast('Erro ao reverter: ' + erroLegivel(e), 'error');
   }
 }
 

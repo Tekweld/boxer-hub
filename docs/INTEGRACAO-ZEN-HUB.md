@@ -3,8 +3,33 @@
 Recorte do que o Hub precisa da API Zen. Referência completa da API em
 `referencia-api-zen.md`.
 
-Estado em 2026-08-27: **nenhuma integração Zen ativa no Hub.** As credenciais
-`ZEN_EMAIL` e `ZEN_SENHA` existem na Vercel, mas nenhum código as usa.
+> ## ⚠ ATUALIZADO EM 2026-09-02 — LEIA ANTES DO RESTO
+>
+> **Este documento foi escrito em 2026-08-27, quando não havia integração
+> nenhuma. Boa parte dele já foi implementada — e a implementação, não este
+> texto, é a regra.**
+>
+> Um agente leu a seção de estoque abaixo como se fosse o estado atual e
+> reportou como "divergência" uma decisão que já tinha sido superada pelo
+> código. Para não repetir:
+>
+> **Regra geral: quando este documento e o código divergirem, o código vence.**
+> Antes de reportar divergência, compare as datas — doc anterior ao código quase
+> sempre significa doc velha, não código errado.
+>
+> Já implementado e validado em produção (não é mais "em aberto"):
+>
+> | Assunto | Onde vive a verdade |
+> |---|---|
+> | Autenticação, paginação, RSQL | `api/_zen.js` |
+> | **Estoque** | `api/sync-estoque.js` — **ver seção 1, reescrita** |
+> | Clientes / representantes | `api/sync-zen-clientes.js` |
+> | Limite de crédito | `api/sync-zen-clientes.js` + `api/convite.js` |
+> | **Pedido → Zen** | `api/push-pedido.js` — cria `sale.Sale` (validado com venda real) |
+> | Nós de workflow, saleProfile | confirmados na API real — ver seção 3 |
+>
+> Estado do projeto e fila de próximos passos vivem na **memória do Claude
+> Code** (ver seção "MEMÓRIA DO PROJETO" no `CLAUDE.md` da raiz), não aqui.
 
 | Tabela SYNC | Linhas hoje | Origem Zen |
 |---|---|---|
@@ -16,46 +41,62 @@ Estado em 2026-08-27: **nenhuma integração Zen ativa no Hub.** As credenciais
 
 ---
 
-## 1. Estoque — não existe "um campo de estoque"
+## 1. Estoque — RESOLVIDO E EM PRODUÇÃO (seção reescrita em 2026-09-02)
 
-**Este é o ponto que mais muda em relação ao que se imaginava.** O Zen não expõe
-um `saldo_disponivel` pronto. O disponível para venda é uma composição:
+**A regra é o código do Ayrton: `api/sync-estoque.js`.** Confirmado por André em
+2026-09-02 — a visão de estoque real disponível está correta. Não trocar de
+fonte, não adicionar filtro de cluster, não "corrigir" com base no plano antigo
+que estava aqui.
+
+### Como funciona de fato
+
+Não usa `material.Stock` nem compõe saldo na mão. Usa o cubo de relatório:
 
 ```
-disponível = Stock.quantity
-             onde status = FREE
-             e stockCluster ∈ (clusters que valem para revenda)
-             − Reservation ativas
+POST /system/data/dataSourceOpRead
+  { "code": "/salesbreath/stockAvailabilityCube",
+    "parameters": { SHOW_PRODUCT: true, SHOW_PRODUCT_PACKING: true, SHOW_SCHEDULE: true } }
 ```
 
-### Decidido em 2026-08-27
+Soma `quantity_balance` por `product_code`, zera negativos, grava em
+`hub_produtos.estoque_disponivel`. **`quantity_balance` já É o disponível para
+venda** — o cubo entrega o líquido, incluindo o desconto de saída comprometida
+(`quantity_outgoing`, coluna separada no mesmo cubo). Não é preciso descontar
+reserva por fora.
 
-| Questão | Decisão |
+Uma chamada devolve a base inteira (~3.000 linhas): o custo no Zen **não**
+depende de quantos SKUs interessam, então filtrar produto não alivia nada.
+
+**Agendamento:** de hora em hora, 24/7, por **GitHub Actions**
+(`.github/workflows/sync-estoque.yml`) — não por Vercel Cron, porque o plano
+Hobby só aceita cron diário. Grava só o que mudou (~95% dos produtos não mudam
+entre rodadas).
+
+**Cobertura real:** 586 de 691 SKUs ativos têm estoque. Os demais têm estoque
+zero de verdade (os produtos existem no Zen, só não têm linha de estoque) — não
+é erro de SKU.
+
+**Complemento — previsão de chegada:** `api/disponibilidade.js` busca remessas
+em trânsito num **Supabase separado** (projeto FUP), dado que o Zen não tem. O
+estoque atual vem do Zen; o FUP entra **só** para a previsão.
+
+### O que estava escrito aqui antes, e por que saiu
+
+O plano de 2026-08-27 previa compor `Stock.quantity` com `status = FREE`,
+filtrar `stockCluster ∈ (MAQ)` e descontar `Reservation`. Nada disso foi usado:
+o cubo resolve tudo isso do lado do Zen. A decisão de restringir a máquinas
+novas foi **superada** — o sync traz tudo, e a segmentação por perfil de produto,
+se um dia for necessária, é decisão de exibição no catálogo, não do conector.
+A previsão de que consumíveis ficariam sem informação também não se
+concretizou: eles têm estoque normalmente.
+
+### Ainda vale do plano original
+
+| Questão | Decisão (mantida) |
 |---|---|
-| Quais `stockCluster` | **Somente máquinas novas (`MAQ`).** Todos os demais clusters são ignorados — avariadas, Mercado Livre e afins não podem aparecer como disponíveis para revenda |
-| SKU | **Mesmo código entre as fontes** — `hub_produtos.sku` = `Product.code` |
-| Unidade | **Sempre item unitário.** A Boxer ainda não trabalha com caixa master, então `productPacking` não introduz conversão por ora |
-| Previsão de chegada | **Não puxar do Zen agora** — será resolvida por outro caminho. `hub_produtos.previsao_chegada` continua nulo |
-
-Consequência do recorte `MAQ`: o estoque só terá valor para os produtos de
-máquina. Consumíveis, acessórios e peças continuam sem informação — o
-`status_estoque = 'sem_info'` da view segue valendo para eles, e o front segue
-omitindo o selo. Isso é intencional, não lacuna.
-
-### Em aberto — reserva desconta?
-
-`material.Reservation` tem status
-`SYSTEM/LOCKED/PREPARING/PREPARED/APPROVED/STARTED/FINISHED/DELETED`.
-Ainda não definido quais descontam do disponível.
-
-**Enquanto não houver decisão, o conector não deve descontar reserva nenhuma** —
-e isso precisa estar registrado, porque significa que o Hub pode mostrar como
-disponível um item já comprometido. Se isso for inaceitável, a decisão vira
-bloqueante.
-
-Caminho para resolver sem adivinhar: comparar, para alguns SKUs de máquina, o
-saldo do Zen com o que a operação considera vendável. A diferença mostra quais
-reservas contam.
+| SKU | **Mesmo código entre as fontes** — `hub_produtos.sku` = `Product.code`, normalizado com `UPPER(TRIM())` |
+| Unidade | **Sempre item unitário.** A Boxer não trabalha com caixa master |
+| Previsão de chegada | Não vem do Zen — vem do FUP (`api/disponibilidade.js`) |
 
 ---
 
@@ -103,8 +144,34 @@ rascunho e do carrinho; ao submeter, cria um `Quote`/`Sale` no Zen e passa a
 espelhar o status. Evita reimplementar regra de crédito e workflow que já existem
 no ERP.
 
-`sale.Quote` tem `quoteOpSubmit` e `quoteOpApprove` — o pedido do revendedor
-encaixa naturalmente como Quote até ser aprovado.
+> **ATUALIZADO 2026-09-02 — decisão mantida, detalhes confirmados na API real.**
+>
+> Implementado como **`sale.Sale`** (não `Quote`), em `api/push-pedido.js`,
+> validado com venda real: pedido HUB-2026-00001 virou a venda **47662** no Zen.
+> `company` = TEKSP (id **1009**). `saleProfile` = DEFAULT (id **1001**), que
+> aponta para o workflow **"Venda padrão"** — confirmado como o correto.
+> `SaleItem` exige o id do **productPacking**, não o do `Product`: resolver com
+> `/catalog/product/product?q=code==<sku>` e depois
+> `/catalog/product/productPacking?q=product.id==<id>`.
+>
+> **São dois níveis de status, e a distinção importa para a tela:**
+> `sale.status` é o enum duro (`PREPARED`, `PICKING`, `APPROVED`) e fica em
+> `PREPARED` durante todo o processo. Quem conta a história útil é o **nó atual
+> do workflow**, lido em `/system/workflow/workpieceNode` com
+> `workflowNode.description` — valores reais em uso: `Análise de Crédito`,
+> `Aguardando limite`, `Aguardando importação`, `Pedido aprovado`,
+> `Pedido reprovado`, `WEB Pronta entrega`, `Programado`.
+>
+> ⚠ **Armadilha:** `workpiece.id` **não** é o id da venda. Use
+> `sale.workpiece.id`, e o vínculo de volta vem em `workpiece.source`, no
+> formato `/sale/sale:<saleId>`. Implementação de referência já pronta em
+> `Tekweld/bav-boxer` → `backend/app/zen_pedidos.py`. Não reinventar.
+>
+> A **timeline do cliente deve espelhar `workflowNode.description`**, não
+> `sale.status`.
+
+`sale.Quote` tem `quoteOpSubmit` e `quoteOpApprove` — a alternativa Quote nunca
+chegou a ser testada, já que `Sale` funcionou.
 
 Implicação prática: `hub_pedidos.status` deixa de ser decidido pelo Hub e passa a
 ser campo espelhado. O único status que o Hub controla sozinho é `rascunho`.
@@ -138,6 +205,24 @@ outro projeto, que também trata de pedidos, crédito, estoque e workflow do Zen
   `hub_pedidos.status = aprovado`. Quem manda?
 
 Duplicar o conector é o caminho mais rápido no curto prazo e o mais caro depois.
+
+> **RESOLVIDO por André em 2026-09-01.** A divisão é por etapa do pedido:
+>
+> - **Hub = portão + motor de política** *antes* da submissão. É onde vivem
+>   preço, estoque, crédito e regra comercial — inteligência que **não existe no
+>   Zen**, e por isso o Hub é insubstituível nessa etapa.
+> - **Zen = dono do pedido** a partir da submissão.
+> - **Monitor de Pedidos = a administração do pedido.** O ADM de Vendas trabalha
+>   o pedido lá, não no Hub. Hub e Monitor **se integram via Zen**, não
+>   diretamente.
+>
+> Consequência prática: **não construir tela de aprovação de pedido no
+> `admin.html`** — seria duplicar o Monitor. Depois da submissão o Hub é só
+> registro e espelho.
+>
+> O portão é **binário**: qualquer inconsistência de estoque ou financeira
+> trava o pedido, e o cliente resolve pelo próprio Hub antes de reenviar. Não
+> existe pedido pendurado esperando exceção.
 
 ---
 
@@ -308,19 +393,29 @@ não presumir que é só dígitos.
 
 Nada abaixo deve ser presumido a partir do nome do endpoint ou do schema:
 
-**Bloqueia o conector de cliente:**
-- [ ] Credenciais: `username`, `password` e o valor do header `tenant`
-- [ ] Sintaxe do parâmetro `q` — dá para filtrar por CNPJ direto?
-- [ ] Formato de `documentNumber` no Zen (com ou sem máscara)
-- [ ] **Critério de "cliente ativo"** — `Person` não tem essa flag
-- [ ] Uso real de `category1`–`category5` em `Person`
+**Bloqueava o conector de cliente — TUDO RESOLVIDO, o conector está em produção:**
+- [x] Credenciais e header `tenant` (= `boxer`) — ver 5a
+- [x] Sintaxe do `q` — é RSQL, ver 5a
+- [x] Formato de `documentNumber` — normalizado com `normDoc()` dos dois lados
+- [x] Critério de "cliente ativo" — tag `blocked` no Zen entra como `suspenso`
+- [x] `category1` — é onde vive o canal (Varejo / Híbrido / Ecommerce)
 
-**Depois:**
-- [ ] Nós de workflow cadastrados (`WorkflowNode`)
-- [ ] Valores aceitos por `Watcher.event`
-- [ ] Se há ambiente de sandbox ou só produção
+**Depois — resolvido em 2026-09-01/02:**
+- [x] Nós de workflow cadastrados — listados na seção 3
+- [ ] Valores aceitos por `Watcher.event` — **ainda em aberto.** Vale testar
+      antes de construir sync de status por cron: o webhook nativo eliminaria o
+      polling
+- [ ] Se há ambiente de sandbox ou só produção — na prática, só produção
 
-**Pendência declarada — estoque e previsão** (André resolve em outro momento):
-- [ ] Quais status de `Reservation` descontam do disponível
-- [ ] Código exato do cluster de máquinas novas (`MAQ`)
-- [ ] Origem da previsão de chegada (não virá do Zen por ora)
+**Estoque e previsão — RESOLVIDO, ver seção 1 reescrita:**
+- [x] Reserva: o cubo já entrega o líquido, não é preciso descontar por fora
+- [x] Cluster `MAQ`: decisão superada — o cubo é a fonte, sem filtro de cluster
+- [x] Previsão de chegada: vem do FUP (`api/disponibilidade.js`), não do Zen
+
+**Aberto de verdade hoje:**
+- [ ] **Endereços não são sincronizados.** `hub_enderecos` está vazia para os
+      5.378 clientes ativos — nada escreve nela. O `Person` do Zen já traz
+      `zipcode`/`street`/`number`/`complement`/`district`/`city`, e o
+      `personAddress` é entidade relacionada para endereços adicionais.
+      Sem isso, a tela de cadastro mostra vazio e o pedido não tem endereço de
+      entrega confirmável.

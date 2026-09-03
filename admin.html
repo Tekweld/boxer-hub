@@ -128,8 +128,6 @@ select,input,textarea{font-family:Outfit,sans-serif}
       <h2 class="page-title">Clientes</h2>
       <div style="display:flex;gap:8px;align-items:center">
         <span id="zenSyncStatus" style="font-size:12px;color:#718096"></span>
-        <button class="btn btn-primary" onclick="syncZenClientes()" id="btnSyncZen">Sincronizar Clientes Zen</button>
-        <button class="btn btn-outline btn-sm" onclick="explorarZenEndereco()" id="btnExplorarZen" title="Diagnostico temporario -- ver estrutura de endereco, tabela de preco e credito no Zen">Diagnostico Zen</button>
       </div>
     </div>
     <div id="clientesStats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
@@ -358,29 +356,6 @@ async function syncZenClientes() {
   }
 }
 
-async function explorarZenEndereco() {
-  const btn = document.getElementById('btnExplorarZen');
-  btn.disabled = true;
-  btn.textContent = 'Consultando...';
-  try {
-    const res = await fetch('/api/zen-explorar', {
-      headers: { 'Authorization': 'Bearer ' + SESSION.access_token }
-    });
-    const data = await res.json();
-    if (!res.ok || data.ok === false) throw new Error(data.erro || data.error || 'Erro desconhecido');
-    const bloco = { endereco: data.endereco, preco_credito: data.preco_credito, campos_presentes: data.campos_presentes };
-    openModal(`
-      <h3 style="font-size:18px;margin-bottom:16px;color:#1d327b">Diagnostico: endereco, preco e credito no Zen</h3>
-      <pre style="font-size:11px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;overflow:auto;max-height:60vh">${JSON.stringify(bloco, null, 2).replace(/</g,'&lt;')}</pre>
-      <div class="form-actions"><button class="btn btn-outline" onclick="closeModal()">Fechar</button></div>
-    `);
-  } catch (e) {
-    toast('Erro: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Diagnostico Zen';
-  }
-}
 
 function openNovoUsuario() {
   openModal(`

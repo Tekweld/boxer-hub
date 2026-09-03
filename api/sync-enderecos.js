@@ -75,7 +75,7 @@ module.exports = async function handler(req, res) {
   const r = {
     offset_inicial: offset, clientes_lidos: 0, pessoas_no_zen: 0,
     adicionais_no_zen: 0, a_gravar: 0, gravados: 0,
-    sem_endereco_no_zen: 0, erros: [], dry_run: dryRun
+    sem_endereco_no_zen: 0, ignorados_id_nao_numerico: 0, erros: [], dry_run: dryRun
   };
 
   try {
@@ -97,9 +97,19 @@ module.exports = async function handler(req, res) {
       r.clientes_lidos += clientes.length;
       cursor += clientes.length;
 
+      // So id numerico vai para o Zen. Ha clientes de teste gravados com
+      // erp_cliente_id tipo 'TESTE-<uuid>' (vindos do onboarding), e o RSQL
+      // rejeita a expressao INTEIRA quando um dos termos nao e numero
+      // ("For input string"), derrubando o lote todo por causa de uma linha.
       const idHub = {};
-      clientes.forEach(c => { idHub[String(c.erp_cliente_id)] = c.id; });
+      let ignorados = 0;
+      clientes.forEach(c => {
+        if (/^\d+$/.test(String(c.erp_cliente_id))) idHub[String(c.erp_cliente_id)] = c.id;
+        else ignorados++;
+      });
+      r.ignorados_id_nao_numerico += ignorados;
       const ids = Object.keys(idHub);
+      if (!ids.length) continue;
 
       const linhas = [];
       const vistos = {};

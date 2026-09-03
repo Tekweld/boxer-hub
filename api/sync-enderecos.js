@@ -116,21 +116,37 @@ module.exports = async function handler(req, res) {
       const assinatura = o => [o.zipcode, o.street, o.number, o.complement]
         .map(v => String(v ?? '').trim().toUpperCase().replace(/\s+/g, ' ')).join('|');
 
+      // Limites reais das colunas de hub_enderecos. Sem cortar aqui, uma unica
+      // linha grande derruba o lote INTEIRO de 200 no PostgREST (22001, "value
+      // too long") -- foi assim que ~1.300 enderecos se perderam na primeira
+      // rodada. O campo que estoura na pratica e `numero`: no Zen tem gente que
+      // digitou "SN QUADRA 12 LOTE 4" no numero.
+      const corta = (v, n) => (v == null ? null : String(v).slice(0, n));
+
       const monta = (clienteId, erpId, tipo, o, padrao) => {
         if (!o.zipcode && !o.street) return;
         const set = vistos[clienteId] || (vistos[clienteId] = new Set());
         const sig = assinatura(o);
         if (set.has(sig)) return;
         set.add(sig);
+        // Numero que nao cabe nao e lixo, e endereco mal digitado no Zen: o
+        // texto inteiro vai para o complemento, para o entregador nao perder a
+        // quadra/lote que estava la.
+        const numeroInteiro = o.number != null ? String(o.number) : null;
+        const estourou = numeroInteiro && numeroInteiro.length > 20;
+        const complemento = estourou
+          ? [numeroInteiro, o.complement].filter(Boolean).join(' — ')
+          : o.complement;
+
         linhas.push({
           cliente_id: clienteId, erp_endereco_id: erpId, tipo,
-          cep: o.zipcode || null,
-          logradouro: o.street || null,
-          numero: o.number != null ? String(o.number) : null,
-          complemento: o.complement || null,
-          bairro: o.district || null,
-          cidade: o.city?.name || null,
-          uf: o.city?.state?.code || null,
+          cep: corta(o.zipcode, 10) || null,
+          logradouro: corta(o.street, 200) || null,
+          numero: corta(numeroInteiro, 20),
+          complemento: corta(complemento, 100) || null,
+          bairro: corta(o.district, 100) || null,
+          cidade: corta(o.city?.name, 100) || null,
+          uf: corta(o.city?.state?.code, 2) || null,
           padrao, ativo: true
         });
       };

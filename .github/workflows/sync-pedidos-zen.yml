@@ -1,0 +1,52 @@
+# Mantem pedido do Hub e venda do Zen em dia, nos dois sentidos: empurra o que
+# ficou para tras e traz a etapa do workflow de volta.
+#
+# A cada 15 min: e o intervalo em que o revendedor ainda aceita "ja atualiza",
+# e o volume e baixo (dezenas de pedidos abertos, nao milhares). Se o Watcher
+# nativo do Zen (webhook) se provar utilizavel, isto vira redundancia e o
+# intervalo pode cair para horario.
+name: Sync pedidos ZenERP
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: sync-pedidos-zen
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar /api/sync-pedidos-zen
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          corpo=$(mktemp)
+          codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+            -X POST 'https://hub.boxersoldas.com.br/api/sync-pedidos-zen' \
+            -H "x-cron-secret: $CRON_SECRET" \
+            --max-time 120)
+
+          echo "HTTP $codigo"
+          cat "$corpo"; echo
+
+          if [ "$codigo" != "200" ]; then
+            echo "::error::sync-pedidos-zen respondeu $codigo"
+            exit 1
+          fi
+
+          # Pedido que nao chega ao Zen e pedido que ninguem separa. Falhar aqui
+          # e a unica forma de isso virar sinal em vez de silencio.
+          falhas=$(jq -r '.falhas_push | length' "$corpo")
+          if [ "$falhas" != "0" ]; then
+            echo "::error::$falhas pedido(s) nao entraram no Zen"
+            exit 1
+          fi

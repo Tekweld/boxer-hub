@@ -664,6 +664,7 @@ async function confirmarEnvio() {
     }
 
     // Submetido: o rascunho deixou de existir como rascunho.
+    const pedidoId = _revisao.pedidoId;
     clearPedidoEmEdicao();
     ultimasViolacoes = [];
     _revisao = null;
@@ -672,6 +673,13 @@ async function confirmarEnvio() {
     clearCart();
     toast('Pedido ' + resultado.numero + ' enviado!');
     showTab('lista', document.querySelectorAll('.tab')[0]);
+
+    // Espelha no ERP sem prender o cliente: o pedido JA passou pelo portao e ja
+    // esta submetido: se o Zen estiver fora do ar, isso e problema nosso, nao
+    // dele. Falhou aqui, o api/sync-pedidos-zen empurra depois -- por isso nem
+    // avisa erro na tela nem desfaz nada.
+    enviarAoErp(pedidoId);
+
     loadPedidos();
   } catch (e) {
     toast('Erro: ' + erroLegivel(e), 'error');
@@ -680,6 +688,25 @@ async function confirmarEnvio() {
       btn.disabled = false;
       btn.textContent = 'Confirmar e enviar';
     }
+  }
+}
+
+// Best-effort, de proposito: nunca lanca e nunca fala com o usuario. O unico
+// caminho garantido de entrega no Zen e o job (api/sync-pedidos-zen); esta
+// chamada existe so para o caso normal chegar la em segundos em vez de esperar
+// a proxima rodada.
+async function enviarAoErp(pedidoId) {
+  try {
+    const r = await fetch('/api/push-pedido', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SESSION.access_token },
+      body: JSON.stringify({ pedido_id: pedidoId, dry: 0 })
+    });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) console.warn('[hub] push ao Zen adiado para o job:', out.error || r.status);
+    else setTimeout(loadPedidos, 1200); // ja mostra a etapa "Enviado ao ERP"
+  } catch (e) {
+    console.warn('[hub] push ao Zen adiado para o job:', e.message);
   }
 }
 
@@ -727,7 +754,7 @@ async function loadPedidos() {
   const wrap = document.getElementById('pedidosList');
   const status = document.getElementById('filtroStatus').value;
 
-  let url = '/hub_pedidos?select=id,numero,status,origem,valor_total,criado_em,hub_clientes(razao_social)&order=criado_em.desc&ativo=eq.true';
+  let url = '/hub_pedidos?select=id,numero,status,origem,valor_total,criado_em,erp_workflow_status,hub_clientes(razao_social)&order=criado_em.desc&ativo=eq.true';
   if (status) url += '&status=eq.' + status;
 
   try {
@@ -741,7 +768,7 @@ async function loadPedidos() {
       <tbody>${pedidos.map(p => `<tr>
         <td><strong>${p.numero || 'Rascunho'}</strong></td>
         <td>${p.hub_clientes?.razao_social || '—'}</td>
-        <td><span class="status-badge status-${p.status}">${p.status.replace('_', ' ')}</span></td>
+        <td><span class="status-badge status-${p.status}">${esc(etapaVisivel(p))}</span></td>
         <td>${fmtMoeda(p.valor_total)}</td>
         <td>${fmtData(p.criado_em)}</td>
         <td><button class="btn btn-outline btn-sm" onclick="openPedido('${p.id}')">Ver</button></td>
@@ -757,6 +784,8 @@ async function openPedido(id) {
     const [pedido] = await sb('/hub_pedidos?id=eq.' + id + '&select=*,hub_clientes(razao_social,cnpj),hub_enderecos(logradouro,numero,cidade,uf)');
     const itens = await sb('/hub_pedido_itens?pedido_id=eq.' + id + '&select=*,hub_produtos(nome,sku)&order=criado_em.asc');
     if (!pedido) return;
+    const eventos = await sb('/hub_pedido_eventos?pedido_id=eq.' + id + '&select=etapa,origem,detalhe,criado_em&order=criado_em.asc')
+      .catch(() => []);
 
     openModal(`
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
@@ -781,6 +810,7 @@ async function openPedido(id) {
         </div>
       </div>
       ${pedido.ordem_compra ? `<div style="font-size:13px;color:#4a5568;margin-bottom:12px"><strong>OC:</strong> ${pedido.ordem_compra}</div>` : ''}
+      ${renderTimeline(pedido, eventos)}
       ${itens.length ? `<div style="overflow-x:auto"><table>
         <thead><tr><th>SKU</th><th>Produto</th><th>Qtd</th><th>Preco Unit.</th><th>Subtotal</th></tr></thead>
         <tbody>${itens.map(i => `<tr>
@@ -799,6 +829,66 @@ async function openPedido(id) {
   } catch (e) {
     toast('Erro ao abrir pedido', 'error');
   }
+}
+
+// O nome do no do workflow no Zen e escrito para quem opera o ERP, nao para o
+// revendedor. 'Aguardando importacao' soa como problema; 'Analise de Credito'
+// nao diz o que ele deve fazer. Aqui vira frase de cliente -- e a que ele nao
+// entender vira telefonema, que e justamente o que queremos evitar.
+const ETAPA_CLIENTE = {
+  'Enviado ao ERP':         { titulo: 'Pedido recebido',            texto: 'Seu pedido chegou ao nosso sistema e entrou na fila de conferencia.' },
+  'Inicio':                 { titulo: 'Em conferencia',             texto: 'Nossa equipe comercial esta conferindo os itens.' },
+  'Início':                 { titulo: 'Em conferencia',             texto: 'Nossa equipe comercial esta conferindo os itens.' },
+  'Orcamento':              { titulo: 'Em conferencia',             texto: 'Nossa equipe comercial esta conferindo os itens.' },
+  'Orçamento':              { titulo: 'Em conferencia',             texto: 'Nossa equipe comercial esta conferindo os itens.' },
+  'WEB Pronta entrega':     { titulo: 'Separacao',                  texto: 'Itens reservados no estoque para separacao.' },
+  'Programado':             { titulo: 'Programado',                 texto: 'Pedido programado para faturamento.' },
+  'Analise de Credito':     { titulo: 'Analise financeira',         texto: 'O financeiro esta avaliando o pedido. Voce nao precisa fazer nada agora.' },
+  'Análise de Crédito':     { titulo: 'Analise financeira',         texto: 'O financeiro esta avaliando o pedido. Voce nao precisa fazer nada agora.' },
+  'Aguardando limite':      { titulo: 'Aguardando limite',          texto: 'O pedido supera o limite disponivel. Fale com o financeiro para liberar.' },
+  'Aguardando importacao':  { titulo: 'Reposicao a caminho',        texto: 'Parte dos itens esta em reposicao. Nossa equipe vai confirmar o prazo.' },
+  'Aguardando importação':  { titulo: 'Reposicao a caminho',        texto: 'Parte dos itens esta em reposicao. Nossa equipe vai confirmar o prazo.' },
+  'Pedido aprovado':        { titulo: 'Pedido aprovado',            texto: 'Aprovado e liberado para faturamento.' },
+  'Pedido reprovado':       { titulo: 'Pedido nao aprovado',        texto: 'O pedido nao foi aprovado. Nossa equipe entra em contato.' }
+};
+
+// Depois que a venda existe no Zen, quem conta a verdade sobre o pedido e a
+// etapa do workflow, nao o status do Hub (que fica em 'submetido' para sempre).
+function etapaVisivel(p) {
+  const t = ETAPA_CLIENTE[p.erp_workflow_status];
+  if (t) return t.titulo;
+  return String(p.status || '').replace('_', ' ');
+}
+
+function renderTimeline(pedido, eventos) {
+  // Rascunho nao tem historia para contar.
+  if (pedido.status === 'rascunho') return '';
+
+  // Submetido e ainda sem eco do ERP: o silencio e que assusta. Melhor dizer
+  // que esta a caminho do que nao mostrar nada.
+  const linhas = (eventos || []).slice();
+  if (!linhas.length) {
+    return `<div style="padding:12px;background:#f7fafc;border-radius:8px;margin-bottom:16px;font-size:13px;color:#4a5568">
+      <strong>Pedido enviado.</strong> Estamos registrando no sistema — a etapa aparece aqui em instantes.
+    </div>`;
+  }
+
+  const itens = linhas.map((ev, i) => {
+    const t = ETAPA_CLIENTE[ev.etapa] || { titulo: ev.etapa, texto: '' };
+    const atual = i === linhas.length - 1;
+    const cor = atual ? '#25bbee' : '#cbd5e0';
+    return `<li style="position:relative;padding:0 0 14px 22px;border-left:2px solid ${i === linhas.length - 1 ? '#e2e8f0' : '#e2e8f0'}">
+      <span style="position:absolute;left:-7px;top:2px;width:12px;height:12px;border-radius:50%;background:${cor};border:2px solid #fff;box-shadow:0 0 0 1px ${cor}"></span>
+      <div style="font-size:13px;font-weight:${atual ? 600 : 500};color:${atual ? '#1d327b' : '#4a5568'}">${esc(t.titulo)}</div>
+      ${t.texto ? `<div style="font-size:12px;color:#718096;margin-top:2px">${esc(t.texto)}</div>` : ''}
+      <div style="font-size:11px;color:#a0aec0;margin-top:2px">${fmtData(ev.criado_em)}</div>
+    </li>`;
+  }).join('');
+
+  return `<div style="margin-bottom:16px">
+    <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Acompanhamento</div>
+    <ul style="list-style:none;margin:0;padding:0">${itens}</ul>
+  </div>`;
 }
 
 // Quais acoes o pedido aceita depende de onde ele esta no fluxo.

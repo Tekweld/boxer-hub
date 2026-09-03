@@ -1,0 +1,89 @@
+# Popula comercial.hub_enderecos a partir do Zen.
+#
+# Rodada manual, nao agendada: endereco muda pouco e a carga inicial e de
+# ~5.400 clientes. Depois que a base estiver completa, a manutencao pode
+# virar um cron semanal -- por enquanto e disparo pela aba Actions.
+#
+# O endpoint tem orcamento de tempo (45s) porque a funcao do Vercel morre em
+# 60s. Ele devolve `concluido` e `proximo_offset`; este job encadeia as
+# rodadas ate concluir, que e justamente o que nao dava pra fazer de dentro
+# de uma unica chamada.
+name: Sync enderecos ZenERP
+
+on:
+  workflow_dispatch:
+    inputs:
+      offset:
+        description: 'Offset inicial (retomar de onde parou)'
+        required: false
+        default: '0'
+      dry:
+        description: 'Simular sem gravar (1 = sim)'
+        required: false
+        default: '0'
+
+concurrency:
+  group: sync-enderecos
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Encadear /api/sync-enderecos ate concluir
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          OFFSET: ${{ github.event.inputs.offset }}
+          DRY: ${{ github.event.inputs.dry }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          offset="${OFFSET:-0}"
+          dry="${DRY:-0}"
+          total_gravados=0
+          rodada=0
+
+          # Teto de rodadas: ~5.400 clientes em fatias de 100 cabem folgado.
+          # O teto existe pra nao girar pra sempre se o endpoint parar de
+          # avancar o offset por bug.
+          while [ "$rodada" -lt 120 ]; do
+            rodada=$((rodada + 1))
+            corpo=$(mktemp)
+            codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+              -X POST "https://hub.boxersoldas.com.br/api/sync-enderecos?offset=${offset}&dry=${dry}" \
+              -H "x-cron-secret: $CRON_SECRET" \
+              --max-time 120)
+
+            echo "--- rodada $rodada (offset $offset) -> HTTP $codigo"
+            cat "$corpo"; echo
+
+            if [ "$codigo" != "200" ]; then
+              echo "::error::sync-enderecos respondeu $codigo no offset $offset"
+              exit 1
+            fi
+
+            gravados=$(jq -r '.gravados // 0' "$corpo")
+            total_gravados=$((total_gravados + gravados))
+            concluido=$(jq -r '.concluido // false' "$corpo")
+            proximo=$(jq -r '.proximo_offset // empty' "$corpo")
+
+            if [ "$concluido" = "true" ]; then
+              echo "Concluido. Total gravado nesta execucao: $total_gravados"
+              exit 0
+            fi
+
+            # Sem proximo_offset e sem concluido = o endpoint nao sabe seguir.
+            # Parar e falhar e melhor que repetir a mesma fatia em loop.
+            if [ -z "$proximo" ] || [ "$proximo" = "$offset" ]; then
+              echo "::error::offset nao avancou (ficou em $offset) -- abortando"
+              exit 1
+            fi
+            offset="$proximo"
+          done
+
+          echo "::error::teto de rodadas atingido sem concluir (ultimo offset $offset)"
+          exit 1

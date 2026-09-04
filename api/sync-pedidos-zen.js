@@ -64,6 +64,41 @@ module.exports = async function handler(req, res) {
     return res.status(401).json({ error: 'Autenticacao necessaria' });
   }
 
+  // Diagnostico: devolve o payload cru do Zen para uma venda, em vez de
+  // sincronizar. Existe dentro deste endpoint (e nao num /api/debug proprio)
+  // porque o plano Hobby limita a 12 Serverless Functions e nao ha vaga.
+  const debugSale = req.query?.debug_sale || req.body?.debug_sale;
+  if (debugSale) {
+    try {
+      const vendas = await zenGet('/sale/sale', { q: 'id==' + debugSale, max: 5, limite: 5 });
+      const venda = vendas[0] || null;
+      const wpId = venda?.workpiece?.id;
+      let nos = null, nosPorSource = null;
+      if (wpId) {
+        nos = await zenGet('/system/workflow/workpieceNode', {
+          q: 'workpiece.id==' + wpId, max: 50, limite: 50 });
+      }
+      // Caminho alternativo: achar o workpiece pelo `source`, que e como o
+      // bav-boxer faz a volta ('/sale/sale:<id>').
+      try {
+        const wps = await zenGet('/system/workflow/workpiece', {
+          q: 'source=="/sale/sale:' + debugSale + '"', max: 5, limite: 5 });
+        nosPorSource = wps;
+      } catch (e) { nosPorSource = { erro: e.message.slice(0, 200) }; }
+
+      return res.status(200).json({
+        ok: true, debug: true,
+        venda_campos: venda ? Object.keys(venda) : null,
+        venda,
+        workpiece_id: wpId || null,
+        nos,
+        workpiece_por_source: nosPorSource
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 400) });
+    }
+  }
+
   const r = {
     pendentes: 0, empurrados: 0, falhas_push: [],
     acompanhados: 0, etapas_lidas: 0, mudancas: 0, erros: []

@@ -11,6 +11,11 @@ on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
+    inputs:
+      debug_sale:
+        description: 'Id da venda no Zen para diagnostico (vazio = sync normal)'
+        required: false
+        default: ''
 
 concurrency:
   group: sync-pedidos-zen
@@ -23,25 +28,34 @@ jobs:
       - name: Chamar /api/sync-pedidos-zen
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          DEBUG_SALE: ${{ github.event.inputs.debug_sale }}
         run: |
           if [ -z "$CRON_SECRET" ]; then
             echo "CRON_SECRET nao configurado nos secrets do repositorio."
             exit 1
           fi
 
+          url='https://hub.boxersoldas.com.br/api/sync-pedidos-zen'
+          if [ -n "$DEBUG_SALE" ]; then
+            url="${url}?debug_sale=${DEBUG_SALE}"
+          fi
+
           corpo=$(mktemp)
           codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
-            -X POST 'https://hub.boxersoldas.com.br/api/sync-pedidos-zen' \
+            -X POST "$url" \
             -H "x-cron-secret: $CRON_SECRET" \
             --max-time 120)
 
           echo "HTTP $codigo"
-          cat "$corpo"; echo
+          jq . "$corpo" 2>/dev/null || cat "$corpo"; echo
 
           if [ "$codigo" != "200" ]; then
             echo "::error::sync-pedidos-zen respondeu $codigo"
             exit 1
           fi
+
+          # Modo diagnostico nao sincroniza nada -- nao ha o que checar depois.
+          if [ -n "$DEBUG_SALE" ]; then exit 0; fi
 
           # Pedido que nao chega ao Zen e pedido que ninguem separa. Falhar aqui
           # e a unica forma de isso virar sinal em vez de silencio.

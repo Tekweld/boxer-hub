@@ -67,6 +67,24 @@ module.exports = async function handler(req, res) {
   // Diagnostico: devolve o payload cru do Zen para uma venda, em vez de
   // sincronizar. Existe dentro deste endpoint (e nao num /api/debug proprio)
   // porque o plano Hobby limita a 12 Serverless Functions e nao ha vaga.
+  // Amostra crua de workpiece/workpieceNode: serve para descobrir o formato do
+  // `source` (o vinculo de volta para a venda) sem chutar.
+  if (req.query?.debug_wp) {
+    try {
+      const wps = await zenGet('/system/workflow/workpiece', { max: 5, limite: 5 });
+      const nos = await zenGet('/system/workflow/workpieceNode', { max: 5, limite: 5 });
+      return res.status(200).json({
+        ok: true, debug: true,
+        workpiece_exemplos: wps.slice(0, 3),
+        workpiece_campos: wps[0] ? Object.keys(wps[0]) : null,
+        no_exemplos: nos.slice(0, 3),
+        no_campos: nos[0] ? Object.keys(nos[0]) : null
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 400) });
+    }
+  }
+
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;
   if (debugSale) {
     try {

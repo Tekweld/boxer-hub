@@ -37,7 +37,11 @@ jobs:
 
           url='https://hub.boxersoldas.com.br/api/sync-pedidos-zen'
           if [ -n "$DEBUG_SALE" ]; then
-            url="${url}?debug_sale=${DEBUG_SALE}"
+            if [ "$DEBUG_SALE" = "wp" ]; then
+              url="${url}?debug_wp=1"
+            else
+              url="${url}?debug_sale=${DEBUG_SALE}"
+            fi
           fi
 
           corpo=$(mktemp)
@@ -64,3 +68,4 @@ jobs:
             echo "::error::$falhas pedido(s) nao entraram no Zen"
             exit 1
           fi
+

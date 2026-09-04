@@ -85,6 +85,38 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Compara as vendas recentes: quais tem instancia de workflow e quais nao.
+  // A pergunta que isso responde: a venda criada pela API nasce fora do
+  // workflow, ou so demora a entrar?
+  if (req.query?.debug_recentes) {
+    try {
+      const desde = String(req.query.debug_recentes);
+      const vendas = await zenGet('/sale/sale', { q: 'id>=' + desde, max: 200, limite: 400 });
+      const wps = await zenGet('/system/workflow/workpiece', { max: 200, limite: 2000 });
+      const wpPorSale = {};
+      wps.forEach(w => {
+        const m = /\/sale\/sale:(\d+)/.exec(w.source || '');
+        if (m) wpPorSale[m[1]] = w.workflowNode?.description || w.status;
+      });
+      const resumo = vendas.map(v => ({
+        id: v.id, status: v.status,
+        profile: v.saleProfile?.code,
+        tags: v.tags || null,
+        etapa: wpPorSale[String(v.id)] || null
+      }));
+      return res.status(200).json({
+        ok: true, debug: true,
+        vendas: resumo.length,
+        com_workflow: resumo.filter(v => v.etapa).length,
+        sem_workflow: resumo.filter(v => !v.etapa).length,
+        por_status: resumo.reduce((a, v) => { a[v.status] = (a[v.status] || 0) + 1; return a; }, {}),
+        amostra: resumo.slice(-25)
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 400) });
+    }
+  }
+
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;
   if (debugSale) {
     try {

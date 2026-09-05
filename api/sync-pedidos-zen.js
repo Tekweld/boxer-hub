@@ -168,11 +168,26 @@ module.exports = async function handler(req, res) {
     const saleId = String(req.query.preparar);
     const headers = await zenAuth();
     const tentativas = [];
+
+    // PUT /sale/sale e o caminho: reclamou de company/person obrigatorios, ou
+    // seja, espera o objeto inteiro, nao um patch. Le a venda e devolve com o
+    // status trocado (read-modify-write).
+    const atual = (await zenGet('/sale/sale', { q: 'id==' + saleId, max: 1, limite: 1 }))[0];
+    if (!atual) return res.status(404).json({ error: 'venda nao encontrada no Zen' });
+    const novoStatus = String(req.query.status || 'PREPARED');
+
     const formas = [
-      { metodo: 'PUT',   url: `/sale/sale/${saleId}`, body: { id: Number(saleId), status: 'PREPARED' } },
-      { metodo: 'PUT',   url: '/sale/sale',           body: { id: Number(saleId), status: 'PREPARED' } },
-      { metodo: 'PATCH', url: `/sale/sale/${saleId}`, body: { status: 'PREPARED' } },
-      { metodo: 'POST',  url: '/sale/sale',           body: { id: Number(saleId), status: 'PREPARED' } }
+      // Minimo com os obrigatorios explicitos.
+      { metodo: 'PUT', url: '/sale/sale', rotulo: 'minimo', body: {
+          id: Number(saleId),
+          company: { id: atual.company?.id },
+          person: { id: atual.person?.id },
+          saleProfile: { id: atual.saleProfile?.id },
+          status: novoStatus,
+          tags: atual.tags || undefined
+        } },
+      // O objeto inteiro de volta, se o minimo nao bastar.
+      { metodo: 'PUT', url: '/sale/sale', rotulo: 'completo', body: { ...atual, status: novoStatus } }
     ];
     for (const f of formas) {
       try {
@@ -180,10 +195,10 @@ module.exports = async function handler(req, res) {
           method: f.metodo, headers, body: JSON.stringify(f.body)
         });
         const txt = (await rr.text()).slice(0, 300);
-        tentativas.push({ forma: f.metodo + ' ' + f.url, status: rr.status, resposta: txt });
+        tentativas.push({ forma: f.metodo + ' ' + f.url + ' (' + f.rotulo + ')', status: rr.status, resposta: txt });
         if (rr.ok) break;
       } catch (e) {
-        tentativas.push({ forma: f.metodo + ' ' + f.url, erro: e.message.slice(0, 150) });
+        tentativas.push({ forma: f.metodo + ' ' + f.url + ' (' + f.rotulo + ')', erro: e.message.slice(0, 150) });
       }
     }
     // Confere o efeito real, que e o que importa -- nao o codigo devolvido.

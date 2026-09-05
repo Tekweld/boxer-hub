@@ -92,12 +92,24 @@ module.exports = async function handler(req, res) {
     try {
       const desde = String(req.query.debug_recentes);
       const vendas = await zenGet('/sale/sale', { q: 'id>=' + desde, max: 200, limite: 400 });
-      const wps = await zenGet('/system/workflow/workpiece', { max: 200, limite: 2000 });
+
+      // Busca o workpiece PELO source das vendas em questao. A primeira versao
+      // pegava os 2000 primeiros workpieces sem filtro -- que sao os mais
+      // antigos -- e concluia "sem workflow" para vendas recentes que na
+      // verdade nunca tinham sido consultadas.
       const wpPorSale = {};
-      wps.forEach(w => {
-        const m = /\/sale\/sale:(\d+)/.exec(w.source || '');
-        if (m) wpPorSale[m[1]] = w.workflowNode?.description || w.status;
-      });
+      const ids = vendas.map(v => String(v.id));
+      for (let i = 0; i < ids.length; i += 40) {
+        const lote = ids.slice(i, i + 40);
+        const wps = await zenGet('/system/workflow/workpiece', {
+          q: '(' + lote.map(id => 'source=="/sale/sale:' + id + '"').join(',') + ')',
+          max: 100, limite: 200
+        });
+        wps.forEach(w => {
+          const m = /\/sale\/sale:(\d+)/.exec(w.source || '');
+          if (m) wpPorSale[m[1]] = w.workflowNode?.description || w.status;
+        });
+      }
       const resumo = vendas.map(v => ({
         id: v.id, status: v.status,
         profile: v.saleProfile?.code,
@@ -110,6 +122,14 @@ module.exports = async function handler(req, res) {
         com_workflow: resumo.filter(v => v.etapa).length,
         sem_workflow: resumo.filter(v => !v.etapa).length,
         por_status: resumo.reduce((a, v) => { a[v.status] = (a[v.status] || 0) + 1; return a; }, {}),
+        // A pergunta central: o que separa a venda que entrou no workflow da
+        // que nao entrou? Se for o status, isto mostra na hora.
+        workflow_por_status: resumo.reduce((a, v) => {
+          const k = v.status;
+          a[k] = a[k] || { com: 0, sem: 0 };
+          if (v.etapa) a[k].com++; else a[k].sem++;
+          return a;
+        }, {}),
         amostra: resumo.slice(-25)
       });
     } catch (e) {

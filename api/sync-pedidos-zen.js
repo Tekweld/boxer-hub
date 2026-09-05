@@ -142,12 +142,16 @@ module.exports = async function handler(req, res) {
   // quando nao existe. Serve para achar o que leva a venda de PREPARING para
   // PREPARED -- que e o que faz a instancia de workflow nascer.
   if (req.query?.debug_ops) {
+    // A doc do projeto sugeria sale.Quote com quoteOpSubmit/quoteOpApprove, e
+    // nunca testamos -- criamos sale.Sale direto. Se as operacoes de Quote
+    // existirem, a doc provavelmente estava certa: e o Quote que tem o rito de
+    // submissao, e e o rito que faz a instancia de workflow nascer.
     const candidatos = [
-      '/sale/saleOpPrepare', '/sale/saleOpSubmit', '/sale/saleOpClose',
-      '/sale/saleOpConfirm', '/sale/saleOpApprove', '/sale/saleOpFinish',
-      '/sale/saleOpCalculate', '/sale/saleOpRelease', '/sale/saleOpStart',
-      '/system/workflow/workpieceOpStart', '/system/workflow/workpieceOpMove',
-      '/system/workflow/workpieceOpNext', '/system/workflow/workpieceOpBack'
+      '/sale/quote', '/sale/quoteOpSubmit', '/sale/quoteOpApprove',
+      '/sale/quoteOpConvert', '/sale/quoteItem',
+      '/sale/saleOpChangeStatus', '/sale/saleOpPrepared', '/sale/saleOpUpdateStatus',
+      '/system/workflow/workpiece', '/system/workflow/workflowNode',
+      '/system/workflow/workpieceNode'
     ];
     const headers = await zenAuth();
     const achados = {};

@@ -160,6 +160,43 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({ ok: true, debug: true, sondagem: achados });
   }
 
+  // Tenta levar UMA venda de PREPARING para PREPARED. Nao existe endpoint de
+  // operacao (todos os candidatos deram 404), entao a transicao deve ser
+  // atualizacao do proprio recurso -- isto testa as formas possiveis, parando
+  // na primeira que funcionar, e diz exatamente qual funcionou.
+  if (req.query?.preparar) {
+    const saleId = String(req.query.preparar);
+    const headers = await zenAuth();
+    const tentativas = [];
+    const formas = [
+      { metodo: 'PUT',   url: `/sale/sale/${saleId}`, body: { id: Number(saleId), status: 'PREPARED' } },
+      { metodo: 'PUT',   url: '/sale/sale',           body: { id: Number(saleId), status: 'PREPARED' } },
+      { metodo: 'PATCH', url: `/sale/sale/${saleId}`, body: { status: 'PREPARED' } },
+      { metodo: 'POST',  url: '/sale/sale',           body: { id: Number(saleId), status: 'PREPARED' } }
+    ];
+    for (const f of formas) {
+      try {
+        const rr = await fetch(ZEN_BASE + f.url, {
+          method: f.metodo, headers, body: JSON.stringify(f.body)
+        });
+        const txt = (await rr.text()).slice(0, 300);
+        tentativas.push({ forma: f.metodo + ' ' + f.url, status: rr.status, resposta: txt });
+        if (rr.ok) break;
+      } catch (e) {
+        tentativas.push({ forma: f.metodo + ' ' + f.url, erro: e.message.slice(0, 150) });
+      }
+    }
+    // Confere o efeito real, que e o que importa -- nao o codigo devolvido.
+    const depois = await zenGet('/sale/sale', { q: 'id==' + saleId, max: 1, limite: 1 });
+    const wps = await zenGet('/system/workflow/workpiece', {
+      q: 'source=="/sale/sale:' + saleId + '"', max: 5, limite: 5 });
+    return res.status(200).json({
+      ok: true, debug: true, tentativas,
+      status_depois: depois[0]?.status || null,
+      workflow_depois: wps[0]?.workflowNode?.description || null
+    });
+  }
+
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;
   if (debugSale) {
     try {

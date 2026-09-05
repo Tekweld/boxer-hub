@@ -14,7 +14,7 @@
 // Armadilha que ja custou tempo (ver bav-boxer/backend/app/zen_pedidos.py):
 // `workpiece.id` NAO e o id da venda. O caminho e sale.workpiece.id, e a volta
 // vem em workpiece.source, formatado '/sale/sale:<saleId>'.
-const { zenGet } = require('./_zen');
+const { zenGet, zenAuth, ZEN_BASE } = require('./_zen');
 
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 
@@ -135,6 +135,29 @@ module.exports = async function handler(req, res) {
     } catch (e) {
       return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 400) });
     }
+  }
+
+  // Sonda quais operacoes de venda existem, sem executar nenhuma: GET num
+  // endpoint de operacao costuma devolver 405 (existe, metodo errado) e 404
+  // quando nao existe. Serve para achar o que leva a venda de PREPARING para
+  // PREPARED -- que e o que faz a instancia de workflow nascer.
+  if (req.query?.debug_ops) {
+    const candidatos = [
+      '/sale/saleOpPrepare', '/sale/saleOpSubmit', '/sale/saleOpClose',
+      '/sale/saleOpConfirm', '/sale/saleOpApprove', '/sale/saleOpFinish',
+      '/sale/saleOpCalculate', '/sale/saleOpRelease', '/sale/saleOpStart',
+      '/system/workflow/workpieceOpStart', '/system/workflow/workpieceOpMove',
+      '/system/workflow/workpieceOpNext', '/system/workflow/workpieceOpBack'
+    ];
+    const headers = await zenAuth();
+    const achados = {};
+    for (const p of candidatos) {
+      try {
+        const rr = await fetch(ZEN_BASE + p + '?first=0&max=1', { headers });
+        achados[p] = rr.status;
+      } catch (e) { achados[p] = 'erro: ' + e.message.slice(0, 60); }
+    }
+    return res.status(200).json({ ok: true, debug: true, sondagem: achados });
   }
 
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;

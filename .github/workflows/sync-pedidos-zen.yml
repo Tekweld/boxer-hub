@@ -39,6 +39,8 @@ jobs:
           if [ -n "$DEBUG_SALE" ]; then
             if [ "$DEBUG_SALE" = "wp" ]; then
               url="${url}?debug_wp=1"
+            elif [ "$DEBUG_SALE" = "ops" ]; then
+              url="${url}?debug_ops=1"
             elif [ "${DEBUG_SALE#recentes:}" != "$DEBUG_SALE" ]; then
               url="${url}?debug_recentes=${DEBUG_SALE#recentes:}"
             else
@@ -70,5 +72,6 @@ jobs:
             echo "::error::$falhas pedido(s) nao entraram no Zen"
             exit 1
           fi
+
 
 

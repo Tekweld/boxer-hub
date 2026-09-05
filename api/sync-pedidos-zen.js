@@ -195,35 +195,29 @@ module.exports = async function handler(req, res) {
       acompanhar.forEach(p => { porSale[String(p.erp_pedido_id)] = p; });
       const saleIds = Object.keys(porSale);
 
-      // sale -> workpiece: e o sale que aponta para o workpiece, nao o contrario.
-      const workpieceDeSale = {};
-      for (let i = 0; i < saleIds.length; i += 50) {
-        const lote = saleIds.slice(i, i + 50);
+      // Uma consulta so, direto no workpiece, filtrando pelo `source` -- que e
+      // como o Zen guarda a volta para a venda ('/sale/sale:<id>').
+      //
+      // Duas correcoes em relacao a primeira versao, que rodava verde sem ler
+      // nada: (1) `sale` NAO traz `workpiece` no payload (traz `workflow`, que
+      // e a definicao do fluxo, nao a instancia), entao partir da venda nao
+      // leva a lugar nenhum; (2) o proprio workpiece ja carrega `workflowNode`,
+      // entao o endpoint workpieceNode e desnecessario.
+      for (let i = 0; i < saleIds.length; i += 40) {
+        const lote = saleIds.slice(i, i + 40);
         try {
-          const vendas = await zenGet('/sale/sale', {
-            q: '(' + lote.map(id => 'id==' + id).join(',') + ')', max: 50, limite: 200
+          const wps = await zenGet('/system/workflow/workpiece', {
+            q: '(' + lote.map(id => 'source=="/sale/sale:' + id + '"').join(',') + ')',
+            max: 100, limite: 200
           });
-          vendas.forEach(v => {
-            if (v.workpiece?.id) workpieceDeSale[String(v.workpiece.id)] = String(v.id);
-          });
-        } catch (e) {
-          r.erros.push({ etapa: 'sale', detalhe: e.message.slice(0, 200) });
-        }
-      }
+          r.etapas_lidas += wps.length;
 
-      const wpIds = Object.keys(workpieceDeSale);
-      for (let i = 0; i < wpIds.length; i += 50) {
-        const lote = wpIds.slice(i, i + 50);
-        try {
-          const nos = await zenGet('/system/workflow/workpieceNode', {
-            q: 'workpiece.id=in=(' + lote.join(',') + ');status=="ACTIVE"', max: 100, limite: 400
-          });
-          r.etapas_lidas += nos.length;
-
-          for (const no of nos) {
-            const saleId = workpieceDeSale[String(no.workpiece?.id)];
-            const pedido = saleId && porSale[saleId];
-            const etapa = no.workflowNode?.description;
+          for (const wp of wps) {
+            const m = /\/sale\/sale:(\d+)/.exec(wp.source || '');
+            const pedido = m && porSale[m[1]];
+            // description e o nome que o time usa ('Analise de Credito'); o
+            // status (SUCCESS/FAIL/RUNNING) e generico demais para a tela.
+            const etapa = wp.workflowNode?.description;
             if (!pedido || !etapa || etapa === pedido.erp_workflow_status) continue;
 
             await fetch(HUB_URL + '/rest/v1/hub_pedidos?id=eq.' + pedido.id, {
@@ -234,9 +228,13 @@ module.exports = async function handler(req, res) {
             r.mudancas++;
           }
         } catch (e) {
-          r.erros.push({ etapa: 'workpieceNode', detalhe: e.message.slice(0, 200) });
+          r.erros.push({ etapa: 'workpiece', detalhe: e.message.slice(0, 200) });
         }
       }
+
+      // Pedido no Zen sem instancia de workflow nao e detalhe tecnico: e pedido
+      // que ninguem esta tocando. Contar para virar sinal em vez de silencio.
+      r.sem_workflow = acompanhar.length - r.etapas_lidas;
     }
 
     console.log('[PEDIDOS-ZEN]', JSON.stringify(r));

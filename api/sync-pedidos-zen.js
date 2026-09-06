@@ -256,6 +256,32 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Busca na spec OpenAPI do proprio Zen (~2 MB, 889 endpoints). Existe para
+  // parar de adivinhar nome de endpoint: sondar candidato por candidato ja
+  // custou uma rodada inteira, e ainda por cima com falso negativo -- as
+  // operacoes levam o id no path (`saleOpForwardAuto/{id}`), entao GET na raiz
+  // devolve 404 mesmo quando a operacao existe.
+  if (req.query?.debug_spec) {
+    const termo = String(req.query.debug_spec).toLowerCase();
+    try {
+      const rr = await fetch(ZEN_BASE + '/platform/openapi.json', { headers: await zenAuth() });
+      if (!rr.ok) return res.status(200).json({ ok: false, debug: true, status: rr.status });
+      const spec = await rr.json();
+      const caminhos = Object.keys(spec.paths || {});
+      const achados = caminhos.filter(p => p.toLowerCase().includes(termo));
+      return res.status(200).json({
+        ok: true, debug: true, termo,
+        total_endpoints: caminhos.length,
+        achados: achados.slice(0, 60),
+        metodos: achados.slice(0, 20).reduce((a, p) => {
+          a[p] = Object.keys(spec.paths[p] || {}); return a;
+        }, {})
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;
   if (debugSale) {
     try {

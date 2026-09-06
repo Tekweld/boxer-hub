@@ -282,6 +282,24 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Como um pedido REAL do time preenche o pagamento. Copiar a forma que o Zen
+  // ja usa e mais seguro que montar pelo schema: mostra inclusive qual condicao
+  // de pagamento e a usual.
+  if (req.query?.debug_pay) {
+    try {
+      const pags = await zenGet('/sale/salePayment', { max: 20, limite: 20 });
+      const ultimos = pags.slice(-5);
+      return res.status(200).json({
+        ok: true, debug: true,
+        total_amostra: pags.length,
+        campos: pags[0] ? Object.keys(pags[0]) : null,
+        exemplos: ultimos
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;
   if (debugSale) {
     try {

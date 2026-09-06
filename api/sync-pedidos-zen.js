@@ -216,6 +216,46 @@ module.exports = async function handler(req, res) {
     });
   }
 
+  // Ultima hipotese: criar a instancia de workflow no braco, ja que a venda
+  // nao deixa gravar status e nao existe operacao de submissao. Se o Zen
+  // aceitar, o pedido entra na fila que o time enxerga; se recusar, a resposta
+  // dele diz o que falta -- e ai a pergunta vai para o fornecedor com prova.
+  if (req.query?.criar_wp) {
+    const saleId = String(req.query.criar_wp);
+    const headers = await zenAuth();
+    try {
+      const nos = await zenGet('/system/workflow/workflowNode', {
+        q: 'workflow.id==1001', max: 50, limite: 50 });
+      const resumoNos = nos.map(n => ({ id: n.id, type: n.type, code: n.code, description: n.description }));
+      const inicial = nos.find(n => n.type === 'START')
+        || nos.find(n => /inicio|início/i.test(n.code || n.description || ''));
+      if (!inicial) {
+        return res.status(200).json({ ok: false, debug: true, motivo: 'no inicial nao identificado', nos: resumoNos });
+      }
+      const rr = await fetch(ZEN_BASE + '/system/workflow/workpiece', {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          source: '/sale/sale:' + saleId,
+          workflow: { id: 1001 },
+          workflowNode: { id: inicial.id },
+          status: 'RUNNING'
+        })
+      });
+      const txt = (await rr.text()).slice(0, 400);
+      const conf = await zenGet('/system/workflow/workpiece', {
+        q: 'source=="/sale/sale:' + saleId + '"', max: 5, limite: 5 });
+      return res.status(200).json({
+        ok: rr.ok, debug: true,
+        no_inicial: { id: inicial.id, code: inicial.code, description: inicial.description },
+        nos: resumoNos,
+        resposta: { status: rr.status, corpo: txt },
+        workpiece_depois: conf[0]?.workflowNode?.description || null
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 400) });
+    }
+  }
+
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;
   if (debugSale) {
     try {

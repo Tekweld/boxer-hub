@@ -287,13 +287,28 @@ module.exports = async function handler(req, res) {
   // de pagamento e a usual.
   if (req.query?.debug_pay) {
     try {
-      const pags = await zenGet('/sale/salePayment', { max: 20, limite: 20 });
-      const ultimos = pags.slice(-5);
+      const pags = await zenGet('/sale/salePayment', { max: 200, limite: 200 });
+      // Compacto de proposito: o objeto `sale` vem expandido inteiro e afoga o
+      // que interessa (type/term) em centenas de linhas de log.
+      const enxuto = pags.map(p => ({
+        id: p.id,
+        sale_id: p.sale?.id,
+        type: p.type,
+        term: typeof p.term === 'object' ? { id: p.term?.id, code: p.term?.code, description: p.term?.description } : p.term,
+        assetTag: p.assetTag
+      }));
+      const contaTipo = enxuto.reduce((a, p) => { a[p.type || 'null'] = (a[p.type || 'null'] || 0) + 1; return a; }, {});
+      const contaTermo = enxuto.reduce((a, p) => {
+        const k = p.term && typeof p.term === 'object' ? (p.term.description || p.term.id) : String(p.term);
+        a[k] = (a[k] || 0) + 1; return a;
+      }, {});
       return res.status(200).json({
         ok: true, debug: true,
         total_amostra: pags.length,
         campos: pags[0] ? Object.keys(pags[0]) : null,
-        exemplos: ultimos
+        por_type: contaTipo,
+        por_term: contaTermo,
+        exemplos: enxuto.slice(-8)
       });
     } catch (e) {
       return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });

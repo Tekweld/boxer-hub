@@ -327,6 +327,15 @@ module.exports = async function handler(req, res) {
     const headers = await zenAuth();
     const tentativas = [];
     try {
+      // O ERP so deixa excluir enquanto a venda esta em PREPARING (o erro e
+      // explicito: invalidStatus [PREPARING, PREPARED]). Para uma venda ja
+      // avancada, desfazer a preparacao primeiro -- `saleOpPrepareRevert` e o
+      // inverso do "Finalizar preparacao de pedido de venda" da tela.
+      if (req.query?.reverter) {
+        const rp = await fetch(ZEN_BASE + '/sale/saleOpPrepareRevert/' + saleId, { method: 'POST', headers });
+        tentativas.push({ alvo: 'saleOpPrepareRevert:' + saleId, status: rp.status, corpo: (await rp.text()).slice(0, 200) });
+      }
+
       // Itens e pagamentos primeiro: se houver FK, a venda so sai depois deles.
       // Ordem inversa da criacao, que e como dependencia costuma se desfazer.
       for (const rec of ['salePayment', 'saleItem']) {

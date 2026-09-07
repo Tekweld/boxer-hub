@@ -374,7 +374,8 @@ module.exports = async function handler(req, res) {
         const out = await pushRes.json();
         if (pushRes.ok && out.erp_pedido_id) {
           r.empurrados++;
-          await registrarEvento(p.id, 'Enviado ao ERP', 'hub', 'venda ' + out.erp_pedido_id, hubH);
+          // O evento 'Enviado ao ERP' e gravado dentro do proprio push-pedido,
+          // que e por onde os dois caminhos passam (checkout e este job).
         } else {
           r.falhas_push.push({ numero: p.numero, erro: (out.error || 'erro').slice(0, 200) });
         }

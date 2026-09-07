@@ -156,6 +156,19 @@ module.exports = async function handler(req, res) {
       body: JSON.stringify({ erp_pedido_id: String(sale.id), erp_tipo: 'sale', erp_sincronizado_em: new Date().toISOString() })
     });
 
+    // Primeira etapa da timeline, gravada AQUI e nao em quem chama: o push tem
+    // dois caminhos (checkout e o job que reempurra), e antes so o job
+    // registrava -- entao o pedido normal, vindo da tela, aparecia para o
+    // cliente sem o "Pedido recebido", pulando direto para o que o Zen dissesse.
+    // O indice unico (pedido_id, etapa) torna a repeticao inofensiva.
+    await fetch(HUB_URL + '/rest/v1/hub_pedido_eventos?on_conflict=pedido_id,etapa', {
+      method: 'POST',
+      headers: { ...hubH('POST'), Prefer: 'resolution=ignore-duplicates,return=minimal' },
+      body: JSON.stringify({
+        pedido_id, etapa: 'Enviado ao ERP', origem: 'hub', detalhe: 'venda ' + sale.id
+      })
+    });
+
     const itensErro = [];
     for (const item of itensZen) {
       const itemRes = await fetch(ZEN_BASE + '/sale/saleItem', {

@@ -72,6 +72,7 @@ module.exports = async function handler(req, res) {
     const pedRes = await fetch(
       HUB_URL + '/rest/v1/hub_pedidos?id=eq.' + pedido_id +
         '&select=id,numero,status,valor_total,cliente_id,representante_id,erp_pedido_id,' +
+        'forma_pagamento,parcelas,' +
         'hub_clientes(erp_cliente_id,razao_social),hub_pedido_itens(sku,quantidade,preco_final)',
       { headers: hubH('GET') }
     );
@@ -132,8 +133,10 @@ module.exports = async function handler(req, res) {
       tags: 'HUB,' + pedido.numero + (testTag ? ',' + testTag : '')
     };
 
+    const pagamentos = montarPagamentos(pedido);
+
     if (dry && dry !== '0' && dry !== 0) {
-      return res.status(200).json({ ok: true, dry: true, sale: saleBody, itens: itensZen });
+      return res.status(200).json({ ok: true, dry: true, sale: saleBody, itens: itensZen, pagamentos });
     }
 
     const headers = await zenAuth();
@@ -167,10 +170,24 @@ module.exports = async function handler(req, res) {
       if (!itemRes.ok) itensErro.push({ sku: item.sku, erro: (await itemRes.text()).slice(0, 300) });
     }
 
+    // Pagamento. Sem isto o pedido chega ao Zen com "Formas de pagamento"
+    // vazio e o ADM NAO consegue avancar a etapa -- travou de verdade no teste
+    // de 2026-09-06, e o Andre teve que preencher na mao para destravar.
+    const pagErro = [];
+    for (const p of pagamentos) {
+      const pr = await fetch(ZEN_BASE + '/sale/salePayment', {
+        method: 'POST', headers,
+        body: JSON.stringify({ sale: { id: sale.id }, type: p.type, term: p.term })
+      });
+      if (!pr.ok) pagErro.push({ term: p.term, erro: (await pr.text()).slice(0, 300) });
+    }
+
     return res.status(200).json({
       ok: true, dry: false, erp_pedido_id: sale.id,
       itens_gravados: itensZen.length - itensErro.length,
-      itens_com_erro: itensErro
+      itens_com_erro: itensErro,
+      pagamentos_gravados: pagamentos.length - pagErro.length,
+      pagamentos_com_erro: pagErro
     });
 
   } catch (e) {
@@ -178,3 +195,31 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ error: e.message });
   }
 };
+
+// Uma linha de sale.salePayment por PARCELA, com `term` = dias ate o
+// vencimento. Convencao lida da base real (200 pagamentos): `type` e sempre
+// BILLING_TITLE e os prazos sao multiplos de 28 -- 28/56/84 e o 3x usual da
+// casa, e 0 e a vista.
+//
+// Cartao fica como 0 (uma linha, a vista) porque quem financia e a
+// adquirente, nao a Boxer: para o contas a receber do Zen o titulo e unico.
+// PENDENTE DE CONFIRMACAO com o Andre/financeiro -- se o Zen tiver de refletir
+// as 10 parcelas do cartao, e so mudar o mapa abaixo.
+const DIAS_POR_PARCELA = 28;
+
+function montarPagamentos(pedido) {
+  const forma = String(pedido.forma_pagamento || '').toLowerCase();
+  const parcelas = Math.max(1, Number(pedido.parcelas) || 1);
+
+  if (forma === 'boleto' || forma === 'duplicata') {
+    return Array.from({ length: parcelas }, (_, i) => ({
+      type: 'BILLING_TITLE',
+      term: (i + 1) * DIAS_POR_PARCELA
+    }));
+  }
+
+  // pix, transferencia, cartao e o caso sem forma definida (pedido antigo ou
+  // criado por API): uma linha a vista. Nunca devolver lista vazia -- vazio e
+  // exatamente o que trava o avancar no Zen.
+  return [{ type: 'BILLING_TITLE', term: 0 }];
+}

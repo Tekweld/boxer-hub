@@ -319,6 +319,37 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Exclusao de venda de teste. Fica atras de parametro explicito e devolve o
+  // estado DEPOIS da tentativa, porque codigo HTTP nao basta: o Zen ja aceitou
+  // um PUT com 200 e ignorou a alteracao.
+  if (req.query?.excluir) {
+    const saleId = String(req.query.excluir);
+    const headers = await zenAuth();
+    const tentativas = [];
+    try {
+      // Itens e pagamentos primeiro: se houver FK, a venda so sai depois deles.
+      // Ordem inversa da criacao, que e como dependencia costuma se desfazer.
+      for (const rec of ['salePayment', 'saleItem']) {
+        const filhos = await zenGet('/sale/' + rec, { q: 'sale.id==' + saleId, max: 100, limite: 100 });
+        for (const f of filhos) {
+          const rr = await fetch(ZEN_BASE + '/sale/' + rec + '/' + f.id, { method: 'DELETE', headers });
+          tentativas.push({ alvo: rec + ':' + f.id, status: rr.status });
+        }
+      }
+      const rv = await fetch(ZEN_BASE + '/sale/sale/' + saleId, { method: 'DELETE', headers });
+      tentativas.push({ alvo: 'sale:' + saleId, status: rv.status, corpo: (await rv.text()).slice(0, 300) });
+
+      const resta = await zenGet('/sale/sale', { q: 'id==' + saleId, max: 1, limite: 1 });
+      return res.status(200).json({
+        ok: resta.length === 0, debug: true, tentativas,
+        ainda_existe: resta.length > 0,
+        status_atual: resta[0]?.status || null
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, tentativas, erro: e.message.slice(0, 300) });
+    }
+  }
+
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;
   if (debugSale) {
     try {

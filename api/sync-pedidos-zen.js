@@ -287,7 +287,11 @@ module.exports = async function handler(req, res) {
   // de pagamento e a usual.
   if (req.query?.debug_pay) {
     try {
-      const pags = await zenGet('/sale/salePayment', { max: 200, limite: 200 });
+      // debug_pay=<saleId> confere o pagamento de um pedido especifico;
+      // debug_pay=1 traz a amostra geral (para descobrir a convencao da casa).
+      const alvo = String(req.query.debug_pay);
+      const filtro = /^\d{2,}$/.test(alvo) ? { q: 'sale.id==' + alvo } : {};
+      const pags = await zenGet('/sale/salePayment', { ...filtro, max: 200, limite: 200 });
       // Compacto de proposito: o objeto `sale` vem expandido inteiro e afoga o
       // que interessa (type/term) em centenas de linhas de log.
       const enxuto = pags.map(p => ({

@@ -28,6 +28,12 @@ const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 const ORCAMENTO_MS = 45000;
 const PASSO_ZEN = 200;
 
+// Regra de negocio (Andre, 2026-09-08): nao sincronizar nada do Zen anterior a
+// 01/03/2025. Para historia anterior, cliente abre chamado com o suporte.
+// Vale para titulos e notas fiscais. A tela deve mostrar essa mensagem quando
+// o cliente pedir "notas antigas".
+const CORTE_HISTORICO = '2025-03-01';
+
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 

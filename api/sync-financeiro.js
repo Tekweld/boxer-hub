@@ -87,8 +87,7 @@ module.exports = async function handler(req, res) {
       r.titulos = await sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 });
     }
     if (alvo === 'notas' || alvo === 'ambos') {
-      const desdeData = req.query?.desde_data || null;
-      r.notas = await sincronizarNotas({ idHub, hubH, dryRun, desde, desdeData, t0 });
+      r.notas = await sincronizarNotas({ idHub, hubH, dryRun, desde, t0 });
     }
 
     r.duracao_ms = Date.now() - t0;
@@ -229,31 +228,41 @@ function mapearTitulo(tit, clienteId, hoje) {
 // fiscal.OutgoingInvoice = nota de saida (venda). E o que o cliente ve no
 // financeiro para baixar XML/PDF.
 //
-// Volume real (medido 2026-09-08): ids passam de 70.000. Varrer desde zero
-// exigiria centenas de rodadas -- e o cliente nao quer 10 anos de historico,
-// quer as NFs recentes. Estrategia: sempre INCREMENTAL, filtrada por data.
-// O cron diario passa `desde_data=<ontem>` e cobre so o que foi emitido no
-// dia; a primeira carga vale por, digamos, 12 meses -- se alguem quiser mais
-// fundo depois, chama por partes.
-async function sincronizarNotas({ idHub, hubH, dryRun, desde, desdeData, t0 }) {
+// Volume real (medido 2026-09-08): ids passam de 70.000. Testei filtro por
+// `issueDate>=` e o Zen aceita mas IGNORA -- o cursor avanca normal com 400
+// lidos por rodada. Entao a estrategia e: cursor persistente vindo do proprio
+// hub_notas_fiscais (max erp_nf_id ja gravado), sem filtro de data. O cron
+// diario cobre so os novos; a carga historica e responsabilidade de rodar
+// manualmente ate concluir (varias execucoes) se alguem quiser tudo.
+//
+// Regra pratica para o piloto: nao carregar historico. Cursor comeca em algum
+// id relativamente recente (via `desde` manual) na primeira vez, e o cron
+// mantem em dia dali para a frente. Cliente ve o que foi emitido a partir
+// dessa data; NF antiga pede pro contador, como sempre foi.
+async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
   const r = { lidos: 0, sem_cliente_hub: 0, gravados: 0, erros: [] };
 
-  // desde_data e obrigatorio para nao entrar em loop de meses -- padrao 30d
-  // para o cron diario, e chamada manual pode passar valor maior.
-  const dataMin = desdeData || (() => {
-    const d = new Date(); d.setDate(d.getDate() - 30);
-    return d.toISOString().slice(0, 10);
-  })();
-  r.desde_data = dataMin;
-
+  // Cursor: prioridade eh o parametro explicito; sem ele, retoma do maior
+  // erp_nf_id ja sincronizado -- self-hosting, sem tabela de estado nova.
   let cursor = desde ? Number(desde) : 0;
+  if (!cursor) {
+    const rMax = await fetch(HUB_URL +
+      '/rest/v1/hub_notas_fiscais?select=erp_nf_id&order=erp_nf_id.desc.nullslast&limit=1',
+      { headers: hubH('GET') });
+    if (rMax.ok) {
+      const lin = await rMax.json();
+      const ult = Number(lin?.[0]?.erp_nf_id);
+      if (Number.isFinite(ult) && ult > 0) cursor = ult;
+    }
+  }
+  r.cursor_inicial = cursor;
   const buffer = [];
 
   while (Date.now() - t0 < ORCAMENTO_MS - 5000) { // 5s reserva para o gravar
     let lote;
     try {
       lote = await zenGet('/fiscal/outgoingInvoice', {
-        q: 'id>' + cursor + ';flow==OUT;issueDate>=' + dataMin,
+        q: 'id>' + cursor + ';flow==OUT',
         order: 'id',
         max: PASSO_ZEN,
         limite: PASSO_ZEN

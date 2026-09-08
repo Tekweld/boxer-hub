@@ -213,10 +213,10 @@ async function uploadDoc() {
       reader.readAsDataURL(file);
     });
 
-    const res = await fetch('/api/upload-documento-cadastro', {
+    const res = await fetch('/api/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SESSION.access_token },
-      body: JSON.stringify({ tipo, filename: file.name, content_type: file.type, base64 })
+      body: JSON.stringify({ kind: 'documento-cadastro', tipo, filename: file.name, content_type: file.type, base64 })
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || 'Falha no upload');

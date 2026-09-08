@@ -1313,10 +1313,11 @@ async function handleFotoSelect(files, produtoId) {
     try {
       const resized = await resizeImage(file, 1200);
 
-      const r = await fetch('/api/upload-foto', {
+      const r = await fetch('/api/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SESSION.access_token },
         body: JSON.stringify({
+          kind: 'foto',
           produto_id: produtoId,
           filename: file.name,
           base64: resized.base64,
@@ -1367,10 +1368,10 @@ function resizeImage(file, maxDim) {
 async function deleteFoto(anexoId, produtoId) {
   if (!confirm('Remover esta foto?')) return;
   try {
-    const r = await fetch('/api/upload-foto', {
+    const r = await fetch('/api/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SESSION.access_token },
-      body: JSON.stringify({ action: 'delete', anexo_id: anexoId })
+      body: JSON.stringify({ kind: 'foto', action: 'delete', anexo_id: anexoId })
     });
     const data = await r.json();
     if (!r.ok || !data.ok) throw new Error(data.error || 'Erro ao deletar');

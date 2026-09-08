@@ -359,6 +359,23 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Amostra crua de um recurso arbitrario para descobrir o formato antes de
+  // codar contra ele. Vale para qualquer entidade -- e mais barato que sondar.
+  if (req.query?.debug_amostra) {
+    const rec = String(req.query.debug_amostra);
+    try {
+      const linhas = await zenGet('/' + rec, { max: 5, limite: 5 });
+      return res.status(200).json({
+        ok: true, debug: true, recurso: rec,
+        total: linhas.length,
+        campos: linhas[0] ? Object.keys(linhas[0]) : null,
+        exemplos: linhas.slice(0, 3)
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 400) });
+    }
+  }
+
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;
   if (debugSale) {
     try {

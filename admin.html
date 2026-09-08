@@ -42,8 +42,10 @@ tbody tr:hover{background:#f0f7ff}
 .btn-danger{background:#fff;color:#e30613;border-color:#fecaca}.btn-danger:hover{background:#fee2e2}
 .btn-sm{padding:4px 10px;font-size:12px}
 
-.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 .page-title{font-size:16px;font-weight:600;color:#1d327b}
+.panel-hint{background:#f7fafc;border-left:3px solid #25bbee;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#4a5568;line-height:1.5;border-radius:0 6px 6px 0}
+.panel-hint b{color:#1d327b;font-weight:600}
 .empty-state{text-align:center;padding:40px 20px;color:#718096}
 .form-row{margin-bottom:14px}
 .form-row label{display:block;font-size:12px;font-weight:500;color:#4a5568;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
@@ -113,13 +115,22 @@ select,input,textarea{font-family:Outfit,sans-serif}
     <div class="page-header">
       <h2 class="page-title">Pipeline de Onboarding</h2>
     </div>
-    <div class="filter-bar" id="onbFilterBar"></div>
+    <div class="panel-hint">
+      <b>Cadastro de revendedor novo</b> (que ainda nao existe no ZEN). Cliente preenche o formulario publico, a IA valida os dados,
+      <b>ADM de Vendas aprova os documentos</b>, <b>Financeiro define o limite de credito</b> e o sistema cria a Pessoa no ZEN e ativa o acesso.
+      Cada card mostra em que etapa o cadastro esta. Para cliente que <em>ja existe</em> no ZEN, use a aba <b>Convites</b>.
+    </div>
     <div id="onboardingList"></div>
   </div>
   <div class="panel-content hidden" id="tab-usuarios">
     <div class="page-header">
       <h2 class="page-title">Usuarios do Hub</h2>
       <button class="btn btn-primary" onclick="openNovoUsuario()">Novo usuario</button>
+    </div>
+    <div class="panel-hint">
+      Quem tem <b>login no Hub</b>: funcionarios Boxer (analyst/manager/financial/admin) e representantes.
+      Cliente NAO e criado aqui -- vem pelo Onboarding (novo) ou por Convite (ja no ZEN). Cada usuario tem seu proprio login;
+      nunca compartilhar. Bloquear alguem no ZEN nao bloqueia aqui -- desative o perfil por esta tela.
     </div>
     <div id="usuariosList"></div>
   </div>
@@ -129,6 +140,11 @@ select,input,textarea{font-family:Outfit,sans-serif}
       <div style="display:flex;gap:8px;align-items:center">
         <span id="zenSyncStatus" style="font-size:12px;color:#718096"></span>
       </div>
+    </div>
+    <div class="panel-hint">
+      Espelho dos clientes que estao no <b>ZEN nos canais Varejo, Ecommerce e Hibrido</b> -- sincronizado diariamente.
+      Aqui e <b>consulta</b>: alteracao de dados cadastrais e feita pelo proprio cliente na tela dele (vira solicitacao que voces aprovam).
+      "Bloqueado" reflete a tag <code>blocked</code> no ZEN; para desbloquear, ajuste la.
     </div>
     <div id="clientesStats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
       <div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;text-align:center">
@@ -162,14 +178,29 @@ select,input,textarea{font-family:Outfit,sans-serif}
       <h2 class="page-title">Campanhas</h2>
       <button class="btn btn-primary" onclick="openNovaCampanha()">Nova campanha</button>
     </div>
+    <div class="panel-hint">
+      <b>Promocoes com vigencia temporal.</b> Voce escolhe os produtos, o preco/desconto, e o publico (canal, regiao ou grupo).
+      No portal do cliente elas viram badges, banners e "preco riscado". Enquanto o pedido esta sendo montado, o preco da campanha
+      substitui o de tabela automaticamente.
+    </div>
     <div id="campanhasList"></div>
   </div>
   <div class="panel-content hidden" id="tab-precos">
     <div class="page-header"><h2 class="page-title">Tabelas de Preco</h2></div>
+    <div class="panel-hint">
+      Precos-base por produto. A <b>tabela "Principal" e a fonte oficial</b>: produto sem preco nela nao aparece no catalogo do cliente.
+      O preco final que cada cliente ve sai daqui mais os multiplicadores por classificacao (Fisico/Ecommerce/Hibrido) e uma promocao,
+      se houver -- calculo aplicado pelo servidor no momento de listar/pedir.
+    </div>
     <div id="precosList"></div>
   </div>
   <div class="panel-content hidden" id="tab-regras">
     <div class="page-header"><h2 class="page-title">Regras Comerciais</h2></div>
+    <div class="panel-hint">
+      Motor de exceções: pedido minimo, faixas de desconto por volume, elegibilidade a boleto/duplicata, frete gratis por UF/valor, etc.
+      Cada regra tem <em>condicao</em> (ex: cliente da regiao X, valor acima de Y) e <em>acao</em> (ex: aplicar desconto de Z%).
+      O servidor avalia todas as regras vigentes ao validar o pedido -- se algo bloqueia, o cliente ve o motivo.
+    </div>
     <div id="regrasList"></div>
   </div>
   <div class="panel-content hidden" id="tab-catalogo">
@@ -181,6 +212,11 @@ select,input,textarea{font-family:Outfit,sans-serif}
         <span id="syncStatus" style="font-size:12px;color:#718096"></span>
         <button class="btn btn-primary" onclick="syncPDM()" id="btnSync">Sincronizar PDM</button>
       </div>
+    </div>
+    <div class="panel-hint">
+      O que o cliente ve na vitrine. <b>Produto sem estoque some da vitrine</b> (volta sozinho quando o estoque entra), mas aparece na busca com
+      previsao de chegada. <b>Estoque</b> vem do ZEN de hora em hora (cubo de disponibilidade). <b>PDM</b> traz ficha tecnica, "o que acompanha" e fotos.
+      Use os filtros para achar o que ainda precisa de foto, descricao ou preco.
     </div>
     <div id="catalogoStats" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">
       <div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;text-align:center">
@@ -220,10 +256,19 @@ select,input,textarea{font-family:Outfit,sans-serif}
       <h2 class="page-title">Convites para Clientes Existentes</h2>
       <button class="btn btn-primary" onclick="openNovoConvite()">Novo convite</button>
     </div>
+    <div class="panel-hint">
+      Para <b>clientes que JA existem no ZEN</b> (revenda antiga que ainda nao acessa o Hub). Voce insere o email, o sistema gera um link de convite
+      e dispara por email (Resend). O cliente abre, define senha e ja entra ativo -- <b>limite de credito ja vem do ZEN</b>, nao precisa passar por analise.
+      Para cliente novo, use a aba <b>Onboarding</b>.
+    </div>
     <div id="convitesList"></div>
   </div>
   <div class="panel-content hidden" id="tab-logs">
     <div class="page-header"><h2 class="page-title">Logs de Auditoria</h2></div>
+    <div class="panel-hint">
+      Historico do que mudou e quem mudou: aprovacao de documento, aprovacao de credito, envio de pedido, reversao para rascunho, etc.
+      Serve para responder <em>"quem fez isso e quando?"</em>. Nao apagar linhas -- e prova em caso de duvida.
+    </div>
     <div id="logsList"></div>
   </div>
 </div>

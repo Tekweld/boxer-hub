@@ -23,6 +23,10 @@ on:
         description: 'id inicial do receivable/outgoingInvoice (retoma / limita)'
         required: false
         default: ''
+      desde_data:
+        description: 'Notas: emitidas a partir desta data (YYYY-MM-DD). Padrao: 30d atras.'
+        required: false
+        default: ''
       dry:
         description: 'Simular sem gravar (1 = sim)'
         required: false
@@ -42,6 +46,7 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           ALVO: ${{ github.event.inputs.alvo || 'ambos' }}
           DESDE: ${{ github.event.inputs.desde || '' }}
+          DESDE_DATA: ${{ github.event.inputs.desde_data || '' }}
           DRY:  ${{ github.event.inputs.dry  || '0' }}
         run: |
           if [ -z "$CRON_SECRET" ]; then
@@ -57,6 +62,7 @@ jobs:
             rodada=$((rodada + 1))
             url="https://hub.boxersoldas.com.br/api/sync-financeiro?alvo=${ALVO}&dry=${DRY}"
             [ -n "$desde" ] && url="${url}&desde=${desde}"
+            [ -n "$DESDE_DATA" ] && url="${url}&desde_data=${DESDE_DATA}"
 
             corpo=$(mktemp)
             codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \

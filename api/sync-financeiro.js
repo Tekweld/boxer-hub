@@ -87,7 +87,8 @@ module.exports = async function handler(req, res) {
       r.titulos = await sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 });
     }
     if (alvo === 'notas' || alvo === 'ambos') {
-      r.notas = await sincronizarNotas({ idHub, hubH, dryRun, desde, t0 });
+      const desdeData = req.query?.desde_data || null;
+      r.notas = await sincronizarNotas({ idHub, hubH, dryRun, desde, desdeData, t0 });
     }
 
     r.duracao_ms = Date.now() - t0;
@@ -226,10 +227,24 @@ function mapearTitulo(tit, clienteId, hoje) {
 
 // ---------- NOTAS FISCAIS ----------
 // fiscal.OutgoingInvoice = nota de saida (venda). E o que o cliente ve no
-// financeiro para baixar XML/PDF. Fica atras de flag mais restrito porque o
-// volume tende a ser bem maior e a Boxer nao emite todo dia.
-async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
+// financeiro para baixar XML/PDF.
+//
+// Volume real (medido 2026-09-08): ids passam de 70.000. Varrer desde zero
+// exigiria centenas de rodadas -- e o cliente nao quer 10 anos de historico,
+// quer as NFs recentes. Estrategia: sempre INCREMENTAL, filtrada por data.
+// O cron diario passa `desde_data=<ontem>` e cobre so o que foi emitido no
+// dia; a primeira carga vale por, digamos, 12 meses -- se alguem quiser mais
+// fundo depois, chama por partes.
+async function sincronizarNotas({ idHub, hubH, dryRun, desde, desdeData, t0 }) {
   const r = { lidos: 0, sem_cliente_hub: 0, gravados: 0, erros: [] };
+
+  // desde_data e obrigatorio para nao entrar em loop de meses -- padrao 30d
+  // para o cron diario, e chamada manual pode passar valor maior.
+  const dataMin = desdeData || (() => {
+    const d = new Date(); d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  })();
+  r.desde_data = dataMin;
 
   let cursor = desde ? Number(desde) : 0;
   const buffer = [];
@@ -238,7 +253,7 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
     let lote;
     try {
       lote = await zenGet('/fiscal/outgoingInvoice', {
-        q: 'id>' + cursor + ';flow==OUT',
+        q: 'id>' + cursor + ';flow==OUT;issueDate>=' + dataMin,
         order: 'id',
         max: PASSO_ZEN,
         limite: PASSO_ZEN

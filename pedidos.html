@@ -476,13 +476,20 @@ async function _enviarPedidoInterno() {
 
     // Ate aqui o pedido esta salvo como rascunho, com itens e precos do
     // servidor. Nada foi submetido: o proximo passo e a revisao.
-    const [politica, cliente] = await Promise.all([
+    const [politica, cliente, endereco] = await Promise.all([
       sbRpc('hub_fn_validar_politica', { p_pedido_id: pedido.id }),
       sb('/hub_clientes?id=eq.' + clienteId + '&select=limite_credito,limite_disponivel,uf')
-        .then(r => r[0] || {})
+        .then(r => r[0] || {}),
+      // Endereco de entrega. Regra: o pedido usa o endereco do cadastro, sem
+      // opcao de editar na tela -- alteracao vira solicitacao que muda
+      // primeiro no Zen e reflete depois no Hub. `padrao=true` prefere o
+      // principal; se nao houver, o primeiro ativo.
+      sb('/hub_enderecos?cliente_id=eq.' + clienteId + '&ativo=eq.true' +
+         '&select=logradouro,numero,complemento,bairro,cidade,uf,cep,tipo,padrao' +
+         '&order=padrao.desc,tipo.asc&limit=1').then(r => r[0] || null)
     ]);
 
-    abrirRevisao(pedido.id, politica, cliente);
+    abrirRevisao(pedido.id, politica, cliente, endereco);
   } catch (e) {
     toast('Erro: ' + erroLegivel(e), 'error');
   } finally {
@@ -498,7 +505,7 @@ async function _enviarPedidoInterno() {
 
 let _revisao = null;
 
-function abrirRevisao(pedidoId, politica, cliente) {
+function abrirRevisao(pedidoId, politica, cliente, endereco) {
   const subtotal = +(politica.subtotal || 0);
   const frete = politica.frete && politica.frete !== 'null' ? politica.frete : null;
   const valorFrete = +(frete?.valor || 0);
@@ -540,6 +547,28 @@ function abrirRevisao(pedidoId, politica, cliente) {
           ? 'Sobra ' + fmtMoeda(saldo) + ' de limite apos este pedido.'
           : 'Faltam ' + fmtMoeda(Math.abs(saldo)) + '. Reduza o pedido ou solicite aumento de limite em Financeiro.'}</div>
       </div>
+    </div>
+
+    <div class="rev-sec">
+      <h4>Endereco de entrega</h4>
+      ${endereco
+        ? `<div class="rev-endereco">
+            <div style="font-size:13px;color:#1a202c">
+              ${esc(endereco.logradouro || '')}${endereco.numero ? ', ' + esc(endereco.numero) : ''}
+              ${endereco.complemento ? ' — ' + esc(endereco.complemento) : ''}
+            </div>
+            <div style="font-size:12px;color:#4a5568;margin-top:2px">
+              ${esc(endereco.bairro || '')}${endereco.bairro ? ' · ' : ''}${esc(endereco.cidade || '')}/${esc(endereco.uf || '')}
+              ${endereco.cep ? ' · CEP ' + esc(endereco.cep) : ''}
+            </div>
+            <div style="font-size:11px;color:#718096;margin-top:6px">
+              Alteracao de endereco precisa passar pelo cadastro para atualizar tambem no ERP.
+              <a href="cadastro.html" style="color:#25bbee;text-decoration:none">Ir para meu cadastro</a>.
+            </div>
+          </div>`
+        : `<div class="rev-endereco" style="color:#991b1b;background:#fee2e2;border:1px solid #fecaca;padding:10px;border-radius:6px;font-size:13px">
+            Nao ha endereco cadastrado. <a href="cadastro.html" style="color:#25bbee">Complete o cadastro</a> antes de enviar o pedido.
+          </div>`}
     </div>
 
     ${frete ? `<div class="rev-sec">

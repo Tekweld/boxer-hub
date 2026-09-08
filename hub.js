@@ -349,14 +349,23 @@ async function buscarClientes(termo) {
   wrap.innerHTML = '<div style="padding:16px;color:#718096;font-size:13px">Buscando...</div>';
 
   // A RLS ja limita: representante so ve a carteira dele, staff ve todos.
-  let url = '/hub_clientes?ativo=eq.true&select=id,nome_exibicao,cnpj,uf,canal,bloqueado'
+  let url = '/hub_clientes?ativo=eq.true&select=id,nome_exibicao,cnpj,razao_social,uf,canal,bloqueado'
           + '&order=nome_exibicao.asc&limit=40';
   const t = (termo || '').trim();
   if (t) {
-    const alvo = t.replace(/\D/g, '').length >= 6
-      ? 'cnpj.ilike.*' + t.replace(/\D/g, '') + '*'
-      : 'nome_exibicao.ilike.*' + t.replace(/[(),*]/g, '') + '*';
-    url += '&or=(' + alvo + ')';
+    // Busca em tres campos ao mesmo tempo: nome fantasia (nome_exibicao), razao
+    // social e CNPJ. Andre bateu nisso ao procurar "Via Norte Comercio", que era
+    // a razao social -- o fantasia cadastrado era "Via Norte Parafusos", entao
+    // o cliente sumia mesmo sendo dele. Se o termo parecer CNPJ (>=6 digitos),
+    // filtra so por CNPJ para nao poluir; caso contrario, texto casa em nome OU
+    // razao social. Chars especiais do RSQL (`(), *`) sao removidos por seguranca.
+    const seguro = t.replace(/[(),*]/g, '');
+    const soDigitos = t.replace(/\D/g, '');
+    const parcelas = soDigitos.length >= 6
+      ? ['cnpj.ilike.*' + soDigitos + '*']
+      : ['nome_exibicao.ilike.*' + seguro + '*',
+         'razao_social.ilike.*' + seguro + '*'];
+    url += '&or=(' + parcelas.join(',') + ')';
   }
 
   try {

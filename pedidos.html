@@ -279,6 +279,20 @@ async function renderCarrinho() {
   const totalVal = cart.reduce((s, i) => s + (precoDe(i) * i.quantidade), 0);
   const semEstoque = itensSemEstoque(cart, stockMap);
 
+  // "Faltam R$X para a proxima faixa" -- so faz sentido para clientes com
+  // segmento Fisica; para Ecommerce/Hibrido a resposta vem com aplicavel=false
+  // e o banner nao aparece. A conta e feita no servidor (fonte unica das
+  // faixas 7.000/20.000 vive em hub_fn_classe e hub_politica_parametros).
+  let faixaProxima = null;
+  try {
+    const clienteId = getClienteAtivo();
+    if (clienteId) {
+      faixaProxima = await sbRpc('hub_fn_faixa_proxima', {
+        p_cliente_id: clienteId, p_valor_pedido: totalVal
+      });
+    }
+  } catch {}
+
   wrap.innerHTML = `
     <div>
       ${cart.map((item, idx) => {
@@ -311,12 +325,30 @@ async function renderCarrinho() {
       </div>
       <div class="cart-total-valor">${fmtMoeda(totalVal)}</div>
     </div>
+    ${renderFaixaProxima(faixaProxima)}
     ${renderBloqueios(semEstoque)}
     <div class="cart-actions">
       <button class="btn btn-danger btn-sm" onclick="clearCart()">Limpar carrinho</button>
       <button class="btn btn-primary" id="btnEnviarPedido" onclick="enviarPedido()"
               ${semEstoque.length ? 'disabled title="Ha itens sem estoque suficiente"' : ''}>Revisar pedido</button>
     </div>`;
+}
+
+// Banner motivador logo depois do total: "adicione mais R$X para uma faixa
+// melhor de desconto". So aparece para segmento Fisica (Ecommerce/Hibrido
+// nao tem faixa por valor). Nao promete "quanto vai ganhar" -- varia por
+// produto e enganaria; a promessa e so "voce sobe de faixa".
+function renderFaixaProxima(f) {
+  if (!f || !f.aplicavel || !f.mensagem) return '';
+  if (f.melhor_faixa) {
+    return `<div style="margin-top:12px;padding:10px 14px;background:#f0fdf4;border-left:3px solid #16a34a;border-radius:0 6px 6px 0;font-size:13px;color:#166534">
+      ${esc(f.mensagem)}
+    </div>`;
+  }
+  return `<div style="margin-top:12px;padding:10px 14px;background:#eff6ff;border-left:3px solid #25bbee;border-radius:0 6px 6px 0;font-size:13px;color:#1d327b;display:flex;justify-content:space-between;align-items:center;gap:12px">
+    <div>${esc(f.mensagem)}</div>
+    <a href="catalogo.html" style="font-size:12px;color:#25bbee;text-decoration:none;white-space:nowrap">Adicionar mais itens</a>
+  </div>`;
 }
 
 // Um unico painel para tudo que impede o pedido de sair -- estoque, credito,

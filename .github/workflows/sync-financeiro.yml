@@ -1,0 +1,107 @@
+# Sincroniza titulos e notas fiscais do Zen para o Hub.
+#
+# Manual + diario. Diario porque titulo/NF nao mudam de minuto em minuto e
+# volume tende a ser alto. Manual (workflow_dispatch) para retomar de onde
+# parou passando `desde=<id>` ou rodar so `alvo=titulos` / `alvo=notas`.
+#
+# O endpoint tem orcamento de 45s (funcao Vercel morre em 60s) e devolve
+# `proximo_desde`; este job encadeia as rodadas ate `concluido:true`.
+name: Sync financeiro ZenERP
+
+on:
+  schedule:
+    # 05:30 BRT (08:30 UTC) -- antes do horario comercial, para o cliente ver
+    # dados frescos ao logar de manha.
+    - cron: '30 8 * * *'
+  workflow_dispatch:
+    inputs:
+      alvo:
+        description: "'titulos', 'notas' ou 'ambos' (default)"
+        required: false
+        default: 'ambos'
+      desde:
+        description: 'id inicial do receivable/outgoingInvoice (retoma / limita)'
+        required: false
+        default: ''
+      dry:
+        description: 'Simular sem gravar (1 = sim)'
+        required: false
+        default: '0'
+
+concurrency:
+  group: sync-financeiro
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Encadear /api/sync-financeiro ate concluir
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          ALVO: ${{ github.event.inputs.alvo || 'ambos' }}
+          DESDE: ${{ github.event.inputs.desde || '' }}
+          DRY:  ${{ github.event.inputs.dry  || '0' }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          desde="$DESDE"
+          total_gravados=0
+          rodada=0
+
+          while [ "$rodada" -lt 120 ]; do
+            rodada=$((rodada + 1))
+            url="https://hub.boxersoldas.com.br/api/sync-financeiro?alvo=${ALVO}&dry=${DRY}"
+            [ -n "$desde" ] && url="${url}&desde=${desde}"
+
+            corpo=$(mktemp)
+            codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+              -X POST "$url" \
+              -H "x-cron-secret: $CRON_SECRET" \
+              --max-time 120)
+
+            echo "--- rodada $rodada (desde ${desde:-inicio}) -> HTTP $codigo"
+            jq . "$corpo" 2>/dev/null || cat "$corpo"; echo
+
+            if [ "$codigo" != "200" ]; then
+              echo "::error::sync-financeiro respondeu $codigo"
+              exit 1
+            fi
+
+            g_tit=$(jq -r '.titulos.gravados // 0' "$corpo")
+            g_nf=$(jq -r  '.notas.gravados // 0'   "$corpo")
+            total_gravados=$((total_gravados + g_tit + g_nf))
+
+            # Um alvo por vez decide continuar: se algum ainda tiver
+            # proximo_desde, seguir a partir dele. Se tanto titulos quanto notas
+            # nao mandaram proximo_desde, e fim.
+            prox_tit=$(jq -r '.titulos.proximo_desde // empty' "$corpo")
+            prox_nf=$(jq -r  '.notas.proximo_desde // empty'   "$corpo")
+
+            if [ -z "$prox_tit" ] && [ -z "$prox_nf" ]; then
+              echo "Concluido. Total gravado nesta execucao: $total_gravados"
+              exit 0
+            fi
+
+            # O menor dos dois cursores garante que nada e pulado -- o alvo que
+            # ficou para tras retoma naturalmente na proxima rodada.
+            proximo=""
+            if [ -n "$prox_tit" ] && [ -n "$prox_nf" ]; then
+              proximo=$([ "$prox_tit" -lt "$prox_nf" ] && echo "$prox_tit" || echo "$prox_nf")
+            else
+              proximo="${prox_tit:-$prox_nf}"
+            fi
+
+            if [ -z "$proximo" ] || [ "$proximo" = "$desde" ]; then
+              echo "::error::cursor nao avancou (ficou em $desde) -- abortando"
+              exit 1
+            fi
+            desde="$proximo"
+          done
+
+          echo "::error::teto de rodadas atingido sem concluir (ultimo desde $desde)"
+          exit 1

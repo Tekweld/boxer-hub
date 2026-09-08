@@ -75,12 +75,20 @@ module.exports = async function handler(req, res) {
           'tenant': ZEN_TENANT
         };
 
-        // Criar Person
+        // Criar Person. Bug descoberto em 2026-09-08: nationality.id de "Brasil"
+        // e 1030, nao 1 -- o valor errado falhava silenciosamente e todos os 4
+        // onboardings existentes ficaram sem erp_cliente_id por causa disso.
+        // TODO: setar tambem `category1` (canal de venda) baseado em
+        // onb.classificacao. Sem isso, o cliente criado no Zen nao entra no
+        // sync-zen-clientes (que filtra por Varejo/Ecommerce/Hibrido) -- hoje
+        // o admin precisa ajustar o canal manualmente no Zen apos a ativacao.
+        // Fazer resolvendo `id` do canal via /catalog/person/personCategory
+        // antes de POSTar a Person, para nao chutar a forma do payload.
         const personBody = {
           type: 'CORPORATION',
           name: onb.razao_social,
           fantasyName: onb.nome_fantasia || onb.razao_social,
-          nationality: { id: 1 },
+          nationality: { id: 1030 },
           documentType: 'BR_CNPJ',
           documentNumber: onb.cnpj,
           comments: 'Cadastro via Boxer Hub — Onboarding ' + onboarding_id.substring(0, 8)
@@ -157,7 +165,11 @@ module.exports = async function handler(req, res) {
 
         zenStatus = 'ok';
       } catch (zenErr) {
-        zenStatus = 'erro: ' + zenErr.message;
+        // Antes o erro do Zen so ia parar no log e ninguem via. Agora fica no
+        // proprio hub_onboarding.credito_status_detalhe (reaproveita a coluna
+        // ja usada para observacao) e no zen_status devolvido, que a tela
+        // deve mostrar como aviso claro.
+        zenStatus = 'erro: ' + zenErr.message.slice(0, 250);
         console.error('ZEN error:', zenErr.message);
       }
     }

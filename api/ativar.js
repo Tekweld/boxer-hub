@@ -75,15 +75,20 @@ module.exports = async function handler(req, res) {
           'tenant': ZEN_TENANT
         };
 
+        // Resolver ids das categorias no Zen:
+        //   category1 = canal de venda (Varejo / Ecommerce / Hibrido)
+        //   category2 = faturamento (Pedido Completo / Pedido Parcial)
+        // Sem category1, o cliente nao entra no sync-zen-clientes.
+        const canalLabel = onb.classificacao === 'ecommerce' ? 'Ecommerce'
+                         : onb.classificacao === 'hibrido' ? 'Hibrido'
+                         : 'Varejo';
+        const faturamentoLabel = onb.aceita_faturamento_parcial ? 'Pedido Parcial' : 'Pedido Completo';
+        const category1Id = await resolveCategoryId(zenH, canalLabel);
+        const category2Id = await resolveCategoryId(zenH, faturamentoLabel);
+
         // Criar Person. Bug descoberto em 2026-09-08: nationality.id de "Brasil"
         // e 1030, nao 1 -- o valor errado falhava silenciosamente e todos os 4
         // onboardings existentes ficaram sem erp_cliente_id por causa disso.
-        // TODO: setar tambem `category1` (canal de venda) baseado em
-        // onb.classificacao. Sem isso, o cliente criado no Zen nao entra no
-        // sync-zen-clientes (que filtra por Varejo/Ecommerce/Hibrido) -- hoje
-        // o admin precisa ajustar o canal manualmente no Zen apos a ativacao.
-        // Fazer resolvendo `id` do canal via /catalog/person/personCategory
-        // antes de POSTar a Person, para nao chutar a forma do payload.
         const personBody = {
           type: 'CORPORATION',
           name: onb.razao_social,
@@ -93,6 +98,8 @@ module.exports = async function handler(req, res) {
           documentNumber: onb.cnpj,
           comments: 'Cadastro via Boxer Hub — Onboarding ' + onboarding_id.substring(0, 8)
         };
+        if (category1Id) personBody.category1 = { id: category1Id };
+        if (category2Id) personBody.category2 = { id: category2Id };
         if (onb.inscricao_estadual && onb.inscricao_estadual !== 'ISENTO') {
           personBody.document2Type = 'BR_INSCRICAO_ESTADUAL';
           personBody.document2Number = onb.inscricao_estadual;
@@ -127,6 +134,17 @@ module.exports = async function handler(req, res) {
           }
           erpClienteId = existing.id;
           zenStatus = 'reaproveitou_person_' + erpClienteId;
+
+          // Atualizar categorias na Person existente (podia estar sem ou
+          // com valores diferentes de tentativa anterior).
+          const patchBody = {};
+          if (category1Id) patchBody.category1 = { id: category1Id };
+          if (category2Id) patchBody.category2 = { id: category2Id };
+          if (Object.keys(patchBody).length) {
+            await fetch(ZEN_BASE + '/catalog/person/person/' + erpClienteId, {
+              method: 'PUT', headers: zenH, body: JSON.stringify({ ...existing, ...patchBody })
+            });
+          }
         }
 
         // Criar endereco
@@ -268,6 +286,15 @@ module.exports = async function handler(req, res) {
         })
       });
     } else {
+      // Sem erp_cliente_id, a tabela recusa (NOT NULL). Se o Zen falhou por
+      // completo, nao deixamos o onboarding "meio ativo" -- interrompe aqui
+      // e devolve o motivo real para a tela.
+      if (!erpClienteId) {
+        return res.status(500).json({
+          error: 'Nao foi possivel obter erp_cliente_id do Zen; hub_clientes exige esse valor. Detalhe Zen: ' + zenStatus,
+          zen_status: zenStatus
+        });
+      }
       const clienteRes = await fetch(SB_URL + '/rest/v1/hub_clientes', {
         method: 'POST',
         headers: sbHeaders('POST'),
@@ -278,13 +305,19 @@ module.exports = async function handler(req, res) {
           status_cadastro: 'ativo',
           limite_credito: onb.limite_aprovado || 0,
           limite_disponivel: onb.limite_aprovado || 0,
-          erp_cliente_id: erpClienteId,
+          erp_cliente_id: String(erpClienteId),
           ativo: true
         })
       });
       if (clienteRes.ok) {
         const clientes = await clienteRes.json();
         clienteId = clientes?.[0]?.id || null;
+      } else {
+        const errTxt = await clienteRes.text();
+        return res.status(500).json({
+          error: 'Falha ao criar hub_clientes: HTTP ' + clienteRes.status + ' ' + errTxt.slice(0, 300),
+          zen_status: zenStatus
+        });
       }
     }
 
@@ -418,6 +451,32 @@ function buildActivationEmail(razao, email, senha, limite) {
       <div style="text-align:center;font-size:11px;color:#a0aec0;line-height:1.6">Boxer Soldas — hub.boxersoldas.com.br<br>Este email foi enviado automaticamente pelo Boxer Hub.</div>
     </div>
   </body></html>`;
+}
+
+// Resolve o id de uma personCategory pelo `description`. Log-e-siga se
+// nao achar (o pior caso e o admin ter que ajustar a categoria manual
+// no Zen depois, e nao a ativacao inteira quebrar).
+async function resolveCategoryId(zenH, description) {
+  if (!description) return null;
+  try {
+    const url = 'https://api.zenerp.app.br/catalog/person/personCategory?q=' +
+                encodeURIComponent('description==' + description) + '&size=5';
+    const r = await fetch(url, { headers: zenH });
+    if (!r.ok) {
+      console.warn('personCategory lookup ' + description + ' HTTP ' + r.status);
+      return null;
+    }
+    const body = await r.json();
+    const list = body?.content || body || [];
+    if (!list.length) {
+      console.warn('personCategory "' + description + '" nao encontrada no Zen');
+      return null;
+    }
+    return list[0].id;
+  } catch (e) {
+    console.warn('personCategory lookup erro (' + description + '): ' + e.message);
+    return null;
+  }
 }
 
 function generatePassword() {

@@ -380,6 +380,15 @@ body{font-family:Outfit,sans-serif;background:#f0f4f8;color:#1a202c;min-height:1
       <div class="class-tag" id="classTag"></div>
     </div>
 
+    <div class="q-block" style="margin-top:20px">
+      <div class="q-title">Como voce prefere receber pedidos quando algum item esta em falta?</div>
+      <div class="q-help">Se voce aceita <b>faturamento parcial</b>, enviamos o que temos e o restante vai depois. Caso contrario, aguardamos ter todo o pedido completo antes de faturar.</div>
+      <div class="options-row">
+        <button class="option-btn" id="fatOptCompleto" onclick="setFatParcial(false, this)">Somente pedido completo</button>
+        <button class="option-btn" id="fatOptParcial"  onclick="setFatParcial(true,  this)">Aceito receber parcial</button>
+      </div>
+    </div>
+
     <div class="form-actions">
       <button class="btn btn-outline" onclick="prevStep(3)">&#8592; Voltar</button>
       <button class="btn btn-primary" onclick="nextStep(5)">Proximo &#8594;</button>
@@ -737,6 +746,13 @@ function getClassification() {
   return calcClassification();
 }
 
+function setFatParcial(val, btn) {
+  answers.aceita_faturamento_parcial = val;
+  const grp = btn.parentElement;
+  grp.querySelectorAll('.option-btn').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+}
+
 // === MASKS ===
 
 function maskCnpj(el) {
@@ -920,7 +936,8 @@ async function submitOnboarding() {
       p_classificacao: getClassification(),
       p_representante_nome: repInfo?.rep_bmax || null,
       p_regiao: gi('fUf'),
-      p_documentos: docsArray
+      p_documentos: docsArray,
+      p_aceita_faturamento_parcial: answers.aceita_faturamento_parcial === true
     });
 
     if (result.ok === false) {

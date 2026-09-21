@@ -101,12 +101,33 @@ module.exports = async function handler(req, res) {
         const personRes = await fetch(ZEN_BASE + '/catalog/person/person', {
           method: 'POST', headers: zenH, body: JSON.stringify(personBody)
         });
-        if (!personRes.ok) {
+        if (personRes.ok) {
+          const person = await personRes.json();
+          erpClienteId = person.id;
+        } else {
           const zenErr = await personRes.text();
-          throw new Error('Erro ao criar Person no ZEN: ' + zenErr);
+          const jaExisteNoZen = /duplicate key|cat_person_docume/i.test(zenErr);
+          if (!jaExisteNoZen) {
+            throw new Error('Erro ao criar Person no ZEN: ' + zenErr);
+          }
+          // Person ja existe (tentativa anterior). Buscar por documentNumber
+          // e reaproveitar o id para completar endereco/contato/credito.
+          const cnpjLimpo = (onb.cnpj || '').replace(/\D/g, '');
+          const lookupRes = await fetch(
+            ZEN_BASE + '/catalog/person/person?q=' + encodeURIComponent('documentNumber==' + cnpjLimpo) + '&size=1',
+            { headers: zenH }
+          );
+          if (!lookupRes.ok) {
+            throw new Error('Person duplicada mas lookup falhou: ' + await lookupRes.text());
+          }
+          const lookupBody = await lookupRes.json();
+          const existing = (lookupBody?.content || lookupBody || [])[0];
+          if (!existing?.id) {
+            throw new Error('Person duplicada mas nao achei por documentNumber=' + cnpjLimpo);
+          }
+          erpClienteId = existing.id;
+          zenStatus = 'reaproveitou_person_' + erpClienteId;
         }
-        const person = await personRes.json();
-        erpClienteId = person.id;
 
         // Criar endereco
         const end = (onb.enderecos || [])[0];

@@ -174,17 +174,24 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // 4 — Criar usuario Supabase Auth (auto-confirmado)
+    // 4 — Criar (ou reutilizar) usuario Supabase Auth (auto-confirmado)
+    // Idempotente: tentativas anteriores de ativacao podem ter criado o Auth
+    // user e falhado depois (ex.: bug de nationality.id). Nesse caso, encontrar
+    // o user existente por email, resetar a senha, e seguir.
     const senhaTemp = generatePassword();
     const emailCliente = onb.contato_email;
+    const authAdminH = {
+      'Content-Type': 'application/json',
+      'apikey': SB_SERVICE,
+      'Authorization': 'Bearer ' + SB_SERVICE
+    };
+
+    let newUser = null;
+    let usuarioReaproveitado = false;
 
     const createUserRes = await fetch(SB_URL + '/auth/v1/admin/users', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SB_SERVICE,
-        'Authorization': 'Bearer ' + SB_SERVICE
-      },
+      headers: authAdminH,
       body: JSON.stringify({
         email: emailCliente,
         password: senhaTemp,
@@ -192,49 +199,108 @@ module.exports = async function handler(req, res) {
         user_metadata: { nome: onb.contato_nome || onb.razao_social, tipo: 'cliente' }
       })
     });
-    const newUser = await createUserRes.json();
-    if (!newUser?.id) {
-      const errMsg = newUser?.msg || newUser?.message || JSON.stringify(newUser);
-      return res.status(500).json({ error: 'Erro ao criar usuario Auth: ' + errMsg, zen_status: zenStatus });
+    const createBody = await createUserRes.json();
+
+    if (createBody?.id) {
+      newUser = createBody;
+    } else {
+      const errMsg = createBody?.msg || createBody?.message || createBody?.error_description || '';
+      const jaExiste = /already been registered|already registered|already exists/i.test(errMsg);
+      if (!jaExiste) {
+        return res.status(500).json({ error: 'Erro ao criar usuario Auth: ' + (errMsg || JSON.stringify(createBody)), zen_status: zenStatus });
+      }
+      // Buscar por email na lista de Auth users
+      const listRes = await fetch(SB_URL + '/auth/v1/admin/users?per_page=200', { headers: authAdminH });
+      const listData = await listRes.json();
+      const users = listData?.users || [];
+      const existing = users.find(u => (u.email || '').toLowerCase() === emailCliente.toLowerCase());
+      if (!existing) {
+        return res.status(500).json({ error: 'Auth recusou criacao ("' + errMsg + '") e nao achei o usuario existente por email', zen_status: zenStatus });
+      }
+      // Resetar senha para o admin poder repassar
+      await fetch(SB_URL + '/auth/v1/admin/users/' + existing.id, {
+        method: 'PUT',
+        headers: authAdminH,
+        body: JSON.stringify({ password: senhaTemp, email_confirm: true })
+      });
+      newUser = existing;
+      usuarioReaproveitado = true;
     }
 
-    // 5 — Criar hub_clientes
-    const clienteBody = {
-      cnpj: onb.cnpj,
-      razao_social: onb.razao_social,
-      nome_fantasia: onb.nome_fantasia,
-      status_cadastro: 'ativo',
-      limite_credito: onb.limite_aprovado || 0,
-      limite_disponivel: onb.limite_aprovado || 0,
-      erp_cliente_id: erpClienteId,
-      ativo: true
-    };
-
-    const clienteRes = await fetch(SB_URL + '/rest/v1/hub_clientes', {
-      method: 'POST',
-      headers: sbHeaders('POST'),
-      body: JSON.stringify(clienteBody)
-    });
+    // 5 — Criar (ou reutilizar) hub_clientes por CNPJ
     let clienteId = null;
-    if (clienteRes.ok) {
-      const clientes = await clienteRes.json();
-      clienteId = clientes?.[0]?.id || null;
+    const existingClienteRes = await fetch(
+      SB_URL + '/rest/v1/hub_clientes?cnpj=eq.' + encodeURIComponent(onb.cnpj) + '&select=id',
+      { headers: sbHeaders('GET') }
+    );
+    const existingClientes = existingClienteRes.ok ? await existingClienteRes.json() : [];
+    if (existingClientes?.[0]) {
+      clienteId = existingClientes[0].id;
+      // Atualizar dados vitais (erp_cliente_id pode ter chegado agora)
+      await fetch(SB_URL + '/rest/v1/hub_clientes?id=eq.' + clienteId, {
+        method: 'PATCH',
+        headers: sbHeaders('PATCH'),
+        body: JSON.stringify({
+          status_cadastro: 'ativo',
+          erp_cliente_id: erpClienteId || existingClientes[0].erp_cliente_id || null,
+          ativo: true
+        })
+      });
+    } else {
+      const clienteRes = await fetch(SB_URL + '/rest/v1/hub_clientes', {
+        method: 'POST',
+        headers: sbHeaders('POST'),
+        body: JSON.stringify({
+          cnpj: onb.cnpj,
+          razao_social: onb.razao_social,
+          nome_fantasia: onb.nome_fantasia,
+          status_cadastro: 'ativo',
+          limite_credito: onb.limite_aprovado || 0,
+          limite_disponivel: onb.limite_aprovado || 0,
+          erp_cliente_id: erpClienteId,
+          ativo: true
+        })
+      });
+      if (clienteRes.ok) {
+        const clientes = await clienteRes.json();
+        clienteId = clientes?.[0]?.id || null;
+      }
     }
 
-    // 6 — Criar hub_perfis
-    await fetch(SB_URL + '/rest/v1/hub_perfis', {
-      method: 'POST',
-      headers: sbHeaders('POST'),
-      body: JSON.stringify({
-        user_id: newUser.id,
-        tipo: 'cliente',
-        role: 'dealer',
-        nome: onb.contato_nome || onb.razao_social,
-        email: emailCliente,
-        cliente_id: clienteId,
-        ativo: true
-      })
-    });
+    // 6 — Criar (ou reutilizar) hub_perfis por user_id
+    const existingPerfilRes = await fetch(
+      SB_URL + '/rest/v1/hub_perfis?user_id=eq.' + newUser.id + '&select=id',
+      { headers: sbHeaders('GET') }
+    );
+    const existingPerfis = existingPerfilRes.ok ? await existingPerfilRes.json() : [];
+    if (existingPerfis?.[0]) {
+      await fetch(SB_URL + '/rest/v1/hub_perfis?id=eq.' + existingPerfis[0].id, {
+        method: 'PATCH',
+        headers: sbHeaders('PATCH'),
+        body: JSON.stringify({
+          tipo: 'cliente',
+          role: 'dealer',
+          nome: onb.contato_nome || onb.razao_social,
+          email: emailCliente,
+          cliente_id: clienteId,
+          ativo: true
+        })
+      });
+    } else {
+      await fetch(SB_URL + '/rest/v1/hub_perfis', {
+        method: 'POST',
+        headers: sbHeaders('POST'),
+        body: JSON.stringify({
+          user_id: newUser.id,
+          tipo: 'cliente',
+          role: 'dealer',
+          nome: onb.contato_nome || onb.razao_social,
+          email: emailCliente,
+          cliente_id: clienteId,
+          ativo: true
+        })
+      });
+    }
 
     // 7 — Atualizar hub_onboarding para 'ativo'
     await fetch(SB_URL + '/rest/v1/hub_onboarding?id=eq.' + onboarding_id, {
@@ -300,7 +366,8 @@ module.exports = async function handler(req, res) {
       cliente_id: clienteId,
       user_id: newUser.id,
       zen_status: zenStatus,
-      email_status: emailStatus
+      email_status: emailStatus,
+      usuario_reaproveitado: usuarioReaproveitado
     });
 
   } catch (e) {

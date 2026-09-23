@@ -57,6 +57,8 @@ module.exports = async function handler(req, res) {
     let erpClienteId = null;
     let zenStatus = 'nao_configurado';
     let zenPassos = [];
+    let _zenPersonEnviado = null;
+    let _zenPersonResposta = null;
     const zenEmail = process.env.ZEN_EMAIL;
     const zenSenha = process.env.ZEN_SENHA;
 
@@ -139,6 +141,9 @@ module.exports = async function handler(req, res) {
           const person = await personRes.json();
           erpClienteId = person.id;
           zenStatus = 'ok';
+          // Guarda body enviado + resposta imediata para o passo diagnostico
+          _zenPersonEnviado = personBody;
+          _zenPersonResposta = person;
         } else {
           const zenErr = await personRes.text();
           const jaExisteNoZen = /duplicate key|cat_person_docume/i.test(zenErr);
@@ -259,6 +264,30 @@ module.exports = async function handler(req, res) {
             passos.push({ op: 'post_credito', creditLine_id: creditLineId, ok: creditRes.ok, http: creditRes.status, erro: creditRes.ok ? null : (await creditRes.text()).slice(0, 300) });
           }
         }
+
+        // === Diagnostico: reler Person e mostrar o que o Zen realmente gravou ===
+        try {
+          const relerRes = await fetch(ZEN_BASE + '/catalog/person/person/' + erpClienteId, { headers: zenH });
+          if (relerRes.ok) {
+            const p = await relerRes.json();
+            const gravados = {
+              email: p.email || null, phone: p.phone || null,
+              zipcode: p.zipcode || null, street: p.street || null, number: p.number || null,
+              district: p.district || null, city_id: p.city?.id || null, city_name: p.city?.name || null,
+              category1: p.category1?.description || p.category1?.id || null,
+              category2: p.category2?.description || p.category2?.id || null,
+              document2Number: p.document2Number || null
+            };
+            const enviados = _zenPersonEnviado || {};
+            const chaves = Object.keys(enviados).filter(k => !['type','name','fantasyName','nationality','documentType','documentNumber','comments'].includes(k));
+            const perdidos = chaves.filter(k => {
+              const env = enviados[k];
+              const got = k === 'category1' ? p.category1 : k === 'category2' ? p.category2 : k === 'city' ? p.city : p[k];
+              return env && !got;
+            });
+            passos.push({ op: 'reler_person_diagnostico', ok: true, http: 200, gravados_no_zen: gravados, campos_perdidos: perdidos });
+          }
+        } catch (_) {}
 
         zenPassos = passos;
 

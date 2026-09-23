@@ -994,10 +994,19 @@ async function ativarCliente(id) {
 
       ${(data.zen_passos && data.zen_passos.length) ? `<div style="padding:10px 14px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:16px;font-size:11px;color:#4a5568">
         <div style="font-weight:600;margin-bottom:6px">Passos no ZEN (Person ${data.erp_cliente_id})</div>
-        ${data.zen_passos.map(p => `<div style="display:flex;justify-content:space-between;padding:3px 0;border-top:1px dashed #e2e8f0">
-          <span>${p.op}</span>
-          <span style="font-weight:600;color:${p.ok?'#16a34a':'#dc2626'}">${p.ok?'OK':'ERRO '+p.http}${p.erro?' — '+p.erro:''}</span>
-        </div>`).join('')}
+        ${data.zen_passos.map(p => {
+          if (p.op === 'reler_person_diagnostico') {
+            return `<div style="padding:6px 0;border-top:1px dashed #e2e8f0">
+              <div style="font-weight:600;color:#1d327b;margin-bottom:4px">Diagnostico: o que o Zen realmente gravou</div>
+              <pre style="font-size:10px;background:#fff;padding:6px;border:1px solid #e2e8f0;border-radius:4px;overflow:auto;max-height:180px;margin:0">${JSON.stringify(p.gravados_no_zen, null, 2)}</pre>
+              ${p.campos_perdidos && p.campos_perdidos.length ? `<div style="color:#dc2626;font-weight:600;margin-top:4px">Campos enviados mas nao gravados: ${p.campos_perdidos.join(', ')}</div>` : '<div style="color:#16a34a;margin-top:4px">Todos os campos enviados foram gravados</div>'}
+            </div>`;
+          }
+          return `<div style="display:flex;justify-content:space-between;padding:3px 0;border-top:1px dashed #e2e8f0">
+            <span>${p.op}${p.via?' ('+p.via+')':''}</span>
+            <span style="font-weight:600;color:${p.ok?'#16a34a':'#dc2626'}">${p.ok?'OK':'ERRO '+p.http}${p.erro?' — '+String(p.erro).slice(0,100):''}</span>
+          </div>`;
+        }).join('')}
       </div>` : ''}
 
       ${data.email_status === 'enviado' ?

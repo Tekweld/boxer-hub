@@ -138,7 +138,8 @@ module.exports = async function handler(req, res) {
         }
 
         // === Atualizar Person existente/nova com categorias e demais campos ===
-        // Zen exige PUT com objeto completo. Buscar full payload primeiro.
+        // Zen recusou PUT (405); tentar POST /catalog/person/person com o objeto
+        // completo (id incluso) -- padrao "upsert" observado em outros endpoints.
         const passos = [];
         const zenGetFull = await fetch(ZEN_BASE + '/catalog/person/person/' + erpClienteId, { headers: zenH });
         if (!zenGetFull.ok) {
@@ -148,13 +149,21 @@ module.exports = async function handler(req, res) {
           const merged = { ...full };
           if (category1Id) merged.category1 = { id: category1Id };
           if (category2Id) merged.category2 = { id: category2Id };
-          // completa campos que possam estar faltando
           if (!merged.name && onb.razao_social) merged.name = onb.razao_social;
           if (!merged.fantasyName && (onb.nome_fantasia || onb.razao_social)) merged.fantasyName = onb.nome_fantasia || onb.razao_social;
-          const putRes = await fetch(ZEN_BASE + '/catalog/person/person/' + erpClienteId, {
-            method: 'PUT', headers: zenH, body: JSON.stringify(merged)
+
+          // Tenta em cascata: PATCH → POST /{id} → POST /
+          let updRes = await fetch(ZEN_BASE + '/catalog/person/person/' + erpClienteId, {
+            method: 'PATCH', headers: zenH, body: JSON.stringify(merged)
           });
-          passos.push({ op: 'put_person_categorias', ok: putRes.ok, http: putRes.status, erro: putRes.ok ? null : (await putRes.text()).slice(0, 300) });
+          let via = 'PATCH';
+          if (updRes.status === 405 || updRes.status === 404) {
+            updRes = await fetch(ZEN_BASE + '/catalog/person/person', {
+              method: 'POST', headers: zenH, body: JSON.stringify(merged)
+            });
+            via = 'POST_com_id';
+          }
+          passos.push({ op: 'update_person_categorias', via, ok: updRes.ok, http: updRes.status, erro: updRes.ok ? null : (await updRes.text()).slice(0, 300) });
         }
 
         // === Endereco ===
@@ -216,12 +225,32 @@ module.exports = async function handler(req, res) {
         }
 
         // === Limite de credito ===
+        // creditLineItem exige o campo `creditLine` (a "linha" a qual pertence).
+        // Buscar a primeira linha ativa como padrao.
         if (onb.limite_aprovado) {
-          const creditRes = await fetch(ZEN_BASE + '/financial/credit/creditLineItem', {
-            method: 'POST', headers: zenH,
-            body: JSON.stringify({ person: { id: erpClienteId }, value: onb.limite_aprovado })
-          });
-          passos.push({ op: 'post_credito', ok: creditRes.ok, http: creditRes.status, erro: creditRes.ok ? null : (await creditRes.text()).slice(0, 300) });
+          let creditLineId = null;
+          try {
+            const clRes = await fetch(ZEN_BASE + '/financial/credit/creditLine?size=10', { headers: zenH });
+            if (clRes.ok) {
+              const clBody = await clRes.json();
+              const list = clBody?.content || clBody || [];
+              creditLineId = list[0]?.id || null;
+            }
+          } catch (_) {}
+
+          if (!creditLineId) {
+            passos.push({ op: 'lookup_creditLine', ok: false, http: 0, erro: 'nenhuma linha de credito ativa encontrada no Zen' });
+          } else {
+            const creditRes = await fetch(ZEN_BASE + '/financial/credit/creditLineItem', {
+              method: 'POST', headers: zenH,
+              body: JSON.stringify({
+                person: { id: erpClienteId },
+                creditLine: { id: creditLineId },
+                value: onb.limite_aprovado
+              })
+            });
+            passos.push({ op: 'post_credito', creditLine_id: creditLineId, ok: creditRes.ok, http: creditRes.status, erro: creditRes.ok ? null : (await creditRes.text()).slice(0, 300) });
+          }
         }
 
         zenPassos = passos;

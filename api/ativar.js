@@ -79,7 +79,6 @@ module.exports = async function handler(req, res) {
         // Resolver ids das categorias no Zen:
         //   category1 = canal de venda (Varejo / Ecommerce / Hibrido)
         //   category2 = faturamento (Pedido Completo / Pedido Parcial)
-        // Sem category1, o cliente nao entra no sync-zen-clientes.
         const canalLabel = onb.classificacao === 'ecommerce' ? 'Ecommerce'
                          : onb.classificacao === 'hibrido' ? 'Hibrido'
                          : 'Varejo';
@@ -87,9 +86,25 @@ module.exports = async function handler(req, res) {
         const category1Id = await resolveCategoryId(zenH, canalLabel);
         const category2Id = await resolveCategoryId(zenH, faturamentoLabel);
 
-        // Criar Person. Bug descoberto em 2026-09-08: nationality.id de "Brasil"
-        // e 1030, nao 1 -- o valor errado falhava silenciosamente e todos os 4
-        // onboardings existentes ficaram sem erp_cliente_id por causa disso.
+        // Resolver city.id do endereco principal (obrigatorio para Zen mostrar
+        // o endereco na aba Endereco da Person). Lookup por CEP; fallback por
+        // nome+UF.
+        const endPrincipal = (onb.enderecos || [])[0] || {};
+        const cepPrincipal = (endPrincipal.cep || '').replace(/\D/g, '');
+        let cityIdPrincipal = null;
+        try {
+          if (cepPrincipal.length === 8) {
+            const rr = await fetch(ZEN_BASE + '/catalog/geo/city?q=' + encodeURIComponent('zipcodes.zipcode==' + cepPrincipal) + '&size=1', { headers: zenH });
+            if (rr.ok) { const bb = await rr.json(); cityIdPrincipal = (bb?.content || bb || [])[0]?.id || null; }
+          }
+          if (!cityIdPrincipal && endPrincipal.cidade && endPrincipal.uf) {
+            const rr = await fetch(ZEN_BASE + '/catalog/geo/city?q=' + encodeURIComponent('name==' + endPrincipal.cidade + ';state.code==' + endPrincipal.uf) + '&size=1', { headers: zenH });
+            if (rr.ok) { const bb = await rr.json(); cityIdPrincipal = (bb?.content || bb || [])[0]?.id || null; }
+          }
+        } catch (_) {}
+
+        // Criar Person com TUDO no body -- a API REST do Zen nao suporta update
+        // depois. O que nao entrar aqui vira ajuste manual na UI.
         const personBody = {
           type: 'CORPORATION',
           name: onb.razao_social,
@@ -97,6 +112,8 @@ module.exports = async function handler(req, res) {
           nationality: { id: 1030 },
           documentType: 'BR_CNPJ',
           documentNumber: onb.cnpj,
+          email: onb.contato_email || null,
+          phone: onb.contato_telefone || null,
           comments: 'Cadastro via Boxer Hub — Onboarding ' + onboarding_id.substring(0, 8)
         };
         if (category1Id) personBody.category1 = { id: category1Id };
@@ -105,6 +122,15 @@ module.exports = async function handler(req, res) {
           personBody.document2Type = 'BR_INSCRICAO_ESTADUAL';
           personBody.document2Number = onb.inscricao_estadual;
         }
+        // Endereco principal na propria Person
+        if (endPrincipal.logradouro) {
+          personBody.zipcode = cepPrincipal;
+          personBody.street = endPrincipal.logradouro;
+          personBody.number = endPrincipal.numero || 'S/N';
+          personBody.complement = endPrincipal.complemento || '';
+          personBody.district = endPrincipal.bairro || '';
+          if (cityIdPrincipal) personBody.city = { id: cityIdPrincipal };
+        }
 
         const personRes = await fetch(ZEN_BASE + '/catalog/person/person', {
           method: 'POST', headers: zenH, body: JSON.stringify(personBody)
@@ -112,6 +138,7 @@ module.exports = async function handler(req, res) {
         if (personRes.ok) {
           const person = await personRes.json();
           erpClienteId = person.id;
+          zenStatus = 'ok';
         } else {
           const zenErr = await personRes.text();
           const jaExisteNoZen = /duplicate key|cat_person_docume/i.test(zenErr);
@@ -159,61 +186,48 @@ module.exports = async function handler(req, res) {
           });
         }
 
-        // === Endereco ===
-        const end = (onb.enderecos || [])[0];
-        if (end?.logradouro) {
-          // Resolver cidade via /catalog/geo/city por CEP ou nome+UF
-          let cityId = null;
-          try {
-            const cepLimpo = (end.cep || '').replace(/\D/g, '');
-            if (cepLimpo.length === 8) {
-              const cityByCep = await fetch(ZEN_BASE + '/catalog/geo/city?q=' + encodeURIComponent('zipcodes.zipcode==' + cepLimpo) + '&size=1', { headers: zenH });
-              if (cityByCep.ok) {
-                const cb = await cityByCep.json();
-                cityId = (cb?.content || cb || [])[0]?.id || null;
-              }
-            }
-            if (!cityId && end.cidade && end.uf) {
-              const cityByName = await fetch(ZEN_BASE + '/catalog/geo/city?q=' + encodeURIComponent('name==' + end.cidade + ';state.code==' + end.uf) + '&size=1', { headers: zenH });
-              if (cityByName.ok) {
-                const cb = await cityByName.json();
-                cityId = (cb?.content || cb || [])[0]?.id || null;
-              }
-            }
-          } catch (_) {}
-
+        // === Enderecos adicionais (o principal ja foi no POST Person) ===
+        // Se onboarding tiver mais de um endereco, o 2o+ vira personAddress
+        // auxiliar (tipo "entrega"). Hoje o formulario so tem 1, entao skip.
+        for (const endExtra of (onb.enderecos || []).slice(1)) {
+          if (!endExtra?.logradouro) continue;
           const addrBody = {
             person: { id: erpClienteId },
-            description: 'Principal',
-            zipcode: (end.cep || '').replace(/\D/g, ''),
-            street: end.logradouro,
-            number: end.numero || 'S/N',
-            complement: end.complemento || '',
-            district: end.bairro || ''
+            description: endExtra.descricao || 'Entrega',
+            zipcode: (endExtra.cep || '').replace(/\D/g, ''),
+            street: endExtra.logradouro,
+            number: endExtra.numero || 'S/N',
+            complement: endExtra.complemento || '',
+            district: endExtra.bairro || ''
           };
-          if (cityId) addrBody.city = { id: cityId };
-
           const addrRes = await fetch(ZEN_BASE + '/catalog/person/personAddress', {
             method: 'POST', headers: zenH, body: JSON.stringify(addrBody)
           });
-          passos.push({ op: 'post_endereco', ok: addrRes.ok, http: addrRes.status, city_id: cityId, erro: addrRes.ok ? null : (await addrRes.text()).slice(0, 300) });
+          passos.push({ op: 'post_endereco_extra', ok: addrRes.ok, http: addrRes.status, erro: addrRes.ok ? null : (await addrRes.text()).slice(0, 200) });
         }
 
-        // === Contatos ===
+        // === Contatos adicionais (email/phone principal ja foram no POST Person) ===
+        // Cria personContact para cada contato do formulario. O principal
+        // (contato_email/contato_telefone) ja esta em Person.email/Person.phone;
+        // esses aqui sao os contatos comercial/financeiro do step 3.
         for (const c of (onb.contatos || [])) {
           if (c.email) {
             const r = await fetch(ZEN_BASE + '/catalog/person/personContact', {
               method: 'POST', headers: zenH,
-              body: JSON.stringify({ person: { id: erpClienteId }, type: 'EMAIL', description: c.email })
+              body: JSON.stringify({
+                person: { id: erpClienteId },
+                type: 'EMAIL',
+                description: c.email
+              })
             });
-            passos.push({ op: 'post_contato_email', ok: r.ok, http: r.status, erro: r.ok ? null : (await r.text()).slice(0, 200) });
+            passos.push({ op: 'post_contato_email' + (c.tipo ? '_' + c.tipo : ''), ok: r.ok, http: r.status, erro: r.ok ? null : (await r.text()).slice(0, 200) });
           }
           if (c.telefone) {
             const r = await fetch(ZEN_BASE + '/catalog/person/personContact', {
               method: 'POST', headers: zenH,
               body: JSON.stringify({ person: { id: erpClienteId }, type: 'PHONE', description: c.telefone })
             });
-            passos.push({ op: 'post_contato_phone', ok: r.ok, http: r.status, erro: r.ok ? null : (await r.text()).slice(0, 200) });
+            passos.push({ op: 'post_contato_phone' + (c.tipo ? '_' + c.tipo : ''), ok: r.ok, http: r.status, erro: r.ok ? null : (await r.text()).slice(0, 200) });
           }
         }
 

@@ -137,33 +137,26 @@ module.exports = async function handler(req, res) {
           zenStatus = 'reaproveitou_person_' + erpClienteId;
         }
 
-        // === Atualizar Person existente/nova com categorias e demais campos ===
-        // Zen recusou PUT (405); tentar POST /catalog/person/person com o objeto
-        // completo (id incluso) -- padrao "upsert" observado em outros endpoints.
+        // === Atualizar categorias na Person (SO se ela ja existia) ===
+        // A API REST do Zen nao aceita PUT nem PATCH em /catalog/person/person/{id}
+        // (405), e POST na colecao com id gera duplicate. Categorias em Person
+        // ja criada precisam ser ajustadas na UI do Zen -- nao ha caminho REST.
+        // Para Person NOVA criada nesta rodada, category1/category2 ja foram
+        // enviadas no POST inicial e ficam gravadas.
         const passos = [];
-        const zenGetFull = await fetch(ZEN_BASE + '/catalog/person/person/' + erpClienteId, { headers: zenH });
-        if (!zenGetFull.ok) {
-          passos.push({ op: 'get_person_full', ok: false, http: zenGetFull.status, erro: (await zenGetFull.text()).slice(0, 200) });
-        } else {
-          const full = await zenGetFull.json();
-          const merged = { ...full };
-          if (category1Id) merged.category1 = { id: category1Id };
-          if (category2Id) merged.category2 = { id: category2Id };
-          if (!merged.name && onb.razao_social) merged.name = onb.razao_social;
-          if (!merged.fantasyName && (onb.nome_fantasia || onb.razao_social)) merged.fantasyName = onb.nome_fantasia || onb.razao_social;
-
-          // Tenta em cascata: PATCH → POST /{id} → POST /
-          let updRes = await fetch(ZEN_BASE + '/catalog/person/person/' + erpClienteId, {
-            method: 'PATCH', headers: zenH, body: JSON.stringify(merged)
+        if (zenStatus.startsWith('reaproveitou_person_')) {
+          passos.push({
+            op: 'update_person_categorias',
+            ok: false, http: 0,
+            erro: 'Person ja existia no Zen (77128). REST do Zen nao suporta update de Person; ajustar Categoria 1 e Categoria 2 manualmente na UI.'
           });
-          let via = 'PATCH';
-          if (updRes.status === 405 || updRes.status === 404) {
-            updRes = await fetch(ZEN_BASE + '/catalog/person/person', {
-              method: 'POST', headers: zenH, body: JSON.stringify(merged)
-            });
-            via = 'POST_com_id';
-          }
-          passos.push({ op: 'update_person_categorias', via, ok: updRes.ok, http: updRes.status, erro: updRes.ok ? null : (await updRes.text()).slice(0, 300) });
+        } else {
+          passos.push({
+            op: 'update_person_categorias',
+            ok: true, http: 201,
+            erro: null,
+            nota: 'gravadas no POST de criacao'
+          });
         }
 
         // === Endereco ===

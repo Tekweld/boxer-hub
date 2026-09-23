@@ -64,14 +64,35 @@ module.exports = async function handler(req, res) {
 
   const dryRun = req.query?.dry === '1' || req.body?.dry === true;
 
-  // Diagnostico: dump raw JSON de uma Person do Zen (ver nomes reais dos campos)
+  // === Diagnosticos ===
   const dumpId = req.query?.dump_person_id ?? req.body?.dump_person_id;
-  if (dumpId) {
+  const dumpCats = req.query?.dump_person_categories ?? req.body?.dump_person_categories;
+  const dumpCredit = req.query?.dump_credit_lines ?? req.body?.dump_credit_lines;
+  if (dumpId || dumpCats || dumpCredit) {
     try {
       const zenH = await require('./_zen').zenAuth();
-      const r = await fetch('https://api.zenerp.app.br/catalog/person/person/' + dumpId, { headers: zenH });
-      const body = r.ok ? await r.json() : await r.text();
-      return res.status(200).json({ ok: r.ok, http: r.status, person_id: dumpId, raw: body });
+      const out = {};
+      if (dumpId) {
+        const r = await fetch('https://api.zenerp.app.br/catalog/person/person/' + dumpId, { headers: zenH });
+        out.person = { ok: r.ok, http: r.status, raw: r.ok ? await r.json() : await r.text() };
+      }
+      if (dumpCats) {
+        // Lista todos personCategory. Cada item traz .category.code (o "slot":
+        // PERSON1=Segmento, PERSON2=..., etc.) e .description (o valor).
+        const r = await fetch('https://api.zenerp.app.br/catalog/person/personCategory?first=0&max=200', { headers: zenH });
+        const raw = r.ok ? await r.json() : await r.text();
+        const resumido = Array.isArray(raw) ? raw.map(c => ({
+          id: c.id, description: c.description, code: c.code,
+          slot_id: c.category?.id, slot_code: c.category?.code, slot_desc: c.category?.description
+        })) : raw;
+        out.person_categories = { ok: r.ok, http: r.status, total: Array.isArray(raw) ? raw.length : null, resumido };
+      }
+      if (dumpCredit) {
+        const r = await fetch('https://api.zenerp.app.br/financial/credit/creditLine?first=0&max=50', { headers: zenH });
+        const raw = r.ok ? await r.json() : await r.text();
+        out.credit_lines = { ok: r.ok, http: r.status, raw };
+      }
+      return res.status(200).json({ ok: true, ...out });
     } catch (e) {
       return res.status(500).json({ ok: false, erro: e.message });
     }

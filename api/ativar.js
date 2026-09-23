@@ -85,8 +85,9 @@ module.exports = async function handler(req, res) {
                          : onb.classificacao === 'hibrido' ? 'Hibrido'
                          : 'Varejo';
         const faturamentoLabel = onb.aceita_faturamento_parcial ? 'Pedido Parcial' : 'Pedido Completo';
-        const category1Id = await resolveCategoryId(zenH, canalLabel);
-        const category2Id = await resolveCategoryId(zenH, faturamentoLabel);
+        // Slot 1 = PERSON1 (Segmento/Canal), Slot 2 = PERSON2 (Faturamento)
+        const category1Id = await resolveCategoryId(zenH, canalLabel, 'PERSON1');
+        const category2Id = await resolveCategoryId(zenH, faturamentoLabel, 'PERSON2');
 
         // Resolver city.id do endereco principal (obrigatorio para Zen mostrar
         // o endereco na aba Endereco da Person). Lookup por CEP; fallback por
@@ -107,13 +108,20 @@ module.exports = async function handler(req, res) {
 
         // Criar Person com TUDO no body -- a API REST do Zen nao suporta update
         // depois. O que nao entrar aqui vira ajuste manual na UI.
+        // Zen armazena CNPJ com mascara (ex: "13.491.227/0001-29"); mandar sem
+        // mascara pode ser aceito mas nao normalizado. Formata para o padrao.
+        const cnpjLimpo = (onb.cnpj || '').replace(/\D/g, '');
+        const cnpjFmt = cnpjLimpo.length === 14
+          ? cnpjLimpo.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5')
+          : onb.cnpj;
+
         const personBody = {
           type: 'CORPORATION',
           name: onb.razao_social,
           fantasyName: onb.nome_fantasia || onb.razao_social,
           nationality: { id: 1030 },
           documentType: 'BR_CNPJ',
-          documentNumber: onb.cnpj,
+          documentNumber: cnpjFmt,
           email: onb.contato_email || null,
           phone: onb.contato_telefone || null,
           comments: 'Cadastro via Boxer Hub — Onboarding ' + onboarding_id.substring(0, 8)
@@ -545,28 +553,31 @@ function buildActivationEmail(razao, email, senha, limite) {
   </body></html>`;
 }
 
-// Resolve o id de uma personCategory pelo `description`. Log-e-siga se
-// nao achar (o pior caso e o admin ter que ajustar a categoria manual
-// no Zen depois, e nao a ativacao inteira quebrar).
-async function resolveCategoryId(zenH, description) {
-  if (!description) return null;
+// Resolve o id de uma personCategory pelo `description` filtrando pelo
+// SLOT (PERSON1 = Categoria 1 / Segmento, PERSON2 = Categoria 2, etc).
+// Sem filtrar por slot, pegariamos qualquer item com essa description e o
+// Zen rejeitaria (ou silenciosamente ignoraria) o POST inteiro.
+async function resolveCategoryId(zenH, description, slotCode) {
+  if (!description || !slotCode) return null;
   try {
+    // RSQL: description==X;category.code==PERSON1
+    const q = 'description==' + description + ';category.code==' + slotCode;
     const url = 'https://api.zenerp.app.br/catalog/person/personCategory?q=' +
-                encodeURIComponent('description==' + description) + '&size=5';
+                encodeURIComponent(q) + '&first=0&max=5';
     const r = await fetch(url, { headers: zenH });
     if (!r.ok) {
-      console.warn('personCategory lookup ' + description + ' HTTP ' + r.status);
+      console.warn('personCategory lookup ' + slotCode + '/' + description + ' HTTP ' + r.status);
       return null;
     }
     const body = await r.json();
-    const list = body?.content || body || [];
+    const list = Array.isArray(body) ? body : (body?.content || []);
     if (!list.length) {
-      console.warn('personCategory "' + description + '" nao encontrada no Zen');
+      console.warn('personCategory "' + description + '" no slot ' + slotCode + ' nao encontrada');
       return null;
     }
     return list[0].id;
   } catch (e) {
-    console.warn('personCategory lookup erro (' + description + '): ' + e.message);
+    console.warn('personCategory lookup erro (' + slotCode + '/' + description + '): ' + e.message);
     return null;
   }
 }

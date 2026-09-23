@@ -510,6 +510,8 @@ module.exports = async function handler(req, res) {
       user_id: newUser.id,
       zen_status: zenStatus,
       zen_passos: zenPassos,
+      zen_person_enviado: _zenPersonEnviado,
+      zen_person_resposta_imediata: _zenPersonResposta,
       email_status: emailStatus,
       usuario_reaproveitado: usuarioReaproveitado
     });

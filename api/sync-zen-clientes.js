@@ -63,6 +63,19 @@ module.exports = async function handler(req, res) {
   }
 
   const dryRun = req.query?.dry === '1' || req.body?.dry === true;
+
+  // Diagnostico: dump raw JSON de uma Person do Zen (ver nomes reais dos campos)
+  const dumpId = req.query?.dump_person_id ?? req.body?.dump_person_id;
+  if (dumpId) {
+    try {
+      const zenH = await require('./_zen').zenAuth();
+      const r = await fetch('https://api.zenerp.app.br/catalog/person/person/' + dumpId, { headers: zenH });
+      const body = r.ok ? await r.json() : await r.text();
+      return res.status(200).json({ ok: r.ok, http: r.status, person_id: dumpId, raw: body });
+    } catch (e) {
+      return res.status(500).json({ ok: false, erro: e.message });
+    }
+  }
   // Amostra de teste: restringe a N clientes por canal antes de gravar --
   // uso pontual pra validar mudancas (ex: inicializacao de credito) sem
   // tocar a base inteira (~7700 clientes) de uma vez.

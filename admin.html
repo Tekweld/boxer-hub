@@ -992,6 +992,14 @@ async function ativarCliente(id) {
         <strong>ZEN:</strong> ${data.zen_status === 'nao_configurado' ? 'Credenciais ZEN nao configuradas no servidor. Cadastre manualmente no ZEN.' : (data.zen_status.length > 120 ? data.zen_status.substring(0, 120) + '...' : data.zen_status)}
       </div>` : ''}
 
+      ${(data.zen_passos && data.zen_passos.length) ? `<div style="padding:10px 14px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:16px;font-size:11px;color:#4a5568">
+        <div style="font-weight:600;margin-bottom:6px">Passos no ZEN (Person ${data.erp_cliente_id})</div>
+        ${data.zen_passos.map(p => `<div style="display:flex;justify-content:space-between;padding:3px 0;border-top:1px dashed #e2e8f0">
+          <span>${p.op}</span>
+          <span style="font-weight:600;color:${p.ok?'#16a34a':'#dc2626'}">${p.ok?'OK':'ERRO '+p.http}${p.erro?' — '+p.erro:''}</span>
+        </div>`).join('')}
+      </div>` : ''}
+
       ${data.email_status === 'enviado' ?
         `<div style="padding:10px 14px;background:#d1fae5;border:1px solid #86efac;border-radius:8px;margin-bottom:16px;font-size:12px;color:#065f46">
           <strong>Email enviado.</strong> O cliente recebeu as credenciais em ${data.email}. Recomende a troca de senha no primeiro acesso.

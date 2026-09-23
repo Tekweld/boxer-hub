@@ -56,6 +56,7 @@ module.exports = async function handler(req, res) {
     // 3 — Criar Person no ZEN (se credenciais configuradas)
     let erpClienteId = null;
     let zenStatus = 'nao_configurado';
+    let zenPassos = [];
     const zenEmail = process.env.ZEN_EMAIL;
     const zenSenha = process.env.ZEN_SENHA;
 
@@ -134,73 +135,96 @@ module.exports = async function handler(req, res) {
           }
           erpClienteId = existing.id;
           zenStatus = 'reaproveitou_person_' + erpClienteId;
-
-          // Atualizar categorias na Person existente (podia estar sem ou
-          // com valores diferentes de tentativa anterior).
-          const patchBody = {};
-          if (category1Id) patchBody.category1 = { id: category1Id };
-          if (category2Id) patchBody.category2 = { id: category2Id };
-          if (Object.keys(patchBody).length) {
-            await fetch(ZEN_BASE + '/catalog/person/person/' + erpClienteId, {
-              method: 'PUT', headers: zenH, body: JSON.stringify({ ...existing, ...patchBody })
-            });
-          }
         }
 
-        // Criar endereco
+        // === Atualizar Person existente/nova com categorias e demais campos ===
+        // Zen exige PUT com objeto completo. Buscar full payload primeiro.
+        const passos = [];
+        const zenGetFull = await fetch(ZEN_BASE + '/catalog/person/person/' + erpClienteId, { headers: zenH });
+        if (!zenGetFull.ok) {
+          passos.push({ op: 'get_person_full', ok: false, http: zenGetFull.status, erro: (await zenGetFull.text()).slice(0, 200) });
+        } else {
+          const full = await zenGetFull.json();
+          const merged = { ...full };
+          if (category1Id) merged.category1 = { id: category1Id };
+          if (category2Id) merged.category2 = { id: category2Id };
+          // completa campos que possam estar faltando
+          if (!merged.name && onb.razao_social) merged.name = onb.razao_social;
+          if (!merged.fantasyName && (onb.nome_fantasia || onb.razao_social)) merged.fantasyName = onb.nome_fantasia || onb.razao_social;
+          const putRes = await fetch(ZEN_BASE + '/catalog/person/person/' + erpClienteId, {
+            method: 'PUT', headers: zenH, body: JSON.stringify(merged)
+          });
+          passos.push({ op: 'put_person_categorias', ok: putRes.ok, http: putRes.status, erro: putRes.ok ? null : (await putRes.text()).slice(0, 300) });
+        }
+
+        // === Endereco ===
         const end = (onb.enderecos || [])[0];
         if (end?.logradouro) {
-          await fetch(ZEN_BASE + '/catalog/person/personAddress', {
-            method: 'POST', headers: zenH,
-            body: JSON.stringify({
-              person: { id: erpClienteId },
-              description: 'Principal',
-              zipcode: (end.cep || '').replace(/\D/g, ''),
-              street: end.logradouro,
-              number: end.numero || '',
-              complement: end.complemento || '',
-              district: end.bairro || ''
-            })
+          // Resolver cidade via /catalog/geo/city por CEP ou nome+UF
+          let cityId = null;
+          try {
+            const cepLimpo = (end.cep || '').replace(/\D/g, '');
+            if (cepLimpo.length === 8) {
+              const cityByCep = await fetch(ZEN_BASE + '/catalog/geo/city?q=' + encodeURIComponent('zipcodes.zipcode==' + cepLimpo) + '&size=1', { headers: zenH });
+              if (cityByCep.ok) {
+                const cb = await cityByCep.json();
+                cityId = (cb?.content || cb || [])[0]?.id || null;
+              }
+            }
+            if (!cityId && end.cidade && end.uf) {
+              const cityByName = await fetch(ZEN_BASE + '/catalog/geo/city?q=' + encodeURIComponent('name==' + end.cidade + ';state.code==' + end.uf) + '&size=1', { headers: zenH });
+              if (cityByName.ok) {
+                const cb = await cityByName.json();
+                cityId = (cb?.content || cb || [])[0]?.id || null;
+              }
+            }
+          } catch (_) {}
+
+          const addrBody = {
+            person: { id: erpClienteId },
+            description: 'Principal',
+            zipcode: (end.cep || '').replace(/\D/g, ''),
+            street: end.logradouro,
+            number: end.numero || 'S/N',
+            complement: end.complemento || '',
+            district: end.bairro || ''
+          };
+          if (cityId) addrBody.city = { id: cityId };
+
+          const addrRes = await fetch(ZEN_BASE + '/catalog/person/personAddress', {
+            method: 'POST', headers: zenH, body: JSON.stringify(addrBody)
           });
+          passos.push({ op: 'post_endereco', ok: addrRes.ok, http: addrRes.status, city_id: cityId, erro: addrRes.ok ? null : (await addrRes.text()).slice(0, 300) });
         }
 
-        // Criar contatos
+        // === Contatos ===
         for (const c of (onb.contatos || [])) {
           if (c.email) {
-            await fetch(ZEN_BASE + '/catalog/person/personContact', {
+            const r = await fetch(ZEN_BASE + '/catalog/person/personContact', {
               method: 'POST', headers: zenH,
-              body: JSON.stringify({
-                person: { id: erpClienteId },
-                type: 'EMAIL',
-                description: c.email
-              })
+              body: JSON.stringify({ person: { id: erpClienteId }, type: 'EMAIL', description: c.email })
             });
+            passos.push({ op: 'post_contato_email', ok: r.ok, http: r.status, erro: r.ok ? null : (await r.text()).slice(0, 200) });
           }
           if (c.telefone) {
-            await fetch(ZEN_BASE + '/catalog/person/personContact', {
+            const r = await fetch(ZEN_BASE + '/catalog/person/personContact', {
               method: 'POST', headers: zenH,
-              body: JSON.stringify({
-                person: { id: erpClienteId },
-                type: 'PHONE',
-                description: c.telefone
-              })
+              body: JSON.stringify({ person: { id: erpClienteId }, type: 'PHONE', description: c.telefone })
             });
+            passos.push({ op: 'post_contato_phone', ok: r.ok, http: r.status, erro: r.ok ? null : (await r.text()).slice(0, 200) });
           }
         }
 
-        // Criar limite de credito
+        // === Limite de credito ===
         if (onb.limite_aprovado) {
           const creditRes = await fetch(ZEN_BASE + '/financial/credit/creditLineItem', {
             method: 'POST', headers: zenH,
-            body: JSON.stringify({
-              person: { id: erpClienteId },
-              value: onb.limite_aprovado
-            })
+            body: JSON.stringify({ person: { id: erpClienteId }, value: onb.limite_aprovado })
           });
-          if (!creditRes.ok) {
-            console.warn('Aviso: falha ao criar credito no ZEN — limite sera definido manualmente');
-          }
+          passos.push({ op: 'post_credito', ok: creditRes.ok, http: creditRes.status, erro: creditRes.ok ? null : (await creditRes.text()).slice(0, 300) });
         }
+
+        zenPassos = passos;
 
         zenStatus = 'ok';
       } catch (zenErr) {
@@ -420,6 +444,7 @@ module.exports = async function handler(req, res) {
       cliente_id: clienteId,
       user_id: newUser.id,
       zen_status: zenStatus,
+      zen_passos: zenPassos,
       email_status: emailStatus,
       usuario_reaproveitado: usuarioReaproveitado
     });

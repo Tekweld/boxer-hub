@@ -1,10 +1,12 @@
 {
   "functions": {
     "api/sync-zen-clientes.js": { "maxDuration": 60 },
-    "api/sync-estoque.js": { "maxDuration": 60 }
+    "api/sync-estoque.js": { "maxDuration": 60 },
+    "api/sync-pdm-tabela-precos.js": { "maxDuration": 60 }
   },
   "crons": [
-    { "path": "/api/sync-zen-clientes", "schedule": "0 6 * * *" }
+    { "path": "/api/sync-zen-clientes", "schedule": "0 6 * * *" },
+    { "path": "/api/sync-pdm-tabela-precos", "schedule": "0 7 * * 1" }
   ],
   "rewrites": [
     { "source": "/(.*)", "destination": "/$1.html" }

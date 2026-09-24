@@ -78,33 +78,61 @@ module.exports = async function handler(req, res) {
           'tenant': ZEN_TENANT
         };
 
-        // Resolver ids das categorias no Zen:
-        //   category1 = canal de venda (Varejo / Ecommerce / Hibrido)
-        //   category2 = faturamento (Pedido Completo / Pedido Parcial)
-        const canalLabel = onb.classificacao === 'ecommerce' ? 'Ecommerce'
-                         : onb.classificacao === 'hibrido' ? 'Hibrido'
-                         : 'Varejo';
-        const faturamentoLabel = onb.aceita_faturamento_parcial ? 'Pedido Parcial' : 'Pedido Completo';
-        // Descobre o id da categoria observando Persons que ja a usam.
-        const category1Id = await resolveCategoryId(zenH, canalLabel, 'category1');
-        const category2Id = await resolveCategoryId(zenH, faturamentoLabel, 'category2');
+        // Resolver ids das categorias no Zen. Cada valor tem varias grafias
+        // possiveis (E-commerce/Ecommerce, Hibrido/Hibrido/Híbrido). Tenta
+        // em ordem, a primeira que bater vence.
+        const candidatosCanal = onb.classificacao === 'ecommerce'
+          ? ['Ecommerce', 'E-commerce', 'E-Commerce', 'ECOMMERCE']
+          : onb.classificacao === 'hibrido'
+          ? ['Hibrido', 'Híbrido', 'HIBRIDO', 'HÍBRIDO']
+          : ['Varejo', 'VAREJO'];
+        const candidatosFat = onb.aceita_faturamento_parcial
+          ? ['Pedido Parcial', 'PEDIDO PARCIAL', 'Parcial']
+          : ['Pedido Completo', 'PEDIDO COMPLETO', 'Completo'];
 
-        // Resolver city.id do endereco principal (obrigatorio para Zen mostrar
-        // o endereco na aba Endereco da Person). Lookup por CEP; fallback por
-        // nome+UF.
+        let category1Id = null, category1Label = null;
+        for (const cand of candidatosCanal) {
+          category1Id = await resolveCategoryId(zenH, cand, 'category1');
+          if (category1Id) { category1Label = cand; break; }
+        }
+        let category2Id = null, category2Label = null;
+        for (const cand of candidatosFat) {
+          category2Id = await resolveCategoryId(zenH, cand, 'category2');
+          if (category2Id) { category2Label = cand; break; }
+        }
+
+        // Resolver city.id do endereco principal. Tenta em ordem:
+        //   1. IBGE code (onboarding tem ibge_codigo, city.properties.fiscal_br_cMun no Zen)
+        //   2. Titulo do nome + UF (Interplasma tem "São Paulo" title-case, com acento)
+        //   3. nome upper + UF
         const endPrincipal = (onb.enderecos || [])[0] || {};
         const cepPrincipal = (endPrincipal.cep || '').replace(/\D/g, '');
+        const cityTentativas = [];
+        const cityQ = async (q) => {
+          try {
+            const rr = await fetch(ZEN_BASE + '/catalog/geo/city?q=' + encodeURIComponent(q) + '&first=0&max=1', { headers: zenH });
+            const ok = rr.ok;
+            const body = ok ? await rr.json() : null;
+            const list = Array.isArray(body) ? body : (body?.content || []);
+            cityTentativas.push({ q, http: rr.status, achou: !!list[0] });
+            return list[0]?.id || null;
+          } catch (e) { cityTentativas.push({ q, erro: e.message }); return null; }
+        };
+        const titleCase = (s) => (s || '').toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
         let cityIdPrincipal = null;
-        try {
-          if (cepPrincipal.length === 8) {
-            const rr = await fetch(ZEN_BASE + '/catalog/geo/city?q=' + encodeURIComponent('zipcodes.zipcode==' + cepPrincipal) + '&size=1', { headers: zenH });
-            if (rr.ok) { const bb = await rr.json(); cityIdPrincipal = (bb?.content || bb || [])[0]?.id || null; }
-          }
-          if (!cityIdPrincipal && endPrincipal.cidade && endPrincipal.uf) {
-            const rr = await fetch(ZEN_BASE + '/catalog/geo/city?q=' + encodeURIComponent('name==' + endPrincipal.cidade + ';state.code==' + endPrincipal.uf) + '&size=1', { headers: zenH });
-            if (rr.ok) { const bb = await rr.json(); cityIdPrincipal = (bb?.content || bb || [])[0]?.id || null; }
-          }
-        } catch (_) {}
+        if (endPrincipal.ibge_codigo) {
+          cityIdPrincipal = await cityQ("properties.fiscal_br_cMun=='" + endPrincipal.ibge_codigo + "'");
+        }
+        if (!cityIdPrincipal && endPrincipal.cidade && endPrincipal.uf) {
+          const nomeTitle = titleCase(endPrincipal.cidade);
+          cityIdPrincipal = await cityQ("name=='" + nomeTitle + "';state.code==" + endPrincipal.uf);
+        }
+        if (!cityIdPrincipal && endPrincipal.cidade && endPrincipal.uf) {
+          cityIdPrincipal = await cityQ("name==" + endPrincipal.cidade + ";state.code==" + endPrincipal.uf);
+        }
+        if (!cityIdPrincipal && cepPrincipal.length === 8) {
+          cityIdPrincipal = await cityQ("zipcode==" + cepPrincipal);
+        }
 
         // Criar Person com TUDO no body -- a API REST do Zen nao suporta update
         // depois. O que nao entrar aqui vira ajuste manual na UI.
@@ -295,7 +323,12 @@ module.exports = async function handler(req, res) {
               const got = k === 'category1' ? p.category1 : k === 'category2' ? p.category2 : k === 'city' ? p.city : p[k];
               return env && !got;
             });
-            passos.push({ op: 'reler_person_diagnostico', ok: true, http: 200, gravados_no_zen: gravados, campos_perdidos: perdidos, category_ids_resolvidos: { category1Id, category2Id } });
+            passos.push({
+              op: 'reler_person_diagnostico', ok: true, http: 200,
+              gravados_no_zen: gravados, campos_perdidos: perdidos,
+              category_lookup: { category1: { id: category1Id, label: category1Label }, category2: { id: category2Id, label: category2Label } },
+              city_lookup: { id: cityIdPrincipal, tentativas: cityTentativas }
+            });
           }
         } catch (_) {}
 

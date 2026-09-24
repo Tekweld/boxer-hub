@@ -1000,6 +1000,8 @@ async function ativarCliente(id) {
               <div style="font-weight:600;color:#1d327b;margin-bottom:4px">Diagnostico: o que o Zen realmente gravou</div>
               <pre style="font-size:10px;background:#fff;padding:6px;border:1px solid #e2e8f0;border-radius:4px;overflow:auto;max-height:180px;margin:0">${JSON.stringify(p.gravados_no_zen, null, 2)}</pre>
               ${p.campos_perdidos && p.campos_perdidos.length ? `<div style="color:#dc2626;font-weight:600;margin-top:4px">Campos enviados mas nao gravados: ${p.campos_perdidos.join(', ')}</div>` : '<div style="color:#16a34a;margin-top:4px">Todos os campos enviados foram gravados</div>'}
+              ${p.category_lookup ? `<div style="margin-top:6px;font-weight:600">Category lookup</div><pre style="font-size:10px;background:#fff;padding:6px;border:1px solid #e2e8f0;border-radius:4px;overflow:auto;max-height:120px;margin:0">${JSON.stringify(p.category_lookup, null, 2)}</pre>` : ''}
+              ${p.city_lookup ? `<div style="margin-top:6px;font-weight:600">City lookup</div><pre style="font-size:10px;background:#fff;padding:6px;border:1px solid #e2e8f0;border-radius:4px;overflow:auto;max-height:180px;margin:0">${JSON.stringify(p.city_lookup, null, 2)}</pre>` : ''}
             </div>`;
           }
           return `<div style="display:flex;justify-content:space-between;padding:3px 0;border-top:1px dashed #e2e8f0">

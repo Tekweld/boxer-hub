@@ -18,7 +18,138 @@ function classificarFoto(url, fonte) {
   return { origem: 'pdm_produto', prioridade: 1, renderizavel: true };
 }
 
+// Mesma função, dois destinos, pra não passar do limite de Serverless
+// Functions do plano (12) só por causa de mais uma rota: ?target=produtos
+// sincroniza a tabela de preços (public.produtos) em vez do catálogo do Hub.
+// Reaproveita PDM_SERVICE_KEY/SUPABASE_SERVICE_KEY já configurados aqui.
+const ALLOWED_ORIGIN_PRODUTOS = 'https://app.boxersoldas.com.br';
+
+function parseAcompanhaEFuncoes(recursos) {
+  if (!recursos) return null;
+  const m = recursos.match(/(?:Fun[çc][õo]es|CARACTER[ÍI]STICAS):\s*\r?\n([\s\S]*)$/i);
+  if (!m) return null;
+  const items = m[1].split(/\r?\n/).map(l => l.replace(/^[\s•\-]+/, '').trim()).filter(l => l.length > 1);
+  return items.length ? items.map(label => ({ label, valor: '✓' })) : null;
+}
+
+async function syncProdutosTabelaPrecos(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN_PRODUTOS);
+  res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type, x-cron-secret');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
+  const PDM_URL = 'https://tufbuyfwysowgkxsvjmh.supabase.co';
+  const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
+  const PDM_SERVICE = process.env.PDM_SERVICE_KEY;
+  if (!SB_SERVICE) return res.status(500).json({ error: 'SUPABASE_SERVICE_KEY nao configurada' });
+  if (!PDM_SERVICE) return res.status(500).json({ error: 'PDM_SERVICE_KEY nao configurada' });
+
+  const cronSecret = req.headers['x-cron-secret'];
+  const authHeader = req.headers.authorization;
+  const viaVercelCron = !!process.env.CRON_SECRET && authHeader === 'Bearer ' + process.env.CRON_SECRET;
+
+  if (cronSecret) {
+    if (!process.env.CRON_SECRET || cronSecret !== process.env.CRON_SECRET) {
+      return res.status(401).json({ error: 'CRON_SECRET invalido' });
+    }
+  } else if (viaVercelCron) {
+    // ok, cron nativo do Vercel
+  } else if (authHeader) {
+    const userRes = await fetch(HUB_URL + '/auth/v1/user', {
+      headers: { Authorization: authHeader, apikey: SB_SERVICE }
+    });
+    const caller = await userRes.json();
+    if (!caller?.id) return res.status(401).json({ error: 'Token invalido' });
+
+    const perfilRes = await fetch(HUB_URL + '/rest/v1/perfis?id=eq.' + caller.id + '&select=permissao', {
+      headers: { apikey: SB_SERVICE, Authorization: 'Bearer ' + SB_SERVICE }
+    });
+    const perfis = await perfilRes.json();
+    if (!perfis?.[0] || !['admin', 'editor'].includes(perfis[0].permissao)) {
+      return res.status(403).json({ error: 'Apenas admin ou editor da tabela de precos pode sincronizar' });
+    }
+  } else {
+    return res.status(401).json({ error: 'Autenticacao necessaria' });
+  }
+
+  const sbH = { apikey: SB_SERVICE, Authorization: 'Bearer ' + SB_SERVICE, 'Content-Type': 'application/json' };
+  const pdmH = { apikey: PDM_SERVICE, Authorization: 'Bearer ' + PDM_SERVICE };
+
+  async function fetchAllProdutos(url, headers) {
+    const out = [];
+    const sep = url.includes('?') ? '&' : '?';
+    for (let offset = 0; ; offset += 1000) {
+      const r = await fetch(`${url}${sep}limit=1000&offset=${offset}`, { headers });
+      if (!r.ok) throw new Error(`Erro ao buscar ${url}: ${r.status} ${await r.text()}`);
+      const lote = await r.json();
+      out.push(...lote);
+      if (lote.length < 1000) return out;
+    }
+  }
+
+  try {
+    const produtosBmax = await fetchAllProdutos(
+      HUB_URL + '/rest/v1/produtos?tabela_id=eq.2&status=eq.ativo&select=id,codigo,descricao_completa,imagem_url,caracteristicas',
+      sbH
+    );
+    const pdmProdutos = await fetchAllProdutos(
+      PDM_URL + '/rest/v1/produtos?status=eq.Ativo&select=codigo,descricao_detalhada,descricao,recursos_diferenciais,imagem_url',
+      pdmH
+    );
+    const pdmByCodigo = {};
+    pdmProdutos.forEach(p => { if (p.codigo) pdmByCodigo[p.codigo.trim().toUpperCase()] = p; });
+
+    let atualizados = 0, semMudanca = 0;
+    const semPdm = [];
+    const detalhes = [];
+
+    for (const prod of produtosBmax) {
+      const pdm = pdmByCodigo[prod.codigo.trim().toUpperCase()];
+      if (!pdm) { semPdm.push(prod.codigo); continue; }
+
+      const novaDesc = (pdm.descricao_detalhada || pdm.descricao || '').trim() || null;
+      const novaFoto = pdm.imagem_url || null;
+      const novoCarac = parseAcompanhaEFuncoes(pdm.recursos_diferenciais);
+
+      const body = {};
+      if (novaDesc && novaDesc !== prod.descricao_completa) body.descricao_completa = novaDesc;
+      if (novaFoto && novaFoto !== prod.imagem_url) body.imagem_url = novaFoto;
+      if (novoCarac && JSON.stringify(novoCarac) !== JSON.stringify(prod.caracteristicas)) body.caracteristicas = novoCarac;
+
+      if (Object.keys(body).length === 0) { semMudanca++; continue; }
+      body.atualizado_em = new Date().toISOString();
+
+      const r = await fetch(HUB_URL + '/rest/v1/produtos?id=eq.' + prod.id, {
+        method: 'PATCH', headers: { ...sbH, Prefer: 'return=minimal' }, body: JSON.stringify(body)
+      });
+      if (!r.ok) { detalhes.push({ codigo: prod.codigo, erro: await r.text() }); continue; }
+
+      atualizados++;
+      detalhes.push({ codigo: prod.codigo, campos: Object.keys(body).filter(k => k !== 'atualizado_em') });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      produtos_bmax_verificados: produtosBmax.length,
+      produtos_atualizados: atualizados,
+      produtos_sem_mudanca: semMudanca,
+      produtos_sem_pdm: semPdm,
+      detalhes,
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) {
+    console.error('Erro no sync PDM->tabela de precos:', e);
+    return res.status(500).json({ error: e.message });
+  }
+}
+
 module.exports = async function handler(req, res) {
+  if (req.query && req.query.target === 'produtos') {
+    return syncProdutosTabelaPrecos(req, res);
+  }
+
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;

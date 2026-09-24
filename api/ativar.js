@@ -85,9 +85,9 @@ module.exports = async function handler(req, res) {
                          : onb.classificacao === 'hibrido' ? 'Hibrido'
                          : 'Varejo';
         const faturamentoLabel = onb.aceita_faturamento_parcial ? 'Pedido Parcial' : 'Pedido Completo';
-        // Slot 1 = PERSON1 (Segmento/Canal), Slot 2 = PERSON2 (Faturamento)
-        const category1Id = await resolveCategoryId(zenH, canalLabel, 'PERSON1');
-        const category2Id = await resolveCategoryId(zenH, faturamentoLabel, 'PERSON2');
+        // Descobre o id da categoria observando Persons que ja a usam.
+        const category1Id = await resolveCategoryId(zenH, canalLabel, 'category1');
+        const category2Id = await resolveCategoryId(zenH, faturamentoLabel, 'category2');
 
         // Resolver city.id do endereco principal (obrigatorio para Zen mostrar
         // o endereco na aba Endereco da Person). Lookup por CEP; fallback por
@@ -279,12 +279,14 @@ module.exports = async function handler(req, res) {
           if (relerRes.ok) {
             const p = await relerRes.json();
             const gravados = {
+              name: p.name, fantasyName: p.fantasyName,
+              documentNumber: p.documentNumber, document2Number: p.document2Number || null,
               email: p.email || null, phone: p.phone || null,
               zipcode: p.zipcode || null, street: p.street || null, number: p.number || null,
-              district: p.district || null, city_id: p.city?.id || null, city_name: p.city?.name || null,
-              category1: p.category1?.description || p.category1?.id || null,
-              category2: p.category2?.description || p.category2?.id || null,
-              document2Number: p.document2Number || null
+              complement: p.complement || null, district: p.district || null,
+              city_id: p.city?.id || null, city_name: p.city?.name || null, uf: p.city?.state?.code || null,
+              category1: p.category1 ? { id: p.category1.id, description: p.category1.description, code: p.category1.code } : null,
+              category2: p.category2 ? { id: p.category2.id, description: p.category2.description, code: p.category2.code } : null
             };
             const enviados = _zenPersonEnviado || {};
             const chaves = Object.keys(enviados).filter(k => !['type','name','fantasyName','nationality','documentType','documentNumber','comments'].includes(k));
@@ -293,7 +295,7 @@ module.exports = async function handler(req, res) {
               const got = k === 'category1' ? p.category1 : k === 'category2' ? p.category2 : k === 'city' ? p.city : p[k];
               return env && !got;
             });
-            passos.push({ op: 'reler_person_diagnostico', ok: true, http: 200, gravados_no_zen: gravados, campos_perdidos: perdidos });
+            passos.push({ op: 'reler_person_diagnostico', ok: true, http: 200, gravados_no_zen: gravados, campos_perdidos: perdidos, category_ids_resolvidos: { category1Id, category2Id } });
           }
         } catch (_) {}
 
@@ -553,31 +555,36 @@ function buildActivationEmail(razao, email, senha, limite) {
   </body></html>`;
 }
 
-// Resolve o id de uma personCategory pelo `description` filtrando pelo
-// SLOT (PERSON1 = Categoria 1 / Segmento, PERSON2 = Categoria 2, etc).
-// Sem filtrar por slot, pegariamos qualquer item com essa description e o
-// Zen rejeitaria (ou silenciosamente ignoraria) o POST inteiro.
-async function resolveCategoryId(zenH, description, slotCode) {
-  if (!description || !slotCode) return null;
+// Resolve o id de uma personCategory. O Zen NAO expoe /catalog/person/personCategory
+// (404 em todas as variacoes). O caminho e observar Persons que ja usam essa
+// categoria e pegar o id dela dali. Verificado com o codigo do Monitor de
+// Pedidos: category1/category2 vem embutidos em /catalog/person/person; nao
+// existe endpoint separado.
+//   - slot 'category1' = PERSON1 (canal: Varejo/Ecommerce/Hibrido)
+//   - slot 'category2' = PERSON2 (faturamento: code "0"=Completo, "1"=Parcial)
+async function resolveCategoryId(zenH, description, slot) {
+  if (!description || !slot) return null;
   try {
-    // RSQL: description==X;category.code==PERSON1
-    const q = 'description==' + description + ';category.code==' + slotCode;
-    const url = 'https://api.zenerp.app.br/catalog/person/personCategory?q=' +
-                encodeURIComponent(q) + '&first=0&max=5';
+    // Buscar uma Person que tem essa categoria com essa description.
+    const q = slot + '.description==' + description;
+    const url = 'https://api.zenerp.app.br/catalog/person/person?q=' +
+                encodeURIComponent(q) + '&first=0&max=1';
     const r = await fetch(url, { headers: zenH });
     if (!r.ok) {
-      console.warn('personCategory lookup ' + slotCode + '/' + description + ' HTTP ' + r.status);
+      console.warn('resolveCategoryId lookup ' + slot + '/' + description + ' HTTP ' + r.status);
       return null;
     }
     const body = await r.json();
     const list = Array.isArray(body) ? body : (body?.content || []);
-    if (!list.length) {
-      console.warn('personCategory "' + description + '" no slot ' + slotCode + ' nao encontrada');
+    const first = list[0];
+    if (!first) {
+      console.warn('Nenhuma Person tem ' + slot + '.description==' + description);
       return null;
     }
-    return list[0].id;
+    const catObj = slot === 'category1' ? first.category1 : first.category2;
+    return catObj?.id || null;
   } catch (e) {
-    console.warn('personCategory lookup erro (' + slotCode + '/' + description + '): ' + e.message);
+    console.warn('resolveCategoryId erro (' + slot + '/' + description + '): ' + e.message);
     return null;
   }
 }

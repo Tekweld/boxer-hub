@@ -77,15 +77,28 @@ module.exports = async function handler(req, res) {
         out.person = { ok: r.ok, http: r.status, raw: r.ok ? await r.json() : await r.text() };
       }
       if (dumpCats) {
-        // Lista todos personCategory. Cada item traz .category.code (o "slot":
-        // PERSON1=Segmento, PERSON2=..., etc.) e .description (o valor).
-        const r = await fetch('https://api.zenerp.app.br/catalog/person/personCategory?first=0&max=200', { headers: zenH });
-        const raw = r.ok ? await r.json() : await r.text();
-        const resumido = Array.isArray(raw) ? raw.map(c => ({
-          id: c.id, description: c.description, code: c.code,
-          slot_id: c.category?.id, slot_code: c.category?.code, slot_desc: c.category?.description
-        })) : raw;
-        out.person_categories = { ok: r.ok, http: r.status, total: Array.isArray(raw) ? raw.length : null, resumido };
+        // Endpoint /catalog/person/personCategory nao existe (404). Provar
+        // variacoes ate achar o certo. Interplasma tem category1.id=1098
+        // (Varejo, PERSON1) e a categoria-pai tem id=1006 (Segmento).
+        const tentativas = [
+          '/catalog/person/personCategoryItem',
+          '/catalog/person/personCategoryValue',
+          '/catalog/person/category',
+          '/catalog/person/categoryItem',
+          '/catalog/category/personCategory',
+          '/catalog/category/category',
+          '/catalog/category/categoryItem',
+          '/catalog/person/personCategory/1098',
+          '/catalog/person/1098/category1'
+        ];
+        const resultados = [];
+        for (const path of tentativas) {
+          try {
+            const r = await fetch('https://api.zenerp.app.br' + path + (path.includes('?') ? '&' : '?') + 'first=0&max=5', { headers: zenH });
+            resultados.push({ path, http: r.status, ok: r.ok, sample: r.ok ? (await r.json()) : null });
+          } catch (e) { resultados.push({ path, erro: e.message }); }
+        }
+        out.person_categories_probe = resultados;
       }
       if (dumpCredit) {
         const r = await fetch('https://api.zenerp.app.br/financial/credit/creditLine?first=0&max=50', { headers: zenH });

@@ -33,7 +33,7 @@ module.exports = async function handler(req, res) {
         'Authorization': 'Bearer ' + RESEND_KEY
       },
       body: JSON.stringify({
-        from: FROM_DEFAULT,
+        from: email.from || FROM_DEFAULT,
         to: Array.isArray(email.to) ? email.to : [email.to],
         subject: email.subject,
         html: wrapHtml(email.subject, email.body)
@@ -133,6 +133,7 @@ function buildEmail(tipo, d) {
     case 'senha_alterada':
       return {
         to: d.email,
+        from: 'Boxer ' + (d.sistema || 'Hub') + ' <noreply@boxersoldas.com.br>',
         subject: 'Sua senha Boxer foi alterada',
         body: `
           <p>A senha da sua conta <strong>${d.email}</strong> foi alterada${d.sistema ? ' via ' + d.sistema : ''}${d.hora ? ' em ' + d.hora : ''}.</p>

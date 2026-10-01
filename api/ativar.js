@@ -107,28 +107,30 @@ module.exports = async function handler(req, res) {
         //   3. nome upper + UF
         const endPrincipal = (onb.enderecos || [])[0] || {};
         const cepPrincipal = (endPrincipal.cep || '').replace(/\D/g, '');
+        // /catalog/geo/city retorna 404 no Zen -- endpoint nao existe.
+        // Mesma estrategia da categoria: achar uma Person que tem essa city
+        // e extrair o id dela. Interplasma (city.id 6276) mostrou que a
+        // relacao city fica em Person.city com id/name/state.
         const cityTentativas = [];
         const cityQ = async (q) => {
           try {
-            const rr = await fetch(ZEN_BASE + '/catalog/geo/city?q=' + encodeURIComponent(q) + '&first=0&max=1', { headers: zenH });
+            const rr = await fetch(ZEN_BASE + '/catalog/person/person?q=' + encodeURIComponent(q) + '&first=0&max=1', { headers: zenH });
             const ok = rr.ok;
             const body = ok ? await rr.json() : null;
             const list = Array.isArray(body) ? body : (body?.content || []);
-            cityTentativas.push({ q, http: rr.status, achou: !!list[0] });
-            return list[0]?.id || null;
+            const cityId = list[0]?.city?.id || null;
+            cityTentativas.push({ q, http: rr.status, achou: !!cityId, city_encontrada: list[0]?.city?.name || null });
+            return cityId;
           } catch (e) { cityTentativas.push({ q, erro: e.message }); return null; }
         };
         const titleCase = (s) => (s || '').toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
         let cityIdPrincipal = null;
-        if (endPrincipal.ibge_codigo) {
-          cityIdPrincipal = await cityQ("properties.fiscal_br_cMun=='" + endPrincipal.ibge_codigo + "'");
-        }
-        if (!cityIdPrincipal && endPrincipal.cidade && endPrincipal.uf) {
+        if (endPrincipal.cidade && endPrincipal.uf) {
           const nomeTitle = titleCase(endPrincipal.cidade);
-          cityIdPrincipal = await cityQ("name=='" + nomeTitle + "';state.code==" + endPrincipal.uf);
+          cityIdPrincipal = await cityQ("city.name=='" + nomeTitle + "';city.state.code==" + endPrincipal.uf);
         }
         if (!cityIdPrincipal && endPrincipal.cidade && endPrincipal.uf) {
-          cityIdPrincipal = await cityQ("name==" + endPrincipal.cidade + ";state.code==" + endPrincipal.uf);
+          cityIdPrincipal = await cityQ("city.name==" + endPrincipal.cidade + ";city.state.code==" + endPrincipal.uf);
         }
         if (!cityIdPrincipal && cepPrincipal.length === 8) {
           cityIdPrincipal = await cityQ("zipcode==" + cepPrincipal);

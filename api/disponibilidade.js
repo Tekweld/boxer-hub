@@ -25,7 +25,74 @@ async function fupSelect(token, table, select) {
   return rows[0] || null;
 }
 
+let _tabelaCache = null;
+const TABELA_CACHE_MS = 5 * 60 * 1000;
+
+// Modo ?target=tabela: previsao de chegada para a tabela de precos (app.boxersoldas.com.br).
+// Diferente do modo Hub, so libera equipe interna (comercial_perfis / perfis) e devolve
+// apenas o necessario pro calculo (qtd, prevRep, reservas) — nada do restante do FUP.
+async function previsaoTabela(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', 'https://app.boxersoldas.com.br');
+  res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Vary', 'Origin');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+
+  const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
+  const fupEmail = process.env.FUP_EMAIL;
+  const fupSenha = process.env.FUP_SENHA;
+  if (!SB_SERVICE) return res.status(500).json({ error: 'SUPABASE_SERVICE_KEY nao configurada' });
+  if (!fupEmail || !fupSenha) return res.status(500).json({ error: 'FUP_EMAIL/FUP_SENHA nao configurados' });
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: 'Autenticacao necessaria' });
+
+  const userRes = await fetch(HUB_URL + '/auth/v1/user', {
+    headers: { 'Authorization': authHeader, 'apikey': SB_SERVICE }
+  });
+  const caller = await userRes.json();
+  if (!caller?.id) return res.status(401).json({ error: 'Token invalido' });
+
+  const svc = (profile) => ({
+    'apikey': SB_SERVICE,
+    'Authorization': 'Bearer ' + SB_SERVICE,
+    ...(profile ? { 'Accept-Profile': profile } : {})
+  });
+  const [cp, pf] = await Promise.all([
+    fetch(HUB_URL + '/rest/v1/comercial_perfis?user_id=eq.' + caller.id + '&select=role', { headers: svc('comercial') }).then(r => r.json()),
+    fetch(HUB_URL + '/rest/v1/perfis?id=eq.' + caller.id + '&select=permissao', { headers: svc() }).then(r => r.json())
+  ]);
+  if (!(Array.isArray(cp) && cp.length) && !(Array.isArray(pf) && pf.length)) {
+    return res.status(403).json({ error: 'Acesso restrito a equipe interna' });
+  }
+
+  try {
+    if (!_tabelaCache || Date.now() - _tabelaCache.em > TABELA_CACHE_MS) {
+      const fupToken = await loginFup(fupEmail, fupSenha);
+      const dashboard = await fupSelect(fupToken, 'dashboard_data', 'all_data,last_update');
+      const porCodigo = {};
+      (dashboard?.all_data || []).forEach(item => {
+        if (!item?.codigo) return;
+        const k = String(item.codigo).trim().toUpperCase();
+        (porCodigo[k] = porCodigo[k] || []).push({
+          qtd: Number(item.qtd) || 0,
+          prevRep: item.prevRep || null,
+          reservas: Number(item.reservas) || 0
+        });
+      });
+      _tabelaCache = { em: Date.now(), porCodigo, lastUpdate: dashboard?.last_update || null };
+    }
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    return res.status(200).json({ ok: true, porCodigo: _tabelaCache.porCodigo, lastUpdate: _tabelaCache.lastUpdate });
+  } catch (e) {
+    console.error('Erro previsao tabela (FUP):', e);
+    return res.status(502).json({ error: e.message });
+  }
+}
+
 module.exports = async function handler(req, res) {
+  if (req.query && req.query.target === 'tabela') return previsaoTabela(req, res);
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;

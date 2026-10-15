@@ -87,12 +87,12 @@ async function previsaoTabela(req, res) {
     'Authorization': 'Bearer ' + SB_SERVICE,
     ...(profile ? { 'Accept-Profile': profile } : {})
   });
-  const [cp, pf] = await Promise.all([
-    fetch(HUB_URL + '/rest/v1/comercial_perfis?user_id=eq.' + caller.id + '&select=role', { headers: svc('comercial') }).then(r => r.json()),
-    fetch(HUB_URL + '/rest/v1/perfis?id=eq.' + caller.id + '&select=permissao', { headers: svc() }).then(r => r.json())
-  ]);
-  if (!(Array.isArray(cp) && cp.length) && !(Array.isArray(pf) && pf.length)) {
-    return res.status(403).json({ error: 'Acesso restrito a equipe interna' });
+  // Libera equipe interna (comercial_perfis / perfis) E pessoas aprovadas na tela de acessos (tabela_usuarios, ativas e dentro da validade)
+  const liberado = await fetch(HUB_URL + '/rest/v1/rpc/tabela_email_liberado', {
+    method: 'POST', headers: { ...svc(), 'Content-Type': 'application/json' }, body: JSON.stringify({ p_email: String(caller.email || '').toLowerCase() })
+  }).then(r => r.json()).catch(() => false);
+  if (liberado !== true) {
+    return res.status(403).json({ error: 'Acesso restrito a pessoas liberadas' });
   }
 
   // GET ?itens=codigo:qtd,... (consulta por quantidade)  |  POST {codigos:[...]} (lista toda, quantidade 1, para exportacao)

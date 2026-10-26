@@ -195,6 +195,28 @@ module.exports = async function handler(req, res) {
       if (!pr.ok) pagErro.push({ term: p.term, erro: (await pr.text()).slice(0, 300) });
     }
 
+    // Achado em 2026-10-26: venda 56025 nasceu com cabecalho+pagamento mas
+    // ZERO itens (fiscalProfilePerson null na Person quebrava o saleItem) e
+    // ninguem percebeu -- este endpoint e chamado fire-and-forget pelo
+    // checkout (confirmarEnvio em pedidos.html so avisa no console se a
+    // PROPRIA chamada falhar, nunca olha itens_com_erro dentro de um 200).
+    // Pior: como erp_pedido_id ja fica gravado, o cron de "reempurrar o que
+    // ficou pra tras" nunca mais tenta de novo (so reenvia pedido SEM
+    // erp_pedido_id). Por isso, qualquer erro aqui agora vira um evento
+    // visivel na timeline do proprio pedido -- silencio nunca mais.
+    if (itensErro.length || pagErro.length) {
+      await fetch(HUB_URL + '/rest/v1/hub_pedido_eventos', {
+        method: 'POST',
+        headers: { ...hubH('POST'), Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          pedido_id, etapa: 'Erro ao gravar no ERP', origem: 'hub',
+          detalhe: 'venda ' + sale.id + ' -- ' +
+            (itensErro.length ? itensErro.length + ' item(ns) com erro: ' + JSON.stringify(itensErro).slice(0, 400) + '. ' : '') +
+            (pagErro.length ? pagErro.length + ' pagamento(s) com erro: ' + JSON.stringify(pagErro).slice(0, 300) : '')
+        })
+      });
+    }
+
     return res.status(200).json({
       ok: true, dry: false, erp_pedido_id: sale.id,
       itens_gravados: itensZen.length - itensErro.length,

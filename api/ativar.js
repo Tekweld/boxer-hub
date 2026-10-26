@@ -136,6 +136,29 @@ module.exports = async function handler(req, res) {
           cityIdPrincipal = await cityQ("zipcode==" + cepPrincipal);
         }
 
+        // Resolver fiscalProfilePerson (aba "Fiscal" da Person). Achado em
+        // 2026-10-26: sem isso, sale.saleItem quebra com NullPointerException
+        // no Zen ("sale.person.fiscalProfilePerson is null") -- a venda ate
+        // e criada, mas NENHUM item consegue ser gravado. Mesmo problema
+        // estrutural de category/city: o endpoint de catalogo de perfis
+        // fiscais nao foi mapeado, entao resolve observando uma Person real
+        // da MESMA UF que ja tenha o campo preenchido e copiando o id.
+        // Heuristica: assume o regime fiscal padrao da UF, nao o regime real
+        // da empresa (Normal x Simples) -- corrigir manualmente se o cliente
+        // novo for Simples Nacional/MEI e isso importar para o calculo fiscal.
+        let fiscalProfileId = null;
+        if (endPrincipal.uf) {
+          try {
+            const fpRes = await fetch(ZEN_BASE + '/catalog/person/person?q=' + encodeURIComponent('city.state.code==' + endPrincipal.uf) + '&first=0&max=20', { headers: zenH });
+            if (fpRes.ok) {
+              const fpBody = await fpRes.json();
+              const fpList = Array.isArray(fpBody) ? fpBody : (fpBody?.content || []);
+              const comPerfil = fpList.find(p => p.fiscalProfilePerson?.id);
+              fiscalProfileId = comPerfil?.fiscalProfilePerson?.id || null;
+            }
+          } catch (_) {}
+        }
+
         // Criar Person com TUDO no body -- a API REST do Zen nao suporta update
         // depois. O que nao entrar aqui vira ajuste manual na UI.
         // Zen armazena CNPJ com mascara (ex: "13.491.227/0001-29"); mandar sem
@@ -158,6 +181,7 @@ module.exports = async function handler(req, res) {
         };
         if (category1Id) personBody.category1 = { id: category1Id };
         if (category2Id) personBody.category2 = { id: category2Id };
+        if (fiscalProfileId) personBody.fiscalProfilePerson = { id: fiscalProfileId };
         if (onb.inscricao_estadual && onb.inscricao_estadual !== 'ISENTO') {
           personBody.document2Type = 'BR_INSCRICAO_ESTADUAL';
           personBody.document2Number = onb.inscricao_estadual;
@@ -316,7 +340,8 @@ module.exports = async function handler(req, res) {
               complement: p.complement || null, district: p.district || null,
               city_id: p.city?.id || null, city_name: p.city?.name || null, uf: p.city?.state?.code || null,
               category1: p.category1 ? { id: p.category1.id, description: p.category1.description, code: p.category1.code } : null,
-              category2: p.category2 ? { id: p.category2.id, description: p.category2.description, code: p.category2.code } : null
+              category2: p.category2 ? { id: p.category2.id, description: p.category2.description, code: p.category2.code } : null,
+              fiscalProfilePerson: p.fiscalProfilePerson ? { id: p.fiscalProfilePerson.id, description: p.fiscalProfilePerson.description } : null
             };
             const enviados = _zenPersonEnviado || {};
             const chaves = Object.keys(enviados).filter(k => !['type','name','fantasyName','nationality','documentType','documentNumber','comments'].includes(k));
@@ -329,7 +354,8 @@ module.exports = async function handler(req, res) {
               op: 'reler_person_diagnostico', ok: true, http: 200,
               gravados_no_zen: gravados, campos_perdidos: perdidos,
               category_lookup: { category1: { id: category1Id, label: category1Label }, category2: { id: category2Id, label: category2Label } },
-              city_lookup: { id: cityIdPrincipal, tentativas: cityTentativas }
+              city_lookup: { id: cityIdPrincipal, tentativas: cityTentativas },
+              fiscal_profile_lookup: { id: fiscalProfileId, uf: endPrincipal.uf || null }
             });
           }
         } catch (_) {}

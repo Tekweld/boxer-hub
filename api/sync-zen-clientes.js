@@ -68,7 +68,8 @@ module.exports = async function handler(req, res) {
   const dumpId = req.query?.dump_person_id ?? req.body?.dump_person_id;
   const dumpCats = req.query?.dump_person_categories ?? req.body?.dump_person_categories;
   const dumpCredit = req.query?.dump_credit_lines ?? req.body?.dump_credit_lines;
-  if (dumpId || dumpCats || dumpCredit) {
+  const dumpTagProbe = req.query?.dump_tag_probe ?? req.body?.dump_tag_probe;
+  if (dumpId || dumpCats || dumpCredit || dumpTagProbe) {
     try {
       const zenH = await require('./_zen').zenAuth();
       const out = {};
@@ -100,6 +101,32 @@ module.exports = async function handler(req, res) {
         }
         out.person_categories_probe = resultados;
       }
+      if (dumpTagProbe) {
+        // Descobrir sintaxe RSQL que o Zen aceita para filtrar por tag
+        // (campo string separado por virgula, nao relacao). Objetivo:
+        // listar Persons com a tag 'salesperson' sem varrer a base toda.
+        const tentativas = [
+          "tags==*salesperson*",
+          "tags=like=salesperson",
+          "tags=ke=salesperson",
+          "tags=ik=salesperson",
+          "tags==salesperson",
+        ];
+        const resultados = [];
+        for (const q of tentativas) {
+          try {
+            const r = await fetch('https://api.zenerp.app.br/catalog/person/person?q=' + encodeURIComponent(q) + '&first=0&max=5', { headers: zenH });
+            const body = r.ok ? await r.json() : await r.text();
+            resultados.push({
+              q, http: r.status, ok: r.ok,
+              total: Array.isArray(body) ? body.length : null,
+              amostra: Array.isArray(body) ? body.slice(0, 2).map(p => ({ id: p.id, name: p.name, tags: p.tags })) : body
+            });
+          } catch (e) { resultados.push({ q, erro: e.message }); }
+        }
+        return res.status(200).json({ ok: true, tag_probe: resultados });
+      }
+
       if (dumpCredit) {
         const r = await fetch('https://api.zenerp.app.br/financial/credit/creditLine?first=0&max=50', { headers: zenH });
         const raw = r.ok ? await r.json() : await r.text();

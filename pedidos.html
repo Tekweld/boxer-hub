@@ -580,7 +580,7 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
         <div class="rev-linha"><span>Este pedido</span><span class="v">${fmtMoeda(total)}</span></div>
         <div class="saldo">${saldo >= 0
           ? 'Sobra ' + fmtMoeda(saldo) + ' de limite apos este pedido.'
-          : 'Faltam ' + fmtMoeda(Math.abs(saldo)) + '. Reduza o pedido ou solicite aumento de limite em Financeiro.'}</div>
+          : 'Faltam ' + fmtMoeda(Math.abs(saldo)) + '. Reduza o pedido ou <a href="financeiro.html#solicitar-credito" style="color:#1d327b;font-weight:600">solicite aumento de limite</a>.'}</div>
       </div>
     </div>
 

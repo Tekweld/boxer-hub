@@ -108,6 +108,14 @@ function showTab(n, el) {
   await loadPerfil();
   renderTopbar('Financeiro');
   await Promise.all([loadResumo(), loadTitulos(), loadNFs(), loadCredito()]);
+
+  // Link direto de outras telas (ex: carrinho com credito insuficiente)
+  // pode mandar pra #solicitar-credito -- abre a aba e o modal direto.
+  if (location.hash === '#solicitar-credito') {
+    const tabCredito = document.querySelector('.tab[onclick*="credito"]');
+    if (tabCredito) showTab('credito', tabCredito);
+    openSolicitarCredito();
+  }
 })();
 
 async function loadResumo() {

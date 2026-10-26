@@ -473,6 +473,39 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    // 5b — Gravar hub_enderecos. Achado em 2026-10-26: ativar.js so mandava
+    // o endereco pro Zen, nunca espelhava em comercial.hub_enderecos -- a
+    // tela "Endereco de Entrega" do pedido ficava sem fonte de dado (o
+    // pedido em si vai certo pro Zen porque usa o endereco da Person la,
+    // mas a UI do Hub fica quebrada). So grava se ainda nao existe endereco
+    // 'principal' pra esse cliente (idempotente para reativacao).
+    if (clienteId && endParaCliente.logradouro) {
+      const jaTemEndereco = await fetch(
+        SB_URL + '/rest/v1/hub_enderecos?cliente_id=eq.' + clienteId + '&tipo=eq.principal&select=id',
+        { headers: sbHeaders('GET') }
+      );
+      const enderecosExistentes = jaTemEndereco.ok ? await jaTemEndereco.json() : [];
+      if (!enderecosExistentes?.[0]) {
+        await fetch(SB_URL + '/rest/v1/hub_enderecos', {
+          method: 'POST',
+          headers: sbHeaders('POST'),
+          body: JSON.stringify({
+            cliente_id: clienteId,
+            tipo: 'principal',
+            cep: endParaCliente.cep || null,
+            logradouro: endParaCliente.logradouro,
+            numero: endParaCliente.numero || 'S/N',
+            complemento: endParaCliente.complemento || null,
+            bairro: endParaCliente.bairro || null,
+            cidade: endParaCliente.cidade || null,
+            uf: endParaCliente.uf || null,
+            padrao: true,
+            ativo: true
+          })
+        });
+      }
+    }
+
     // 6 — Criar (ou reutilizar) hub_perfis por user_id
     const existingPerfilRes = await fetch(
       SB_URL + '/rest/v1/hub_perfis?user_id=eq.' + newUser.id + '&select=id',

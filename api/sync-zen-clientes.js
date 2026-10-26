@@ -69,7 +69,9 @@ module.exports = async function handler(req, res) {
   const dumpCats = req.query?.dump_person_categories ?? req.body?.dump_person_categories;
   const dumpCredit = req.query?.dump_credit_lines ?? req.body?.dump_credit_lines;
   const dumpTagProbe = req.query?.dump_tag_probe ?? req.body?.dump_tag_probe;
-  if (dumpId || dumpCats || dumpCredit || dumpTagProbe) {
+  const dumpSaleItemsOuter = req.query?.dump_sale_items ?? req.body?.dump_sale_items;
+  const dumpResolveSkuOuter = req.query?.dump_resolve_sku ?? req.body?.dump_resolve_sku;
+  if (dumpId || dumpCats || dumpCredit || dumpTagProbe || dumpSaleItemsOuter || dumpResolveSkuOuter) {
     try {
       const zenH = await require('./_zen').zenAuth();
       const out = {};
@@ -125,6 +127,38 @@ module.exports = async function handler(req, res) {
           } catch (e) { resultados.push({ q, erro: e.message }); }
         }
         return res.status(200).json({ ok: true, tag_probe: resultados });
+      }
+
+      const dumpSaleItems = req.query?.dump_sale_items ?? req.body?.dump_sale_items;
+      if (dumpSaleItems) {
+        const r = await fetch('https://api.zenerp.app.br/sale/saleItem?q=' + encodeURIComponent('sale.id==' + dumpSaleItems) + '&first=0&max=50', { headers: zenH });
+        const raw = r.ok ? await r.json() : await r.text();
+        out.sale_items = { ok: r.ok, http: r.status, sale_id: dumpSaleItems, raw };
+      }
+
+      const dumpResolveSku = req.query?.dump_resolve_sku ?? req.body?.dump_resolve_sku;
+      if (dumpResolveSku) {
+        // Reproduz exatamente a resolucao de push-pedido.js: sku -> product
+        // -> productPacking, pra achar onde quebra sem adivinhar.
+        const skus = String(dumpResolveSku).split(',').map(s => s.trim()).filter(Boolean);
+        const resultados = [];
+        for (const sku of skus) {
+          const passo = { sku };
+          try {
+            const pr = await fetch('https://api.zenerp.app.br/catalog/product/product?q=' + encodeURIComponent('code==' + sku) + '&first=0&max=5', { headers: zenH });
+            const produtos = pr.ok ? await pr.json() : await pr.text();
+            passo.produto_http = pr.status;
+            passo.produtos = Array.isArray(produtos) ? produtos.map(p => ({ id: p.id, code: p.code, name: p.name })) : produtos;
+            if (Array.isArray(produtos) && produtos[0]) {
+              const ppr = await fetch('https://api.zenerp.app.br/catalog/product/productPacking?q=' + encodeURIComponent('product.id==' + produtos[0].id) + '&first=0&max=5', { headers: zenH });
+              const packs = ppr.ok ? await ppr.json() : await ppr.text();
+              passo.packing_http = ppr.status;
+              passo.packings = Array.isArray(packs) ? packs.map(p => ({ id: p.id, description: p.description })) : packs;
+            }
+          } catch (e) { passo.erro = e.message; }
+          resultados.push(passo);
+        }
+        out.resolve_sku = resultados;
       }
 
       if (dumpCredit) {

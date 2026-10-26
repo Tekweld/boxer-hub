@@ -71,7 +71,8 @@ module.exports = async function handler(req, res) {
   const dumpTagProbe = req.query?.dump_tag_probe ?? req.body?.dump_tag_probe;
   const dumpSaleItemsOuter = req.query?.dump_sale_items ?? req.body?.dump_sale_items;
   const dumpResolveSkuOuter = req.query?.dump_resolve_sku ?? req.body?.dump_resolve_sku;
-  if (dumpId || dumpCats || dumpCredit || dumpTagProbe || dumpSaleItemsOuter || dumpResolveSkuOuter) {
+  const repararSaleIdOuter = req.query?.reparar_sale_id ?? req.body?.reparar_sale_id;
+  if (dumpId || dumpCats || dumpCredit || dumpTagProbe || dumpSaleItemsOuter || dumpResolveSkuOuter || repararSaleIdOuter) {
     try {
       const zenH = await require('./_zen').zenAuth();
       const out = {};
@@ -159,6 +160,31 @@ module.exports = async function handler(req, res) {
           resultados.push(passo);
         }
         out.resolve_sku = resultados;
+      }
+
+      // Reparo: recriar saleItem numa venda que ficou vazia. Devolve o erro
+      // CRU do Zen (push-pedido.js joga fora esse detalhe quando chamado
+      // fire-and-forget pelo checkout -- raiz do problema achado em
+      // 2026-10-26 com a venda 56025).
+      const repararSaleId = req.query?.reparar_sale_id ?? req.body?.reparar_sale_id;
+      const repararItensRaw = req.query?.reparar_itens ?? req.body?.reparar_itens;
+      if (repararSaleId && repararItensRaw) {
+        const itens = typeof repararItensRaw === 'string' ? JSON.parse(repararItensRaw) : repararItensRaw;
+        const resultados = [];
+        for (const it of itens) {
+          const body = {
+            sale: { id: Number(repararSaleId) },
+            productPacking: { id: it.productPackingId },
+            quantity: it.quantity,
+            unitValue: it.unitValue
+          };
+          const r = await fetch('https://api.zenerp.app.br/sale/saleItem', {
+            method: 'POST', headers: zenH, body: JSON.stringify(body)
+          });
+          const respBody = r.ok ? await r.json() : await r.text();
+          resultados.push({ enviado: body, ok: r.ok, http: r.status, resposta: respBody });
+        }
+        return res.status(200).json({ ok: true, reparo_sale_items: resultados });
       }
 
       if (dumpCredit) {

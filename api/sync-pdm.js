@@ -91,7 +91,7 @@ async function syncProdutosTabelaPrecos(req, res) {
 
   try {
     const produtosBmax = await fetchAllProdutos(
-      HUB_URL + '/rest/v1/produtos?tabela_id=eq.2&status=eq.ativo&select=id,codigo,descricao_completa,imagem_url,caracteristicas',
+      HUB_URL + '/rest/v1/produtos?tabela_id=in.(1,2)&status=eq.ativo&select=id,codigo,descricao_completa,imagem_url,caracteristicas',
       sbH
     );
     const pdmProdutos = await fetchAllProdutos(

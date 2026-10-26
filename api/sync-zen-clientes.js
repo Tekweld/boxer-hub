@@ -72,7 +72,8 @@ module.exports = async function handler(req, res) {
   const dumpSaleItemsOuter = req.query?.dump_sale_items ?? req.body?.dump_sale_items;
   const dumpResolveSkuOuter = req.query?.dump_resolve_sku ?? req.body?.dump_resolve_sku;
   const repararSaleIdOuter = req.query?.reparar_sale_id ?? req.body?.reparar_sale_id;
-  if (dumpId || dumpCats || dumpCredit || dumpTagProbe || dumpSaleItemsOuter || dumpResolveSkuOuter || repararSaleIdOuter) {
+  const excluirPersonIdOuter = req.query?.excluir_person_id ?? req.body?.excluir_person_id;
+  if (dumpId || dumpCats || dumpCredit || dumpTagProbe || dumpSaleItemsOuter || dumpResolveSkuOuter || repararSaleIdOuter || excluirPersonIdOuter) {
     try {
       const zenH = await require('./_zen').zenAuth();
       const out = {};
@@ -185,6 +186,32 @@ module.exports = async function handler(req, res) {
           resultados.push({ enviado: body, ok: r.ok, http: r.status, resposta: respBody });
         }
         return res.status(200).json({ ok: true, reparo_sale_items: resultados });
+      }
+
+      // Excluir Person de teste em cascata -- mesmo padrao do `excluir` de
+      // venda em sync-pedidos-zen.js. Zen recusa DELETE direto quando ha
+      // filhos (personAddress, personContact, creditLineItem); apaga-os
+      // primeiro, na ordem inversa da criacao.
+      const excluirPersonId = req.query?.excluir_person_id ?? req.body?.excluir_person_id;
+      if (excluirPersonId) {
+        const tentativas = [];
+        for (const rec of ['creditLineItem', 'personContact', 'personAddress']) {
+          const base = rec === 'creditLineItem' ? 'financial/credit' : 'catalog/person';
+          try {
+            const filhosRes = await fetch('https://api.zenerp.app.br/' + base + '/' + rec + '?q=' + encodeURIComponent('person.id==' + excluirPersonId) + '&first=0&max=100', { headers: zenH });
+            const filhos = filhosRes.ok ? await filhosRes.json() : [];
+            const lista = Array.isArray(filhos) ? filhos : (filhos?.content || []);
+            for (const f of lista) {
+              const dr = await fetch('https://api.zenerp.app.br/' + base + '/' + rec + '/' + f.id, { method: 'DELETE', headers: zenH });
+              tentativas.push({ alvo: rec + ':' + f.id, status: dr.status });
+            }
+          } catch (e) {
+            tentativas.push({ alvo: rec, erro: e.message.slice(0, 150) });
+          }
+        }
+        const pr = await fetch('https://api.zenerp.app.br/catalog/person/person/' + excluirPersonId, { method: 'DELETE', headers: zenH });
+        tentativas.push({ alvo: 'person:' + excluirPersonId, status: pr.status, corpo: (await pr.text()).slice(0, 400) });
+        return res.status(200).json({ ok: pr.ok, tentativas });
       }
 
       if (dumpCredit) {

@@ -401,6 +401,14 @@ module.exports = async function handler(req, res) {
     }
 
     // 5 — Criar (ou reutilizar) hub_clientes por CNPJ
+    // uf/cidade sao obrigatorios pra precificacao: hub_fn_precos_cliente
+    // retorna vazio (carrinho a R$0,00) se uf for nulo -- bug real achado em
+    // 2026-10-26 reativando a APM (preco zerado no carrinho real).
+    const canalLabel2 = onb.classificacao === 'ecommerce' ? 'Ecommerce'
+                       : onb.classificacao === 'hibrido' ? 'Hibrido'
+                       : 'Varejo';
+    const endParaCliente = (onb.enderecos || [])[0] || {};
+
     let clienteId = null;
     const existingClienteRes = await fetch(
       SB_URL + '/rest/v1/hub_clientes?cnpj=eq.' + encodeURIComponent(onb.cnpj) + '&select=id',
@@ -416,7 +424,12 @@ module.exports = async function handler(req, res) {
         body: JSON.stringify({
           status_cadastro: 'ativo',
           erp_cliente_id: erpClienteId || existingClientes[0].erp_cliente_id || null,
-          ativo: true
+          ativo: true,
+          canal: canalLabel2,
+          uf: endParaCliente.uf || null,
+          cidade: endParaCliente.cidade || null,
+          limite_credito: onb.limite_aprovado || 0,
+          limite_disponivel: onb.limite_aprovado || 0
         })
       });
     } else {
@@ -440,6 +453,11 @@ module.exports = async function handler(req, res) {
           limite_credito: onb.limite_aprovado || 0,
           limite_disponivel: onb.limite_aprovado || 0,
           erp_cliente_id: String(erpClienteId),
+          canal: canalLabel2,
+          uf: endParaCliente.uf || null,
+          cidade: endParaCliente.cidade || null,
+          email_principal: onb.contato_email || null,
+          telefone: onb.contato_telefone || null,
           ativo: true
         })
       });

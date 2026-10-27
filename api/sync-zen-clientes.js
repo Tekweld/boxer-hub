@@ -293,12 +293,28 @@ module.exports = async function handler(req, res) {
     // 2 — Montar os registros do Hub
     const semDoc = [];
     const bodies = [];
+    // Representante vem embutido no mesmo p.personSalesperson -- sem custo de
+    // chamada extra ao Zen. Coletado aqui e resolvido em bloco antes do
+    // upsert de hub_clientes (passo 2b).
+    const repsPorErpId = new Map();
 
     for (const p of pessoas) {
       const doc = normDoc(p.documentNumber);
       if (!doc) { semDoc.push(p.id); continue; }
 
       const tags = parseTags(p.tags);
+      const rep = p.personSalesperson;
+      if (rep?.id) {
+        repsPorErpId.set(String(rep.id), {
+          nome: rep.name || rep.fantasyName || ('Representante ' + rep.id),
+          email: rep.email || null,
+          telefone: rep.phone || null,
+          // salesCommission do Zen e um multiplicador (ex.: 0.5), nao uma
+          // porcentagem direta -- guardar cru em comissao_percentual e
+          // confirmar escala com o financeiro antes de usar em calculo.
+          comissao_percentual: rep.properties?.salesCommission ?? null
+        });
+      }
 
       bodies.push({
         erp_cliente_id: String(p.id),
@@ -319,7 +335,8 @@ module.exports = async function handler(req, res) {
         // bloqueado no Zen entra suspenso; os demais, ativos
         status_cadastro: tags.includes('blocked') ? 'suspenso' : 'ativo',
         ativo: true,
-        sincronizado_em: new Date().toISOString()
+        sincronizado_em: new Date().toISOString(),
+        _repErpId: rep?.id ? String(rep.id) : null
       });
     }
 
@@ -339,7 +356,52 @@ module.exports = async function handler(req, res) {
 
     if (dryRun) {
       console.log('[ZEN] DRY RUN — nada gravado:', JSON.stringify(resumo, null, 2));
-      return res.status(200).json({ ok: true, ...resumo, amostra: bodies.slice(0, 3).map(mascarar) });
+      return res.status(200).json({ ok: true, ...resumo, representantes_distintos: repsPorErpId.size, amostra: bodies.slice(0, 3).map(mascarar) });
+    }
+
+    // 2b — Upsert de hub_representantes a partir do personSalesperson de cada
+    // cliente (2026-10-27: tabela estava vazia -- ver pendencia). Area de
+    // atuacao/regiao fica em aberto por ora (depende de planilha futura);
+    // aqui so backfilla quem JA tem vendedor vinculado no Zen.
+    let representantesGravados = 0;
+    const repErpIdParaHubId = new Map();
+    if (repsPorErpId.size) {
+      // email e obrigatorio e UNICO em hub_representantes (e o login do
+      // representante, quando ele tiver um). Nem todo vendedor do Zen tem
+      // email cadastrado -- sem um, usa um placeholder unico e reconhecivel
+      // em vez de falhar o lote inteiro; o admin corrige antes de convidar
+      // esse representante a logar.
+      const repBodies = Array.from(repsPorErpId.entries()).map(([erpId, r]) => ({
+        erp_representante_id: erpId,
+        nome: r.nome,
+        email: r.email || ('rep-' + erpId + '@zen.boxersoldas.com.br'),
+        telefone: r.telefone,
+        comissao_percentual: r.comissao_percentual,
+        status: 'ativo',
+        ativo: true
+      }));
+      for (let i = 0; i < repBodies.length; i += 200) {
+        const lote = repBodies.slice(i, i + 200);
+        const r = await fetch(HUB_URL + '/rest/v1/hub_representantes?on_conflict=erp_representante_id&select=id,erp_representante_id', {
+          method: 'POST',
+          headers: { ...hubH('POST'), Prefer: 'resolution=merge-duplicates,return=representation' },
+          body: JSON.stringify(lote)
+        });
+        if (r.ok) {
+          const criados = await r.json();
+          for (const c of criados) repErpIdParaHubId.set(c.erp_representante_id, c.id);
+          representantesGravados += criados.length;
+        } else {
+          console.error('[ZEN] lote de representantes falhou:', (await r.text()).slice(0, 300));
+        }
+      }
+    }
+    // resolve representante_id em cada body de cliente e descarta o campo auxiliar
+    for (const b of bodies) {
+      if (b._repErpId && repErpIdParaHubId.has(b._repErpId)) {
+        b.representante_id = repErpIdParaHubId.get(b._repErpId);
+      }
+      delete b._repErpId;
     }
 
     // 3 — Upsert por erp_cliente_id (idempotente: pode rodar quantas vezes quiser)
@@ -358,7 +420,7 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    console.log('[ZEN] gravados:', gravados, 'de', bodies.length);
+    console.log('[ZEN] gravados:', gravados, 'de', bodies.length, '| representantes:', representantesGravados);
 
     // 4 — Inicializar limite de credito para quem nunca recebeu (clientes
     // ativados por convite, nao por onboarding, nunca passam por api/ativar.js

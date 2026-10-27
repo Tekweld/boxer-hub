@@ -32,6 +32,50 @@ function parseAcompanhaEFuncoes(recursos) {
   return items.length ? items.map(label => ({ label, valor: '✓' })) : null;
 }
 
+// Secao "Acompanha:" do texto de recursos (o que vem na caixa)
+function parseAcompanha(recursos) {
+  if (!recursos) return null;
+  const m = recursos.match(/Acompanha:\s*\r?\n([\s\S]*?)(?:\r?\n\s*\r?\n|(?:Fun[çc][õo]es|CARACTER[ÍI]STICAS):|$)/i);
+  if (!m) return null;
+  const items = m[1].split(/\r?\n/).map(l => l.replace(/^[\s•\-]+/, '').trim()).filter(l => l.length > 1);
+  return items.length ? items : null;
+}
+
+const num = v => (v === null || v === undefined || v === '' || isNaN(Number(v))) ? null : Number(v);
+const txt = v => (v === null || v === undefined) ? null : (String(v).trim() || null);
+
+// Bloco unico gravado em produtos.info_pdm: especificacoes, dimensoes/peso, acompanha, compativeis.
+// Sem NCM/CA (decisao: nao aparece na tabela) e sem documentos.
+function montarInfoPdm(pdm, compat) {
+  const specs = [
+    ['Processos de solda', pdm.processos_solda], ['Tensão de entrada', pdm.tensao_entrada],
+    ['Ciclo de trabalho', pdm.ciclo_trabalho], ['Tensão em vazio', pdm.tensao_vazio],
+    ['Bitola de arame/eletrodo', pdm.bitola_arame_eletrodo]
+  ].map(([label, v]) => ({ label, valor: txt(v) })).filter(x => x.valor);
+  const dim = (c, l, a) => (num(c) || num(l) || num(a)) ? { c: num(c), l: num(l), a: num(a) } : null;
+  const dimensoes = {
+    maquina: dim(pdm.comprimento_maquina_cm, pdm.largura_maquina_cm, pdm.altura_maquina_cm),
+    embalagem: dim(pdm.comprimento_cm, pdm.largura_cm, pdm.altura_cm),
+    peso_liquido: num(pdm.peso_liquido_kg), peso_bruto: num(pdm.peso_bruto_kg),
+    obs_maquina: txt(pdm.obs_dimensoes_maquina), obs_embalagem: txt(pdm.obs_dimensoes_caixa)
+  };
+  const temDim = dimensoes.maquina || dimensoes.embalagem || dimensoes.peso_liquido || dimensoes.peso_bruto;
+  const info = {};
+  if (specs.length) info.specs = specs;
+  if (temDim) info.dimensoes = dimensoes;
+  const ac = parseAcompanha(pdm.recursos_diferenciais);
+  if (ac) info.acompanha = ac;
+  if (compat && compat.length) info.compativeis = compat;
+  return Object.keys(info).length ? info : null;
+}
+
+function canon(v) {
+  if (Array.isArray(v)) return v.map(canon);
+  if (v && typeof v === 'object') return Object.keys(v).sort().reduce((o, k) => { o[k] = canon(v[k]); return o; }, {});
+  return v;
+}
+const mesmoJson = (a, b) => JSON.stringify(canon(a ?? null)) === JSON.stringify(canon(b ?? null));
+
 async function syncProdutosTabelaPrecos(req, res) {
   res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN_PRODUTOS);
   res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type, x-cron-secret');
@@ -91,13 +135,25 @@ async function syncProdutosTabelaPrecos(req, res) {
 
   try {
     const produtosBmax = await fetchAllProdutos(
-      HUB_URL + '/rest/v1/produtos?tabela_id=in.(1,2)&status=eq.ativo&select=id,codigo,descricao_completa,imagem_url,caracteristicas',
+      HUB_URL + '/rest/v1/produtos?tabela_id=in.(1,2)&status=eq.ativo&select=id,codigo,descricao_completa,imagem_url,caracteristicas,info_pdm',
       sbH
     );
     const pdmProdutos = await fetchAllProdutos(
-      PDM_URL + '/rest/v1/produtos?status=eq.Ativo&select=codigo,descricao_detalhada,descricao,recursos_diferenciais,imagem_url',
+      PDM_URL + '/rest/v1/produtos?status=eq.Ativo&select=id,codigo,nome,descricao_detalhada,descricao,recursos_diferenciais,imagem_url,processos_solda,tensao_entrada,ciclo_trabalho,tensao_vazio,bitola_arame_eletrodo,comprimento_cm,largura_cm,altura_cm,peso_liquido_kg,peso_bruto_kg,comprimento_maquina_cm,largura_maquina_cm,altura_maquina_cm,obs_dimensoes_caixa,obs_dimensoes_maquina',
       pdmH
     );
+    const pdmById = {};
+    pdmProdutos.forEach(p => { if (p.id) pdmById[p.id] = p; });
+    let pares = [];
+    try { pares = await fetchAllProdutos(PDM_URL + '/rest/v1/produto_maquinas_compativeis?select=tocha_id,maquina_id', pdmH); } catch (_) { pares = []; }
+    const compatDe = pdm => {
+      const out = [];
+      pares.forEach(p => {
+        if (p.tocha_id === pdm.id && pdmById[p.maquina_id]) out.push({ tipo: 'maquina', codigo: txt(pdmById[p.maquina_id].codigo), nome: txt(pdmById[p.maquina_id].nome) });
+        if (p.maquina_id === pdm.id && pdmById[p.tocha_id]) out.push({ tipo: 'tocha', codigo: txt(pdmById[p.tocha_id].codigo), nome: txt(pdmById[p.tocha_id].nome) });
+      });
+      return out;
+    };
     const pdmByCodigo = {};
     pdmProdutos.forEach(p => { if (p.codigo) pdmByCodigo[p.codigo.trim().toUpperCase()] = p; });
 
@@ -113,10 +169,13 @@ async function syncProdutosTabelaPrecos(req, res) {
       const novaFoto = pdm.imagem_url || null;
       const novoCarac = parseAcompanhaEFuncoes(pdm.recursos_diferenciais);
 
+      const novaInfo = montarInfoPdm(pdm, compatDe(pdm));
       const body = {};
       if (novaDesc && novaDesc !== prod.descricao_completa) body.descricao_completa = novaDesc;
       if (novaFoto && novaFoto !== prod.imagem_url) body.imagem_url = novaFoto;
       if (novoCarac && JSON.stringify(novoCarac) !== JSON.stringify(prod.caracteristicas)) body.caracteristicas = novoCarac;
+
+      if (novaInfo && !mesmoJson(novaInfo, prod.info_pdm)) body.info_pdm = novaInfo;
 
       if (Object.keys(body).length === 0) { semMudanca++; continue; }
       body.atualizado_em = new Date().toISOString();

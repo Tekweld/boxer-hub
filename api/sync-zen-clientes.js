@@ -396,27 +396,44 @@ module.exports = async function handler(req, res) {
         }
       }
     }
-    // resolve representante_id em cada body de cliente e descarta o campo auxiliar
+    // Resolve representante_id e descarta o campo auxiliar. Duas pegadinhas
+    // achadas rodando isso pela primeira vez em 2026-10-27:
+    //   1. O insert em lote do PostgREST exige que TODO objeto do array
+    //      tenha exatamente as mesmas chaves (PGRST102 "All object keys
+    //      must match") -- 997 clientes, 0 gravados, lotes todos rejeitados
+    //      enquanto so ALGUNS objetos tinham a chave representante_id.
+    //   2. upsert usa resolution=merge-duplicates: se a chave estiver
+    //      presente com valor null, ele GRAVA null por cima de um
+    //      representante_id que ja existia (ex.: vinculado manualmente, ou
+    //      Zen passageiramente sem personSalesperson). Para nao apagar
+    //      vinculo bom, quem nao resolveu representante desta vez NAO leva
+    //      a chave -- fica de fora do payload, intocado.
+    const comRep = [];
+    const semRep = [];
     for (const b of bodies) {
-      if (b._repErpId && repErpIdParaHubId.has(b._repErpId)) {
-        b.representante_id = repErpIdParaHubId.get(b._repErpId);
-      }
+      const repId = (b._repErpId && repErpIdParaHubId.has(b._repErpId))
+        ? repErpIdParaHubId.get(b._repErpId) : null;
       delete b._repErpId;
+      if (repId) { b.representante_id = repId; comRep.push(b); }
+      else { semRep.push(b); }
     }
 
     // 3 — Upsert por erp_cliente_id (idempotente: pode rodar quantas vezes quiser)
+    // Dois grupos separados (ver nota acima) -- cada um homogeneo nas chaves.
     let gravados = 0;
     const erros = [];
-    for (let i = 0; i < bodies.length; i += 200) {
-      const lote = bodies.slice(i, i + 200);
-      const r = await fetch(HUB_URL + '/rest/v1/hub_clientes?on_conflict=erp_cliente_id', {
-        method: 'POST', headers: hubH('POST'), body: JSON.stringify(lote)
-      });
-      if (r.ok) { gravados += lote.length; }
-      else {
-        const txt = await r.text();
-        console.error(`[ZEN] lote ${i} falhou (${r.status}):`, txt.slice(0, 300));
-        erros.push({ lote: i, status: r.status, detalhe: txt.slice(0, 300) });
+    for (const [rotulo, grupo] of [['com_representante', comRep], ['sem_representante', semRep]]) {
+      for (let i = 0; i < grupo.length; i += 200) {
+        const lote = grupo.slice(i, i + 200);
+        const r = await fetch(HUB_URL + '/rest/v1/hub_clientes?on_conflict=erp_cliente_id', {
+          method: 'POST', headers: hubH('POST'), body: JSON.stringify(lote)
+        });
+        if (r.ok) { gravados += lote.length; }
+        else {
+          const txt = await r.text();
+          console.error(`[ZEN] lote ${rotulo}:${i} falhou (${r.status}):`, txt.slice(0, 300));
+          erros.push({ grupo: rotulo, lote: i, status: r.status, detalhe: txt.slice(0, 300) });
+        }
       }
     }
 

@@ -54,12 +54,12 @@ async function zenAuth(forcar = false) {
  * Para de paginar quando: pagina menor que `max`, pagina vazia, nenhum id novo,
  * ou o teto de seguranca e atingido.
  */
-async function zenGet(path, { q = null, order = null, max = 200, limite = 20000 } = {}) {
+async function zenGet(path, { q = null, order = null, max = 200, limite = 20000, first: primeiroOffset = 0 } = {}) {
   const headers = await zenAuth();
   const out = [];
   const vistos = new Set();
 
-  for (let first = 0; out.length < limite; first += max) {
+  for (let first = primeiroOffset; out.length < limite; first += max) {
     const qs = new URLSearchParams({ first: String(first), max: String(max) });
     if (q) qs.set('q', q);
     if (order) qs.set('order', order);

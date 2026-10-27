@@ -235,6 +235,19 @@ module.exports = async function handler(req, res) {
   const somenteIdsRaw = req.query?.somente_erp_ids ?? req.body?.somente_erp_ids;
   const somenteIds = somenteIdsRaw ? String(somenteIdsRaw).split(',').map(s => s.trim()).filter(Boolean) : null;
 
+  // Varredura paginada da base cheia (~7700 pessoas nos 3 canais): buscar tudo
+  // de uma vez estourava os 60s do Vercel (504 confirmado em 2026-10-27, antes
+  // mesmo de chegar nas etapas de representante/credito). Mesma logica de
+  // ORCAMENTO_MS + cursor de retomada do api/sync-enderecos.js: processa so o
+  // que cabe no orcamento de tempo e devolve `proximo_canal_idx`/`proximo_offset`
+  // para a proxima chamada continuar de onde parou. So entra nesse modo na
+  // varredura cheia -- os modos de amostra (somente_erp_ids/limite_por_canal)
+  // continuam de tiro unico, ja que sao pequenos por natureza.
+  const ORCAMENTO_MS = 45000;
+  const PASSO_PAGINA = 200;
+  const paginando = !somenteIds && !limitePorCanal;
+  const t0 = Date.now();
+
   try {
     // 1 — Buscar as pessoas dos canais desejados.
     // Uma consulta por canal: o RSQL aceita OR com vírgula, mas filtrar por
@@ -242,11 +255,38 @@ module.exports = async function handler(req, res) {
     // as chamadas e mais previsivel e o custo e baixo (3 chamadas).
     let pessoas = [];
     const porCanal = {};
+    let concluido = true;
+    let proximoCanalIdx, proximoOffset;
 
     if (somenteIds) {
       const q = '(' + somenteIds.map(id => `id==${id}`).join(',') + ')';
       pessoas = await zenGet('/catalog/person/person', { q, max: somenteIds.length });
       for (const p of pessoas) { const c = canalDe(p); porCanal[c] = (porCanal[c] || 0) + 1; }
+    } else if (paginando) {
+      let canalIdx = Math.max(0, parseInt(req.query?.canal_idx ?? req.body?.canal_idx, 10) || 0);
+      let offset = Math.max(0, parseInt(req.query?.offset ?? req.body?.offset, 10) || 0);
+      concluido = false;
+
+      while (Date.now() - t0 < ORCAMENTO_MS) {
+        if (canalIdx >= CANAIS.length) { concluido = true; break; }
+        const canal = CANAIS[canalIdx];
+        let lote;
+        try {
+          lote = await zenGet('/catalog/person/person', {
+            q: `category1.description==${canal}`, max: PASSO_PAGINA, limite: PASSO_PAGINA, first: offset
+          });
+        } catch (e) {
+          console.error(`[ZEN] pagina do canal '${canal}' offset ${offset} falhou:`, e.message.slice(0, 150));
+          proximoCanalIdx = canalIdx; proximoOffset = offset;
+          break;
+        }
+        porCanal[canal] = (porCanal[canal] || 0) + lote.length;
+        pessoas = pessoas.concat(lote);
+        if (lote.length < PASSO_PAGINA) { canalIdx++; offset = 0; }
+        else { offset += PASSO_PAGINA; }
+      }
+
+      if (!concluido && proximoCanalIdx === undefined) { proximoCanalIdx = canalIdx; proximoOffset = offset; }
     } else {
     for (const canal of CANAIS) {
       let lote = [];
@@ -347,6 +387,10 @@ module.exports = async function handler(req, res) {
       total_encontrado: pessoas.length,
       a_gravar: bodies.length,
       ignorados_sem_documento: semDoc.length,
+      paginando: paginando || undefined,
+      concluido: paginando ? concluido : undefined,
+      proximo_canal_idx: !concluido ? proximoCanalIdx : undefined,
+      proximo_offset: !concluido ? proximoOffset : undefined,
       bloqueados: bodies.filter(b => b.bloqueado).length,
       com_grupo: bodies.filter(b => b.grupo_nome).length,
       sem_grupo: bodies.filter(b => !b.grupo_nome).length,

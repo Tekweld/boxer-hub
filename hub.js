@@ -689,7 +689,18 @@ async function carregarSolicitacoes(referenciaTipo, referenciaId, clienteId) {
   }
 }
 
-function abrirNovaSolicitacao(referenciaTipo, referenciaId, clienteId, assuntoSugerido) {
+// Temas curtos para triagem -- sem isso toda solicitacao cai numa fila
+// indiferenciada e quem responde so descobre do que se trata depois de abrir.
+const CATEGORIAS_SOLICITACAO = [
+  { valor: 'duvida', label: 'Duvida geral' },
+  { valor: 'problema_entrega', label: 'Problema com entrega' },
+  { valor: 'financeiro', label: 'Financeiro / cobranca' },
+  { valor: 'alteracao_pedido', label: 'Alteracao no pedido' },
+  { valor: 'documentacao', label: 'Documentacao / nota fiscal' },
+  { valor: 'outro', label: 'Outro' }
+];
+
+function abrirNovaSolicitacao(referenciaTipo, referenciaId, clienteId, assuntoSugerido, categoriaSugerida) {
   openModal(`
     <h3 style="font-size:18px;margin-bottom:16px;color:#1d327b">Nova solicitacao</h3>
     <div class="form-row">
@@ -697,11 +708,17 @@ function abrirNovaSolicitacao(referenciaTipo, referenciaId, clienteId, assuntoSu
       <input id="novaSolAssunto" value="${escSol(assuntoSugerido)}" maxlength="200" style="width:100%">
     </div>
     <div class="form-row">
+      <label>Categoria</label>
+      <select id="novaSolCategoria" style="width:100%">
+        ${CATEGORIAS_SOLICITACAO.map(c => `<option value="${c.valor}"${c.valor === categoriaSugerida ? ' selected' : ''}>${c.label}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-row">
       <label>Mensagem</label>
       <textarea id="novaSolMensagem" rows="4" placeholder="Descreva o que voce precisa..." style="width:100%"></textarea>
     </div>
     <div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0">
-      <button class="btn btn-outline" onclick="abrirSolicitacoes('${referenciaTipo}', ${referenciaId ? `'${referenciaId}'` : 'null'}, '${escSol(assuntoSugerido).replace(/'/g, "\\'")}')">Voltar</button>
+      <button class="btn btn-outline" onclick="abrirSolicitacoes('${referenciaTipo}', ${referenciaId ? `'${referenciaId}'` : 'null'}, '${clienteId}', '${escSol(assuntoSugerido).replace(/'/g, "\\'")}')">Voltar</button>
       <button class="btn btn-primary" onclick="enviarNovaSolicitacao('${referenciaTipo}', ${referenciaId ? `'${referenciaId}'` : 'null'}, '${clienteId}')">Enviar</button>
     </div>
   `);
@@ -709,6 +726,7 @@ function abrirNovaSolicitacao(referenciaTipo, referenciaId, clienteId, assuntoSu
 
 async function enviarNovaSolicitacao(referenciaTipo, referenciaId, clienteId) {
   const assunto = document.getElementById('novaSolAssunto').value.trim();
+  const categoria = document.getElementById('novaSolCategoria').value;
   const mensagem = document.getElementById('novaSolMensagem').value.trim();
   if (!assunto || !mensagem) { toast('Preencha assunto e mensagem', 'error'); return; }
 
@@ -718,6 +736,7 @@ async function enviarNovaSolicitacao(referenciaTipo, referenciaId, clienteId) {
       aberto_por_tipo: autorTipoAtual() === 'funcionario' ? 'representante' : autorTipoAtual(),
       referencia_tipo: referenciaTipo,
       referencia_id: referenciaId,
+      categoria,
       assunto
     });
     await sb('/hub_solicitacao_mensagens', 'POST', {
@@ -733,6 +752,11 @@ async function enviarNovaSolicitacao(referenciaTipo, referenciaId, clienteId) {
   }
 }
 
+function labelCategoria(cat) {
+  const achada = CATEGORIAS_SOLICITACAO.find(c => c.valor === cat);
+  return achada ? achada.label : 'Sem categoria';
+}
+
 async function abrirThreadSolicitacao(id) {
   try {
     const [sol] = await sb('/hub_solicitacoes?id=eq.' + id + '&select=*');
@@ -743,7 +767,7 @@ async function abrirThreadSolicitacao(id) {
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px">
         <div>
           <h3 style="font-size:18px;color:#1d327b;margin:0">${escSol(sol.numero)}</h3>
-          <div style="font-size:13px;color:#718096">${escSol(sol.assunto)}</div>
+          <div style="font-size:13px;color:#718096">${escSol(sol.assunto)} &middot; ${escSol(labelCategoria(sol.categoria))}</div>
         </div>
         <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
       </div>
@@ -764,11 +788,15 @@ async function abrirThreadSolicitacao(id) {
   }
 }
 
+// Lado e cor vem de QUEM fala (quem abriu a solicitacao), nunca de "sou eu
+// logado agora" -- testar com o mesmo usuario nos dois papeis (ex: Admin
+// respondendo a propria solicitacao de teste) nao pode embaralhar os lados.
+// Cliente: esquerda, azul claro. Representante/Boxer: direita, azul escuro.
 function renderMensagemSolicitacao(m) {
-  const meu = m.autor_id === getUserId();
+  const doCliente = m.autor_tipo === 'cliente';
   const rotulo = { cliente: 'Cliente', representante: 'Representante', funcionario: 'Boxer' }[m.autor_tipo] || m.autor_tipo;
   return `
-    <div style="align-self:${meu ? 'flex-end' : 'flex-start'};max-width:85%;background:${meu ? '#1d327b' : '#f0f4f8'};color:${meu ? '#fff' : '#1a202c'};padding:8px 12px;border-radius:10px">
+    <div style="align-self:${doCliente ? 'flex-start' : 'flex-end'};max-width:85%;background:${doCliente ? '#dbeafe' : '#1d327b'};color:${doCliente ? '#1e3a5f' : '#fff'};padding:8px 12px;border-radius:10px">
       <div style="font-size:10px;opacity:.75;margin-bottom:3px;text-transform:uppercase;letter-spacing:.4px">${escSol(m.autor_nome || rotulo)}</div>
       <div style="font-size:13px;white-space:pre-wrap">${escSol(m.mensagem)}</div>
     </div>`;

@@ -77,18 +77,27 @@ tbody tr:hover{background:#f0f7ff}
 </div>
 <div class="panel">
   <div class="panel-content" id="tab-titulos">
+    <div class="page-header">
+      <h2 class="page-title">Titulos</h2>
+      <button class="btn btn-outline" onclick="abrirNovaSolicitacaoGeral('Duvida sobre titulos')">Nova solicitacao</button>
+    </div>
     <div id="kpiResumo"></div>
     <div id="titulosList"></div>
   </div>
   <div class="panel-content hidden" id="tab-nfs">
-    <div class="page-header"><h2 class="page-title">Notas Fiscais</h2></div>
+    <div class="page-header">
+      <h2 class="page-title">Notas Fiscais</h2>
+      <button class="btn btn-outline" onclick="abrirNovaSolicitacaoGeral('Duvida sobre nota fiscal')">Nova solicitacao</button>
+    </div>
     <div id="nfsList"></div>
   </div>
   <div class="panel-content hidden" id="tab-credito">
     <div class="page-header">
-      <h2 class="page-title">Solicitacoes de Credito</h2>
-      <button class="btn btn-primary" onclick="openSolicitarCredito()">Solicitar</button>
+      <h2 class="page-title">Credito</h2>
+      <button class="btn btn-primary" onclick="openSolicitarCredito()">Solicitar aumento</button>
     </div>
+    <div id="kpiCredito"></div>
+    <h3 style="font-size:14px;color:#1d327b;margin:20px 0 10px">Solicitacoes de credito</h3>
     <div id="creditoList"></div>
   </div>
 </div>
@@ -118,10 +127,31 @@ function showTab(n, el) {
   }
 })();
 
+// Dealer sempre tem um unico cliente (o dele). Equipe interna/representante
+// so tem um cliente em foco quando selecionou uma revenda no topo -- sem
+// isso, nao da pra saber de qual cliente seria o "resumo", entao a tela
+// nao inventa um numero (era o bug do R$0,00: limit=1 pegava uma revenda
+// qualquer e mostrava como se fosse o total geral).
+function financeiroClienteFiltro() {
+  if (getUserTipo() === 'cliente') return getUserClienteId();
+  return (typeof getClienteAtivo === 'function') ? getClienteAtivo() : null;
+}
+
+function abrirNovaSolicitacaoGeral(assunto) {
+  const clienteId = financeiroClienteFiltro();
+  if (!clienteId) { toast('Selecione uma revenda para abrir a solicitacao', 'error'); return; }
+  abrirNovaSolicitacao('geral', null, clienteId, assunto);
+}
+
 async function loadResumo() {
   const wrap = document.getElementById('kpiResumo');
+  const clienteId = financeiroClienteFiltro();
+  if (!clienteId) {
+    wrap.innerHTML = '<div style="padding:10px 0;color:#718096;font-size:13px">Selecione uma revenda para ver o resumo financeiro dela.</div>';
+    return;
+  }
   try {
-    const rows = await sb('/hub_v_financeiro_cliente?select=*&limit=1');
+    const rows = await sb('/hub_v_financeiro_cliente?cliente_id=eq.' + clienteId + '&select=*&limit=1');
     if (!rows.length) { wrap.innerHTML = ''; return; }
     const r = rows[0];
     wrap.innerHTML = `<div class="kpi-row">
@@ -137,11 +167,14 @@ async function loadResumo() {
 async function loadTitulos() {
   const wrap = document.getElementById('titulosList');
   try {
-    const titulos = await sb('/hub_titulos?ativo=eq.true&order=data_vencimento.asc&select=*');
+    // hub_clientes(razao_social) embutido -- staff/representante olham titulo
+    // de varios clientes de uma vez e precisam saber de qual revenda e cada um.
+    const titulos = await sb('/hub_titulos?ativo=eq.true&order=data_vencimento.asc&select=*,hub_clientes(razao_social)');
     if (!titulos.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhum titulo encontrado</h3></div>'; return; }
     wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Numero</th><th>Vencimento</th><th>Valor</th><th>Aberto</th><th>Status</th><th>Atraso</th><th></th></tr></thead>
+      <thead><tr><th>Cliente</th><th>Numero</th><th>Vencimento</th><th>Valor</th><th>Aberto</th><th>Status</th><th>Atraso</th><th></th></tr></thead>
       <tbody>${titulos.map(t => `<tr>
+        <td>${t.hub_clientes?.razao_social || '—'}</td>
         <td>${t.numero_titulo || '—'}</td>
         <td>${fmtData(t.data_vencimento)}</td>
         <td>${fmtMoeda(t.valor_original)}</td>
@@ -149,7 +182,9 @@ async function loadTitulos() {
         <td><span class="status-badge status-${t.status}">${t.status}</span></td>
         <td>${t.dias_atraso > 0 ? t.dias_atraso + 'd' : '—'}</td>
         <td style="display:flex;gap:4px;flex-wrap:wrap">
-          ${t.url_boleto ? `<a href="${t.url_boleto}" target="_blank" class="btn btn-outline btn-sm">Boleto</a>` : ''}
+          ${t.url_boleto
+            ? `<a href="${t.url_boleto}" target="_blank" class="btn btn-primary btn-sm">Baixar boleto</a>`
+            : `<button class="btn btn-outline btn-sm" onclick="abrirNovaSolicitacao('titulo', '${t.id}', '${t.cliente_id}', 'Titulo ${(t.numero_titulo || '').replace(/'/g, "\\'")} — solicitar boleto', 'financeiro')">Solicitar boleto</button>`}
           <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('titulo', '${t.id}', '${t.cliente_id}', 'Titulo ${(t.numero_titulo || '').replace(/'/g, "\\'")}')">Duvida</button>
         </td>
       </tr>`).join('')}</tbody>
@@ -160,19 +195,22 @@ async function loadTitulos() {
 async function loadNFs() {
   const wrap = document.getElementById('nfsList');
   try {
-    const nfs = await sb('/hub_notas_fiscais?ativo=eq.true&order=data_emissao.desc&select=*');
+    const nfs = await sb('/hub_notas_fiscais?ativo=eq.true&order=data_emissao.desc&select=*,hub_clientes(razao_social)');
     if (!nfs.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhuma nota fiscal encontrada</h3></div>'; return; }
     wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Numero</th><th>Serie</th><th>Emissao</th><th>Valor</th><th>Chave</th><th></th></tr></thead>
+      <thead><tr><th>Cliente</th><th>Numero</th><th>Serie</th><th>Emissao</th><th>Valor</th><th>Chave</th><th></th></tr></thead>
       <tbody>${nfs.map(n => `<tr>
+        <td>${n.hub_clientes?.razao_social || '—'}</td>
         <td><strong>${n.numero_nf}</strong></td>
         <td>${n.serie || '—'}</td>
         <td>${fmtData(n.data_emissao)}</td>
         <td>${fmtMoeda(n.valor_total)}</td>
         <td style="font-size:10px;color:#718096;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${n.chave_acesso || ''}">${n.chave_acesso || '—'}</td>
         <td style="display:flex;gap:4px;flex-wrap:wrap">
-          ${n.pdf_path ? `<a href="${SB_URL}/storage/v1/object/public/hub-produto-anexos/${n.pdf_path}" target="_blank" class="btn btn-outline btn-sm">PDF</a>` : ''}
-          ${n.xml_path ? `<a href="${SB_URL}/storage/v1/object/public/hub-produto-anexos/${n.xml_path}" target="_blank" class="btn btn-outline btn-sm">XML</a>` : ''}
+          ${n.pdf_path
+            ? `<a href="${SB_URL}/storage/v1/object/public/hub-produto-anexos/${n.pdf_path}" target="_blank" class="btn btn-primary btn-sm">Baixar NF</a>`
+            : (n.xml_path ? `<a href="${SB_URL}/storage/v1/object/public/hub-produto-anexos/${n.xml_path}" target="_blank" class="btn btn-primary btn-sm">Baixar XML</a>` : '')}
+          ${n.pdf_path && n.xml_path ? `<a href="${SB_URL}/storage/v1/object/public/hub-produto-anexos/${n.xml_path}" target="_blank" class="btn btn-outline btn-sm">XML</a>` : ''}
           <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('nota_fiscal', '${n.id}', '${n.cliente_id}', 'NF ${String(n.numero_nf || '').replace(/'/g, "\\'")}')">Duvida</button>
         </td>
       </tr>`).join('')}</tbody>
@@ -180,14 +218,36 @@ async function loadNFs() {
   } catch (e) { wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar notas</h3></div>'; }
 }
 
+async function loadCreditoResumo() {
+  const wrap = document.getElementById('kpiCredito');
+  const clienteId = financeiroClienteFiltro();
+  if (!clienteId) {
+    wrap.innerHTML = '<div style="padding:10px 0;color:#718096;font-size:13px">Selecione uma revenda para ver o credito dela.</div>';
+    return;
+  }
+  try {
+    const [r] = await sb('/hub_v_financeiro_cliente?cliente_id=eq.' + clienteId + '&select=*&limit=1');
+    if (!r) { wrap.innerHTML = ''; return; }
+    const comprometido = Math.max(0, (r.limite_credito || 0) - (r.limite_disponivel || 0));
+    wrap.innerHTML = `<div class="kpi-row">
+      <div class="kpi-card"><div class="kpi-label">Limite Atual</div><div class="kpi-value">${fmtMoeda(r.limite_credito)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Comprometido</div><div class="kpi-value">${fmtMoeda(comprometido)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Disponivel</div><div class="kpi-value">${fmtMoeda(r.limite_disponivel)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Dias Medio de Atraso</div><div class="kpi-value ${r.dias_medio_atraso_vencidos > 0 ? 'warning' : ''}">${r.dias_medio_atraso_vencidos || 0} dias</div></div>
+    </div>`;
+  } catch { wrap.innerHTML = ''; }
+}
+
 async function loadCredito() {
   const wrap = document.getElementById('creditoList');
+  await loadCreditoResumo();
   try {
-    const solic = await sb('/hub_solicitacoes_credito?ativo=eq.true&order=criado_em.desc&select=*');
+    const solic = await sb('/hub_solicitacoes_credito?ativo=eq.true&order=criado_em.desc&select=*,hub_clientes(razao_social)');
     if (!solic.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhuma solicitacao</h3></div>'; return; }
     wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Tipo</th><th>Valor Solicitado</th><th>Valor Aprovado</th><th>Status</th><th>Data</th></tr></thead>
+      <thead><tr><th>Cliente</th><th>Tipo</th><th>Valor Solicitado</th><th>Valor Aprovado</th><th>Status</th><th>Data</th></tr></thead>
       <tbody>${solic.map(s => `<tr>
+        <td>${s.hub_clientes?.razao_social || '—'}</td>
         <td>${s.tipo.replace(/_/g,' ')}</td>
         <td>${fmtMoeda(s.valor_solicitado)}</td>
         <td>${s.valor_aprovado ? fmtMoeda(s.valor_aprovado) : '—'}</td>

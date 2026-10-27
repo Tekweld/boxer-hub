@@ -312,7 +312,7 @@ async function loadSolicitacoesAdmin() {
   wrap.innerHTML = '<div style="padding:16px;color:#718096;font-size:13px">Carregando...</div>';
   try {
     let url = '/hub_solicitacoes?ativo=eq.true&order=criado_em.desc'
-      + '&select=id,numero,assunto,status,criado_em,atualizado_em,hub_clientes(razao_social),hub_representantes(nome)';
+      + '&select=id,numero,assunto,categoria,status,criado_em,atualizado_em,hub_clientes(razao_social),hub_representantes(nome)';
     if (!mostrarResolvidas) url += '&status=neq.resolvida';
     const lista = await sb(url);
     if (!lista.length) {
@@ -320,11 +320,12 @@ async function loadSolicitacoesAdmin() {
       return;
     }
     wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Numero</th><th>Cliente</th><th>Assunto</th><th>Representante</th><th>Status</th><th>Aberta ha</th><th></th></tr></thead>
+      <thead><tr><th>Numero</th><th>Cliente</th><th>Assunto</th><th>Categoria</th><th>Representante</th><th>Status</th><th>Aberta ha</th><th></th></tr></thead>
       <tbody>${lista.map(s => `<tr>
         <td><strong>${s.numero}</strong></td>
         <td>${s.hub_clientes?.razao_social || '—'}</td>
         <td>${s.assunto}</td>
+        <td>${labelCategoria(s.categoria)}</td>
         <td>${s.hub_representantes?.nome || '—'}</td>
         <td>${badgeSolicitacao(s.status)}</td>
         <td>${horasDesde(s.criado_em)}</td>

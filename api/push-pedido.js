@@ -72,7 +72,7 @@ module.exports = async function handler(req, res) {
     const pedRes = await fetch(
       HUB_URL + '/rest/v1/hub_pedidos?id=eq.' + pedido_id +
         '&select=id,numero,status,valor_total,cliente_id,representante_id,erp_pedido_id,' +
-        'forma_pagamento,parcelas,' +
+        'forma_pagamento,parcelas,observacoes,ordem_compra,frete_modalidade,' +
         'hub_clientes(erp_cliente_id,razao_social),hub_pedido_itens(sku,quantidade,preco_final)',
       { headers: hubH('GET') }
     );
@@ -126,12 +126,45 @@ module.exports = async function handler(req, res) {
       return res.status(422).json({ error: 'Nao foi possivel resolver todos os itens no Zen', detalhes: erros });
     }
 
+    // Achado em 2026-10-27, inspecionando vendas reais finalizadas via API
+    // (campo a campo, nao sondagem): o header da venda tem tres campos que
+    // nunca eram preenchidos e que faturamento/entrega/cobranca usam de
+    // verdade -- sale.Sale so tem 14 campos no nivel raiz, confirmados
+    // contra o /platform/openapi.json e contra amostra de vendas FINISHED:
+    //   - personAddressShipping -> aba "Endereco" da venda (entrega)
+    //   - properties.comments   -> aba "Observacoes" (texto livre)
+    //   - freightType           -> NONE | ISSUER | RECIPIENT (enum da spec)
+    // "Formas de pagamento" (properties.paymentMethods) NAO entra aqui --
+    // e so um espelho que o Zen preenche sozinho a partir do term do
+    // primeiro salePayment, confirmado comparando 30 vendas reais.
+    let personAddressShippingId = null;
+    try {
+      const enderecos = await zenGet('/catalog/person/personAddress', {
+        q: `person.id==${erpClienteId}`, max: 1, limite: 1
+      });
+      personAddressShippingId = enderecos[0]?.id || null;
+    } catch (_) {}
+
+    const comentarios = [pedido.ordem_compra ? 'OC: ' + pedido.ordem_compra : null, pedido.observacoes || null]
+      .filter(Boolean).join(' — ') || undefined;
+
+    // frete_modalidade e a escolha do cliente na revisao (envio/retirada),
+    // nao o CIF/FOB politico calculado no servidor -- aproximacao razoavel:
+    // "envio" = Boxer entrega (ISSUER banca a logistica), "retirada" = o
+    // proprio cliente resolve o transporte (RECIPIENT).
+    const freightType = pedido.frete_modalidade === 'envio' ? 'ISSUER'
+                       : pedido.frete_modalidade === 'retirada' ? 'RECIPIENT'
+                       : 'NONE';
+
     const saleBody = {
       company: { id: ZEN_COMPANY_ID },
       person: { id: Number(erpClienteId) },
       saleProfile: { id: ZEN_SALE_PROFILE_ID },
-      tags: 'HUB,' + pedido.numero + (testTag ? ',' + testTag : '')
+      tags: 'HUB,' + pedido.numero + (testTag ? ',' + testTag : ''),
+      freightType
     };
+    if (personAddressShippingId) saleBody.personAddressShipping = { id: personAddressShippingId };
+    if (comentarios) saleBody.properties = { comments: comentarios };
 
     const pagamentos = montarPagamentos(pedido);
 

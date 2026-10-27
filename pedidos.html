@@ -720,7 +720,15 @@ async function confirmarEnvio() {
   btn.textContent = 'Enviando...';
 
   try {
-    const modalidade = document.querySelector('input[name="revFrete"]:checked')?.value || null;
+    // Quando so ha uma opcao (CIF puro, sem retirada), renderOpcoesFrete nao
+    // desenha radio nenhum -- sem isso, modalidade ficava null e o Zen
+    // recebia freightType=NONE mesmo com frete real definido. Mesma logica
+    // de podeRetirar/podeEnviar de renderOpcoesFrete, espelhada aqui.
+    let modalidade = document.querySelector('input[name="revFrete"]:checked')?.value || null;
+    if (!modalidade && _revisao.frete) {
+      modalidade = _revisao.frete.envio_disponivel ? 'envio'
+                 : _revisao.frete.retirada_disponivel ? 'retirada' : null;
+    }
 
     await sb('/hub_pedidos?id=eq.' + _revisao.pedidoId, 'PATCH', {
       ordem_compra: document.getElementById('revOC').value.trim() || null,

@@ -598,3 +598,197 @@ function debounce(fn, ms = 300) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
+
+// === CANAL UNICO (hub_solicitacoes) ===
+//
+// Botao "Abrir solicitacao" ancorado a um item (pedido/titulo/nota fiscal)
+// em vez de chat flutuante generico -- chega com o contexto certo e cai na
+// fila do representante da carteira (hub_trg_solicitacao_preencher resolve
+// isso no banco). Chamar abrirSolicitacoes() a partir de qualquer pagina
+// que ja inclua hub.js.
+
+function escSol(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function autorTipoAtual() {
+  const tipo = getUserTipo();
+  if (tipo === 'cliente') return 'cliente';
+  if (tipo === 'representante') return 'representante';
+  return 'funcionario';
+}
+
+function badgeSolicitacao(status) {
+  const cores = {
+    aberta:       { bg: '#fef3c7', fg: '#92400e' },
+    em_andamento: { bg: '#dbeafe', fg: '#1e40af' },
+    respondida:   { bg: '#e0e7ff', fg: '#3730a3' },
+    resolvida:    { bg: '#d1fae5', fg: '#065f46' }
+  };
+  const c = cores[status] || { bg: '#e2e8f0', fg: '#4a5568' };
+  return `<span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px;background:${c.bg};color:${c.fg}">${escSol(String(status || '').replace('_', ' '))}</span>`;
+}
+
+// referenciaTipo: 'pedido' | 'titulo' | 'nota_fiscal' | 'geral'
+// referenciaId: uuid do registro, ou null para 'geral'
+// assunto: texto curto mostrado como contexto (ex: 'Pedido HUB-2026-00041')
+function abrirSolicitacoes(referenciaTipo, referenciaId, assunto) {
+  const clienteId = typeof getClienteAtivo === 'function' ? (getClienteAtivo() || getUserClienteId()) : getUserClienteId();
+  if (!clienteId) { toast('Nao foi possivel identificar o cliente para a solicitacao', 'error'); return; }
+
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px">
+      <h3 style="font-size:18px;color:#1d327b;margin:0">Solicitacoes</h3>
+      <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
+    </div>
+    <p style="font-size:13px;color:#718096;margin:0 0 14px">${escSol(assunto)}</p>
+    <div id="listaSolicitacoes"><div style="padding:16px;color:#718096;font-size:13px">Carregando...</div></div>
+    <div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0">
+      <button class="btn btn-outline" onclick="closeModal()">Fechar</button>
+      <button class="btn btn-primary" onclick="abrirNovaSolicitacao('${referenciaTipo}', ${referenciaId ? `'${referenciaId}'` : 'null'}, '${clienteId}', '${escSol(assunto).replace(/'/g, "\\'")}')">+ Nova solicitacao</button>
+    </div>
+  `);
+
+  carregarSolicitacoes(referenciaTipo, referenciaId, clienteId);
+}
+
+async function carregarSolicitacoes(referenciaTipo, referenciaId, clienteId) {
+  const wrap = document.getElementById('listaSolicitacoes');
+  if (!wrap) return;
+  try {
+    let url = '/hub_solicitacoes?cliente_id=eq.' + clienteId
+      + '&referencia_tipo=eq.' + referenciaTipo
+      + '&ativo=eq.true&order=criado_em.desc&select=id,numero,assunto,status,criado_em';
+    url += referenciaId ? ('&referencia_id=eq.' + referenciaId) : '&referencia_id=is.null';
+    const lista = await sb(url);
+    if (!lista.length) {
+      wrap.innerHTML = '<div style="padding:12px 0;color:#718096;font-size:13px">Nenhuma solicitacao aberta aqui ainda.</div>';
+      return;
+    }
+    wrap.innerHTML = lista.map(s => `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #e2e8f0;cursor:pointer" onclick="abrirThreadSolicitacao('${s.id}')">
+        <div style="min-width:0">
+          <strong style="font-size:13px">${escSol(s.numero)}</strong>
+          <div style="font-size:12px;color:#718096;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escSol(s.assunto)}</div>
+        </div>
+        ${badgeSolicitacao(s.status)}
+      </div>
+    `).join('');
+  } catch (e) {
+    wrap.innerHTML = '<div style="padding:12px 0;color:#e30613;font-size:13px">Erro ao carregar solicitacoes</div>';
+  }
+}
+
+function abrirNovaSolicitacao(referenciaTipo, referenciaId, clienteId, assuntoSugerido) {
+  openModal(`
+    <h3 style="font-size:18px;margin-bottom:16px;color:#1d327b">Nova solicitacao</h3>
+    <div class="form-row">
+      <label>Assunto</label>
+      <input id="novaSolAssunto" value="${escSol(assuntoSugerido)}" maxlength="200" style="width:100%">
+    </div>
+    <div class="form-row">
+      <label>Mensagem</label>
+      <textarea id="novaSolMensagem" rows="4" placeholder="Descreva o que voce precisa..." style="width:100%"></textarea>
+    </div>
+    <div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0">
+      <button class="btn btn-outline" onclick="abrirSolicitacoes('${referenciaTipo}', ${referenciaId ? `'${referenciaId}'` : 'null'}, '${escSol(assuntoSugerido).replace(/'/g, "\\'")}')">Voltar</button>
+      <button class="btn btn-primary" onclick="enviarNovaSolicitacao('${referenciaTipo}', ${referenciaId ? `'${referenciaId}'` : 'null'}, '${clienteId}')">Enviar</button>
+    </div>
+  `);
+}
+
+async function enviarNovaSolicitacao(referenciaTipo, referenciaId, clienteId) {
+  const assunto = document.getElementById('novaSolAssunto').value.trim();
+  const mensagem = document.getElementById('novaSolMensagem').value.trim();
+  if (!assunto || !mensagem) { toast('Preencha assunto e mensagem', 'error'); return; }
+
+  try {
+    const [sol] = await sb('/hub_solicitacoes', 'POST', {
+      cliente_id: clienteId,
+      aberto_por_tipo: autorTipoAtual() === 'funcionario' ? 'representante' : autorTipoAtual(),
+      referencia_tipo: referenciaTipo,
+      referencia_id: referenciaId,
+      assunto
+    });
+    await sb('/hub_solicitacao_mensagens', 'POST', {
+      solicitacao_id: sol.id,
+      autor_tipo: autorTipoAtual(),
+      autor_nome: PERFIL?.nome || null,
+      mensagem
+    });
+    toast('Solicitacao enviada');
+    abrirThreadSolicitacao(sol.id);
+  } catch (e) {
+    toast('Erro ao enviar solicitacao', 'error');
+  }
+}
+
+async function abrirThreadSolicitacao(id) {
+  try {
+    const [sol] = await sb('/hub_solicitacoes?id=eq.' + id + '&select=*');
+    if (!sol) { toast('Solicitacao nao encontrada', 'error'); return; }
+    const msgs = await sb('/hub_solicitacao_mensagens?solicitacao_id=eq.' + id + '&select=*&order=criado_em.asc');
+
+    openModal(`
+      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px">
+        <div>
+          <h3 style="font-size:18px;color:#1d327b;margin:0">${escSol(sol.numero)}</h3>
+          <div style="font-size:13px;color:#718096">${escSol(sol.assunto)}</div>
+        </div>
+        <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
+      </div>
+      <div style="margin-bottom:10px">${badgeSolicitacao(sol.status)}</div>
+      <div id="threadSolicitacao" style="max-height:40vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:4px 2px">
+        ${msgs.map(m => renderMensagemSolicitacao(m)).join('') || '<div style="color:#718096;font-size:13px">Sem mensagens ainda.</div>'}
+      </div>
+      <div class="form-row" style="margin-top:14px">
+        <textarea id="respostaSolicitacao" rows="3" placeholder="Escreva sua resposta..." style="width:100%"></textarea>
+      </div>
+      <div class="form-actions" style="display:flex;gap:8px;justify-content:space-between;margin-top:8px;padding-top:14px;border-top:1px solid #e2e8f0">
+        ${sol.status !== 'resolvida' ? `<button class="btn btn-outline" onclick="marcarSolicitacaoResolvida('${sol.id}')">Marcar como resolvida</button>` : '<span></span>'}
+        <button class="btn btn-primary" onclick="responderSolicitacao('${sol.id}')">Enviar resposta</button>
+      </div>
+    `);
+  } catch (e) {
+    toast('Erro ao abrir solicitacao', 'error');
+  }
+}
+
+function renderMensagemSolicitacao(m) {
+  const meu = m.autor_id === getUserId();
+  const rotulo = { cliente: 'Cliente', representante: 'Representante', funcionario: 'Boxer' }[m.autor_tipo] || m.autor_tipo;
+  return `
+    <div style="align-self:${meu ? 'flex-end' : 'flex-start'};max-width:85%;background:${meu ? '#1d327b' : '#f0f4f8'};color:${meu ? '#fff' : '#1a202c'};padding:8px 12px;border-radius:10px">
+      <div style="font-size:10px;opacity:.75;margin-bottom:3px;text-transform:uppercase;letter-spacing:.4px">${escSol(m.autor_nome || rotulo)}</div>
+      <div style="font-size:13px;white-space:pre-wrap">${escSol(m.mensagem)}</div>
+    </div>`;
+}
+
+async function responderSolicitacao(id) {
+  const campo = document.getElementById('respostaSolicitacao');
+  const mensagem = campo.value.trim();
+  if (!mensagem) return;
+  try {
+    await sb('/hub_solicitacao_mensagens', 'POST', {
+      solicitacao_id: id,
+      autor_tipo: autorTipoAtual(),
+      autor_nome: PERFIL?.nome || null,
+      mensagem
+    });
+    abrirThreadSolicitacao(id);
+  } catch (e) {
+    toast('Erro ao enviar resposta', 'error');
+  }
+}
+
+async function marcarSolicitacaoResolvida(id) {
+  try {
+    await sb('/hub_solicitacoes?id=eq.' + id, 'PATCH', { status: 'resolvida' });
+    toast('Solicitacao marcada como resolvida');
+    abrirThreadSolicitacao(id);
+  } catch (e) {
+    toast('Erro ao atualizar solicitacao', 'error');
+  }
+}

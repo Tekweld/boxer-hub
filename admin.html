@@ -108,6 +108,7 @@ select,input,textarea{font-family:Outfit,sans-serif}
   <div class="tab" onclick="showTab('regras',this)">Regras Comerciais</div>
   <div class="tab" onclick="showTab('catalogo',this)">Catalogo</div>
   <div class="tab" onclick="showTab('convites',this)">Convites</div>
+  <div class="tab" onclick="showTab('solicitacoes',this)">Solicitacoes</div>
   <div class="tab" onclick="showTab('logs',this)">Logs</div>
 </div>
 <div class="panel">
@@ -264,6 +265,21 @@ select,input,textarea{font-family:Outfit,sans-serif}
     </div>
     <div id="convitesList"></div>
   </div>
+  <div class="panel-content hidden" id="tab-solicitacoes">
+    <div class="page-header">
+      <h2 class="page-title">Canal Unico — Solicitacoes</h2>
+    </div>
+    <div class="panel-hint">
+      Cliente ou representante abre uma solicitacao vinculada a um pedido, titulo ou nota fiscal. Responder aqui
+      vale como resposta oficial -- o cliente ve direto no Hub, sem precisar de WhatsApp ou telefone.
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#4a5568;cursor:pointer">
+        <input type="checkbox" id="solMostrarResolvidas" onchange="loadSolicitacoesAdmin()"> Mostrar resolvidas
+      </label>
+    </div>
+    <div id="solicitacoesList"></div>
+  </div>
   <div class="panel-content hidden" id="tab-logs">
     <div class="page-header"><h2 class="page-title">Logs de Auditoria</h2></div>
     <div class="panel-hint">
@@ -287,6 +303,45 @@ function showTab(n, el) {
   if (n === 'usuarios') loadUsuarios();
   if (n === 'catalogo') loadCatalogo();
   if (n === 'clientes') loadClientes();
+  if (n === 'solicitacoes') loadSolicitacoesAdmin();
+}
+
+async function loadSolicitacoesAdmin() {
+  const wrap = document.getElementById('solicitacoesList');
+  const mostrarResolvidas = document.getElementById('solMostrarResolvidas')?.checked;
+  wrap.innerHTML = '<div style="padding:16px;color:#718096;font-size:13px">Carregando...</div>';
+  try {
+    let url = '/hub_solicitacoes?ativo=eq.true&order=criado_em.desc'
+      + '&select=id,numero,assunto,status,criado_em,atualizado_em,hub_clientes(razao_social),hub_representantes(nome)';
+    if (!mostrarResolvidas) url += '&status=neq.resolvida';
+    const lista = await sb(url);
+    if (!lista.length) {
+      wrap.innerHTML = '<div class="empty-state"><h3>Nenhuma solicitacao em aberto</h3></div>';
+      return;
+    }
+    wrap.innerHTML = `<div style="overflow-x:auto"><table>
+      <thead><tr><th>Numero</th><th>Cliente</th><th>Assunto</th><th>Representante</th><th>Status</th><th>Aberta ha</th><th></th></tr></thead>
+      <tbody>${lista.map(s => `<tr>
+        <td><strong>${s.numero}</strong></td>
+        <td>${s.hub_clientes?.razao_social || '—'}</td>
+        <td>${s.assunto}</td>
+        <td>${s.hub_representantes?.nome || '—'}</td>
+        <td>${badgeSolicitacao(s.status)}</td>
+        <td>${horasDesde(s.criado_em)}</td>
+        <td><button class="btn btn-outline btn-sm" onclick="abrirThreadSolicitacao('${s.id}')">Responder</button></td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  } catch (e) {
+    wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar solicitacoes</h3></div>';
+  }
+}
+
+// SLA simples: ha quanto tempo a solicitacao esta aberta, pra ficar visivel
+// de longe quem esta esperando resposta ha mais tempo.
+function horasDesde(iso) {
+  const horas = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 3600000));
+  if (horas < 24) return horas + 'h';
+  return Math.round(horas / 24) + 'd';
 }
 
 (async () => {

@@ -150,7 +150,7 @@ async function loadTitulos() {
         <td>${t.dias_atraso > 0 ? t.dias_atraso + 'd' : '—'}</td>
         <td style="display:flex;gap:4px;flex-wrap:wrap">
           ${t.url_boleto ? `<a href="${t.url_boleto}" target="_blank" class="btn btn-outline btn-sm">Boleto</a>` : ''}
-          <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('titulo', '${t.id}', 'Titulo ${(t.numero_titulo || '').replace(/'/g, "\\'")}')">Duvida</button>
+          <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('titulo', '${t.id}', '${t.cliente_id}', 'Titulo ${(t.numero_titulo || '').replace(/'/g, "\\'")}')">Duvida</button>
         </td>
       </tr>`).join('')}</tbody>
     </table></div>`;
@@ -173,7 +173,7 @@ async function loadNFs() {
         <td style="display:flex;gap:4px;flex-wrap:wrap">
           ${n.pdf_path ? `<a href="${SB_URL}/storage/v1/object/public/hub-produto-anexos/${n.pdf_path}" target="_blank" class="btn btn-outline btn-sm">PDF</a>` : ''}
           ${n.xml_path ? `<a href="${SB_URL}/storage/v1/object/public/hub-produto-anexos/${n.xml_path}" target="_blank" class="btn btn-outline btn-sm">XML</a>` : ''}
-          <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('nota_fiscal', '${n.id}', 'NF ${String(n.numero_nf || '').replace(/'/g, "\\'")}')">Duvida</button>
+          <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('nota_fiscal', '${n.id}', '${n.cliente_id}', 'NF ${String(n.numero_nf || '').replace(/'/g, "\\'")}')">Duvida</button>
         </td>
       </tr>`).join('')}</tbody>
     </table></div>`;

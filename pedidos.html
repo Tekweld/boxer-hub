@@ -920,7 +920,7 @@ async function openPedido(id) {
         </tr>`).join('')}</tbody>
       </table></div>` : '<p style="color:#718096;font-size:13px">Nenhum item</p>'}
       <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0">
-        <button class="btn btn-outline" onclick="abrirSolicitacoes('pedido', '${pedido.id}', 'Pedido ${esc(pedido.numero || 'Rascunho')}')">Abrir solicitacao</button>
+        <button class="btn btn-outline" onclick="abrirSolicitacoes('pedido', '${pedido.id}', '${pedido.cliente_id}', 'Pedido ${esc(pedido.numero || 'Rascunho')}')">Abrir solicitacao</button>
         ${acoesPedido(pedido)}
         <button class="btn btn-outline" onclick="closeModal()">Fechar</button>
       </div>

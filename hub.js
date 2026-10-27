@@ -440,6 +440,12 @@ function renderTopbar(titulo) {
     navItems.push({ href: 'financeiro.html', label: 'Financeiro', icon: '&#36;' });
     navItems.push({ href: 'cadastro.html', label: 'Cadastro', icon: '&#9881;' });
   }
+  // Financeiro nunca aparecia para a equipe interna, mesmo com RLS liberando
+  // admin/manager/financial (ver CLAUDE.md, tabela de RLS) -- so dava pra
+  // acessar digitando a URL direto. Analyst fica de fora, igual a RLS.
+  if (['admin', 'manager', 'financial'].includes(role)) {
+    navItems.push({ href: 'financeiro.html', label: 'Financeiro', icon: '&#36;' });
+  }
   navItems.push({ href: 'pesquisas.html', label: 'Pesquisas', icon: '&#9998;' });
   if (['admin', 'manager', 'analyst'].includes(role)) {
     navItems.push({ href: 'admin.html', label: 'Admin', icon: '&#9878;' });
@@ -633,9 +639,11 @@ function badgeSolicitacao(status) {
 
 // referenciaTipo: 'pedido' | 'titulo' | 'nota_fiscal' | 'geral'
 // referenciaId: uuid do registro, ou null para 'geral'
+// clienteId: dono do pedido/titulo/NF -- vem do proprio registro (pedido.cliente_id
+// etc.), nunca da sessao: quem abre a tela pode ser funcionario/representante
+// olhando um pedido de outro cliente, sem revenda "ativa" selecionada.
 // assunto: texto curto mostrado como contexto (ex: 'Pedido HUB-2026-00041')
-function abrirSolicitacoes(referenciaTipo, referenciaId, assunto) {
-  const clienteId = typeof getClienteAtivo === 'function' ? (getClienteAtivo() || getUserClienteId()) : getUserClienteId();
+function abrirSolicitacoes(referenciaTipo, referenciaId, clienteId, assunto) {
   if (!clienteId) { toast('Nao foi possivel identificar o cliente para a solicitacao', 'error'); return; }
 
   openModal(`

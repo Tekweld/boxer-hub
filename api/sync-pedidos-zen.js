@@ -486,6 +486,28 @@ module.exports = async function handler(req, res) {
             });
             await registrarEvento(pedido.id, etapa, 'zen', null, hubH);
             r.mudancas++;
+
+            // Pedido reprovado no Zen apos ja ter sido sincronizado: o credito
+            // reservado em hub_fn_submeter_pedido nunca era devolvido (so
+            // hub_fn_reverter_pedido devolve, e so funciona com erp_pedido_id
+            // NULL). Achado em 2026-10-27 -- cliente ficava com limite preso
+            // indefinidamente por um pedido que o Zen ja tinha descartado.
+            if (etapa === 'Pedido reprovado') {
+              try {
+                const libRes = await fetch(HUB_URL + '/rest/v1/rpc/hub_fn_liberar_credito_rejeitado', {
+                  method: 'POST', headers: hubH('POST'),
+                  body: JSON.stringify({ p_pedido_id: pedido.id })
+                });
+                const libTxt = await libRes.text();
+                if (!libRes.ok) {
+                  r.erros.push({ etapa: 'liberar_credito', pedido: pedido.numero, status: libRes.status, detalhe: libTxt.slice(0, 200) });
+                } else {
+                  r.creditos_liberados = (r.creditos_liberados || 0) + 1;
+                }
+              } catch (e) {
+                r.erros.push({ etapa: 'liberar_credito', pedido: pedido.numero, detalhe: e.message.slice(0, 150) });
+              }
+            }
           }
         } catch (e) {
           r.erros.push({ etapa: 'workpiece', detalhe: e.message.slice(0, 200) });

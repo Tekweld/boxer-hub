@@ -53,6 +53,7 @@ module.exports = async function orcamento(req, res) {
       case 'criar': return res.status(200).json(await criar(ctx, user, body));
       case 'listar': return res.status(200).json(await listar(ctx, user));
       case 'aprovar': return res.status(200).json(await aprovar(ctx, user, body.id));
+      case 'cancelar': return res.status(200).json(await cancelar(ctx, user, body.id));
       default: return res.status(400).json({ error: 'acao invalida' });
     }
   } catch (e) {
@@ -394,6 +395,30 @@ async function aprovar(ctx, user, id) {
   }
   await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { status: 'aprovado', aprovado_em: new Date().toISOString(), zen_status: 'web_pronta_entrega', zen_erro: null, atualizado_em: new Date().toISOString() });
   return { ok: true, zen_sale_id: sid, passos };
+}
+
+// ---------- cancelar: so antes de virar pedido; cancela a venda no ZEN se ainda for rascunho ----------
+async function cancelar(ctx, user, id) {
+  if (!id) throw erro(400, 'id obrigatorio');
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id + '&select=*', 'comercial'))[0];
+  if (!o) throw erro(404, 'Orcamento nao encontrado');
+  if (o.status === 'cancelado') return { ok: true, ja_cancelado: true };
+  if (o.status === 'aprovado') throw erro(409, 'Este orcamento ja virou pedido no ZEN (' + o.zen_sale_id + '). Para cancelar, fale com o ADM de vendas.');
+  let zenObs = null;
+  if (o.zen_sale_id) {
+    try {
+      const headers = await zenAuth();
+      const sale = (await zenGet('/sale/sale', { q: 'id==' + o.zen_sale_id, max: 1, limite: 1 }))[0];
+      if (sale && sale.status === 'PREPARING') {
+        const r = await fetch(ZEN_BASE + '/sale/saleOpCancel/' + o.zen_sale_id, { method: 'POST', headers });
+        if (!r.ok) zenObs = 'nao foi possivel cancelar a venda no ZEN: ' + (await r.text()).slice(0, 200);
+      } else if (sale && sale.status !== 'CANCELED') {
+        zenObs = 'venda ' + o.zen_sale_id + ' no ZEN esta ' + sale.status + ' e foi mantida';
+      }
+    } catch (e) { zenObs = 'ZEN: ' + String(e.message).slice(0, 200); }
+  }
+  await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { status: 'cancelado', zen_status: zenObs ? o.zen_status : (o.zen_sale_id ? 'cancelado' : o.zen_status), zen_erro: zenObs, atualizado_em: new Date().toISOString() });
+  return { ok: true, aviso_zen: zenObs };
 }
 
 // ---------- aviso ao representante (publico, so por token) ----------

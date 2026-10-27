@@ -147,6 +147,7 @@ async function criar(ctx, user, b) {
   const seg = String(b.segmento || '');
   const cls = parseInt(b.classe);
   const itensIn = Array.isArray(b.itens) ? b.itens.filter(i => i && i.codigo && parseInt(i.qtd) > 0) : [];
+  if (itensIn.length !== new Set(itensIn.map(i => String(i.codigo))).size) throw erro(400, 'Item repetido no orcamento');
   if (!itensIn.length) throw erro(400, 'Nenhum item no orcamento');
   if (itensIn.length > 60) throw erro(400, 'Itens demais para um orcamento');
   const cl = b.cliente || {};
@@ -162,7 +163,7 @@ async function criar(ctx, user, b) {
   const [estados, mults, prods, regras, cats] = await Promise.all([
     sbGet(ctx, '/estados?uf=eq.' + encodeURIComponent(uf) + '&select=uf,mult_4_icms,mult_total'),
     sbGet(ctx, '/multiplicadores?tabela_id=eq.4&segmento=eq.' + encodeURIComponent(seg) + '&classe=eq.' + cls + '&select=porte,categoria_grupo,valor'),
-    sbGet(ctx, '/produtos?tabela_id=eq.1&ativo=eq.true&codigo=in.(' + encodeURIComponent(lista) + ')&select=codigo,modelo,pv_sp,porte,icms,ipi,ncm,categoria_id,imagem_url,descricao_completa'),
+    sbGet(ctx, '/produtos?tabela_id=eq.1&ativo=eq.true&codigo=in.(' + encodeURIComponent(lista) + ')&select=codigo,modelo,pv_sp,porte,icms,ipi,ncm,categoria_id,imagem_url'),
     sbGet(ctx, '/tabela_regras?tabela_id=eq.1&select=conteudo&order=ordem,id'),
     sbGet(ctx, '/categorias?tabela_id=eq.1&select=id,nome')
   ]);
@@ -189,12 +190,13 @@ async function criar(ctx, user, b) {
     const unit = r2(unitTabela * fator);
     const q = parseInt(i.qtd);
     totalTabela += unitTabela * q;
-    const desc = String(p.descricao_completa || '').replace(/\s+/g, ' ').trim();
+    const dk = ['ok', 'prev', 'sem', 'sem_info'].includes(i.disp) ? i.disp : 'sem_info';
+    const prev = dk === 'prev' && /^\d{4}-\d{2}-\d{2}/.test(String(i.previsao || '')) ? String(i.previsao).slice(0, 10) : null;
     itens.push({
       codigo: p.codigo, modelo: p.modelo, categoria: catNome[p.categoria_id] || '', qtd: q,
       unit_tabela: unitTabela, unit, subtotal: r2(unit * q),
       ncm: p.ncm || '', ipi: Number(p.ipi) || 0, icms: uf === 'SP' ? Number(p.icms) || 0 : 4,
-      imagem_url: p.imagem_url || '', descricao: desc.length > 220 ? desc.slice(0, 217) + '…' : desc
+      imagem_url: p.imagem_url || '', estoque: dk, previsao: prev
     });
   }
   const totalItens = r2(itens.reduce((a, x) => a + x.subtotal, 0));
@@ -215,6 +217,8 @@ async function criar(ctx, user, b) {
     }
     if (ind && ind !== cls) avisos.push('Classe ' + cls + ' usada, mas pelo valor do pedido a classe indicada era a ' + ind);
   }
+  const nSem = itens.filter(x => x.estoque === 'sem').length;
+  if (nSem) avisos.push(nSem + (nSem > 1 ? ' itens' : ' item') + ' sem previsao de estoque incluido(s) no orcamento');
   if (totalItens < cond.pedMin) avisos.push('Abaixo do pedido minimo de ' + brl(cond.pedMin));
   const fr = freteDaUF(linhas, uf);
   let freteTipo = fr ? fr.tipo : null, freteValor = 0;

@@ -269,7 +269,9 @@ async function acessoTabela(req, res) {
       const nome = String(body.nome || '').trim().slice(0, 120);
       const empresa = String(body.empresa || '').trim().slice(0, 160);
       const mensagem = String(body.mensagem || '').trim().slice(0, 600);
+      const telefone = String(body.telefone || '').replace(/\D/g, '').slice(0, 13);
       if (nome.length < 2) return res.status(400).json({ error: 'informe o nome' });
+      if (telefone.length < 10) return res.status(400).json({ error: 'informe o telefone com DDD' });
 
       const jaLiberado = await fetch(HUB_URL + '/rest/v1/rpc/tabela_email_liberado', { method: 'POST', headers: H, body: JSON.stringify({ p_email: email }) }).then(r => r.json()).catch(() => false);
       if (jaLiberado === true || RE_BOXER.test(email)) return respostaStatus('ja_liberado');
@@ -281,7 +283,7 @@ async function acessoTabela(req, res) {
 
       const ins = await fetch(HUB_URL + '/rest/v1/tabela_solicitacoes', {
         method: 'POST', headers: { ...H, 'Prefer': 'return=minimal' },
-        body: JSON.stringify({ nome, email, empresa: empresa || null, mensagem: mensagem || null })
+        body: JSON.stringify({ nome, email, empresa: empresa || null, mensagem: mensagem || null, telefone })
       });
       if (!ins.ok) { console.error('insert solicitacao falhou', await ins.text()); return res.status(200).json(generico); }
       await logEvento('solicitacao_acesso', email, { nome, empresa });
@@ -291,6 +293,7 @@ async function acessoTabela(req, res) {
         await resendEnviar(admins, 'Nova solicitação de acesso — Tabela de Preços',
           emailShell('<p style="font-size:15px;color:#1a202c;margin:0 0 12px"><strong>' + escHtml(nome) + '</strong> pediu acesso à Tabela de Preços Boxer.</p>' +
             '<table style="width:100%;font-size:13px;border-collapse:collapse;margin-bottom:14px"><tr><td style="color:#718096;padding:4px 0">Email</td><td>' + escHtml(email) + '</td></tr>' +
+            '<tr><td style="color:#718096;padding:4px 0">Telefone</td><td>' + escHtml(telefone) + '</td></tr>' +
             '<tr><td style="color:#718096;padding:4px 0">Empresa</td><td>' + escHtml(empresa || '—') + '</td></tr>' +
             '<tr><td style="color:#718096;padding:4px 0;vertical-align:top">Mensagem</td><td>' + escHtml(mensagem || '—') + '</td></tr></table>' +
             '<p style="text-align:center;margin:18px 0"><a href="https://app.boxersoldas.com.br/admin_supabase.html" style="background:#1d327b;color:#fff;text-decoration:none;padding:11px 24px;border-radius:8px;font-size:14px;font-weight:600">Abrir painel admin → aba Acessos</a></p>'));

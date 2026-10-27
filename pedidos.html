@@ -284,12 +284,19 @@ async function renderCarrinho() {
   // e o banner nao aparece. A conta e feita no servidor (fonte unica das
   // faixas 7.000/20.000 vive em hub_fn_classe e hub_politica_parametros).
   let faixaProxima = null;
+  let creditoInfo = null;
   try {
     const clienteId = getClienteAtivo();
     if (clienteId) {
       faixaProxima = await sbRpc('hub_fn_faixa_proxima', {
         p_cliente_id: clienteId, p_valor_pedido: totalVal
       });
+      // Credito do carrinho -- antes so aparecia depois de clicar "Revisar
+      // pedido" (que ja grava rascunho no banco). Mostrar aqui e so leitura,
+      // sem custo de escrita, e evita o cliente descobrir tarde que falta
+      // limite. A checagem que vale de verdade continua no servidor.
+      const cli = await sb('/hub_clientes?id=eq.' + clienteId + '&select=limite_credito,limite_disponivel').then(r => r[0] || null);
+      if (cli) creditoInfo = cli;
     }
   } catch {}
 
@@ -325,6 +332,7 @@ async function renderCarrinho() {
       </div>
       <div class="cart-total-valor">${fmtMoeda(totalVal)}</div>
     </div>
+    ${renderCreditoCarrinho(creditoInfo, totalVal)}
     ${renderFaixaProxima(faixaProxima)}
     ${renderSobEncomenda(semEstoque)}
     ${renderBloqueios()}
@@ -332,6 +340,24 @@ async function renderCarrinho() {
       <button class="btn btn-danger btn-sm" onclick="clearCart()">Limpar carrinho</button>
       <button class="btn btn-primary" id="btnEnviarPedido" onclick="enviarPedido()">Revisar pedido</button>
     </div>`;
+}
+
+// Mostra o limite de credito ja no carrinho, antes de "Revisar pedido" --
+// achado por Andre em 2026-10-27 testando a APM: o aviso so aparecia depois
+// de criar o rascunho, tarde demais para o cliente decidir ali. So leitura
+// (hub_clientes), nao grava nada -- a checagem que vale de verdade continua
+// em hub_fn_validar_politica no momento de submeter.
+function renderCreditoCarrinho(cliente, totalVal) {
+  if (!cliente) return '';
+  const disponivel = +(cliente.limite_disponivel || 0);
+  const limite = +(cliente.limite_credito || 0);
+  const saldo = disponivel - totalVal;
+  if (saldo >= 0) return '';
+  return `<div style="margin-top:12px;padding:10px 14px;background:#fef2f2;border-left:3px solid #e30613;border-radius:0 6px 6px 0;font-size:13px;color:#991b1b">
+    <strong>Limite de credito insuficiente para este pedido</strong>
+    <div style="margin-top:4px">Pedido ${fmtMoeda(totalVal)}, disponivel ${fmtMoeda(disponivel)} de um limite de ${fmtMoeda(limite)}.
+    Faltam ${fmtMoeda(Math.abs(saldo))}. Reduza o pedido ou <a href="financeiro.html#solicitar-credito" style="color:#991b1b;font-weight:600">solicite aumento de limite</a>.</div>
+  </div>`;
 }
 
 // Banner motivador logo depois do total: "adicione mais R$X para uma faixa

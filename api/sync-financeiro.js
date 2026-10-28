@@ -22,11 +22,18 @@
 //
 // Padrao de exposicao igual ao sync-enderecos: paginado, orcamento de tempo,
 // devolve `proximo_offset` para encadear rodadas pela GitHub Actions.
-const { zenGet } = require('./_zen');
+const { zenGet, zenAuth, ZEN_BASE } = require('./_zen');
 
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 const ORCAMENTO_MS = 45000;
 const PASSO_ZEN = 200;
+
+// Template do DANFE (NF-e) no Zen -- achado em 2026-10-28 sondando
+// /system/report/reportTemplate (code '/fiscal/report/outgoingInvoiceFormNFe').
+// So cobre venda B2B comum (NFe); NFCe (balcao/consumidor) usa outro
+// template (id 1118) e nao e distinguido hoje em hub_notas_fiscais -- se
+// aparecer nota errada pedir pro Andre confirmar o tipo antes de generalizar.
+const TEMPLATE_DANFE_NFE = 1119;
 
 // Regra de negocio (Andre, 2026-09-08): nao sincronizar nada do Zen anterior a
 // 01/03/2025. Para historia anterior, cliente abre chamado com o suporte.
@@ -52,6 +59,64 @@ module.exports = async function handler(req, res) {
     'Content-Profile': 'comercial',
     Prefer: method === 'POST' ? 'return=representation' : 'return=minimal'
   });
+
+  // Baixar o PDF de uma NF, gerado na hora pelo Zen -- nao depende de
+  // nenhum arquivo salvo no Hub (hub_notas_fiscais.pdf_path nunca foi
+  // preenchido por nenhum sync; ver conversa de 2026-10-28). Autorizacao
+  // propria aqui porque e endpoint de uso normal do cliente/representante,
+  // nao so de quem sincroniza (o gate logo abaixo e so admin/manager).
+  const baixarNfId = req.query?.baixar_nf;
+  if (baixarNfId) {
+    if (!authHeader) return res.status(401).json({ error: 'Autenticacao necessaria' });
+    try {
+      const userRes = await fetch(HUB_URL + '/auth/v1/user', {
+        headers: { Authorization: authHeader, apikey: SB_SERVICE }
+      });
+      const caller = await userRes.json();
+      if (!caller?.id) return res.status(401).json({ error: 'Token invalido' });
+
+      const perfilRes = await fetch(
+        HUB_URL + '/rest/v1/hub_perfis?user_id=eq.' + caller.id + '&ativo=eq.true&select=role,tipo,cliente_id,representante_id',
+        { headers: hubH('GET') });
+      const perfil = (await perfilRes.json())?.[0];
+      if (!perfil) return res.status(403).json({ error: 'Perfil nao encontrado' });
+
+      const nfRes = await fetch(
+        HUB_URL + '/rest/v1/hub_notas_fiscais?id=eq.' + baixarNfId + '&ativo=eq.true&select=id,cliente_id,erp_nf_id',
+        { headers: hubH('GET') });
+      const nf = (await nfRes.json())?.[0];
+      if (!nf) return res.status(404).json({ error: 'Nota nao encontrada' });
+      if (!nf.erp_nf_id) return res.status(422).json({ error: 'Nota sem vinculo com o Zen' });
+
+      // Mesma regra de acesso da RLS de hub_notas_fiscais, replicada aqui
+      // porque esta rota usa a service_role (bypassa RLS por definicao).
+      let autorizado = ['admin', 'manager', 'analyst', 'financial'].includes(perfil.role);
+      if (!autorizado && perfil.tipo === 'cliente') autorizado = perfil.cliente_id === nf.cliente_id;
+      if (!autorizado && perfil.tipo === 'representante' && perfil.representante_id) {
+        const cartRes = await fetch(
+          HUB_URL + '/rest/v1/hub_carteira?representante_id=eq.' + perfil.representante_id + '&cliente_id=eq.' + nf.cliente_id + '&ativo=eq.true&select=id',
+          { headers: hubH('GET') });
+        autorizado = ((await cartRes.json()) || []).length > 0;
+      }
+      if (!autorizado) return res.status(403).json({ error: 'Sem acesso a esta nota' });
+
+      const zenH = await zenAuth();
+      const rr = await fetch(ZEN_BASE + '/system/report/reportOpGenerate', {
+        method: 'POST', headers: zenH,
+        body: JSON.stringify({ id: TEMPLATE_DANFE_NFE, format: 'PDF', parameters: { id: Number(nf.erp_nf_id) } })
+      });
+      if (!rr.ok) {
+        const detalhe = (await rr.text()).slice(0, 300);
+        return res.status(502).json({ error: 'Zen nao gerou o PDF', detalhe });
+      }
+      const buf = Buffer.from(await rr.arrayBuffer());
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename="NF-' + nf.erp_nf_id + '.pdf"');
+      return res.status(200).send(buf);
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
 
   if (cronSecret) {
     if (!process.env.CRON_SECRET || cronSecret !== process.env.CRON_SECRET) {

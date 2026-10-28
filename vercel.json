@@ -3,7 +3,8 @@
     "api/sync-zen-clientes.js": { "maxDuration": 60 },
     "api/sync-estoque.js": { "maxDuration": 60 },
     "api/sync-pdm.js": { "maxDuration": 60 },
-    "api/push-pedido.js": { "maxDuration": 60 }
+    "api/push-pedido.js": { "maxDuration": 60 },
+    "api/sync-financeiro.js": { "maxDuration": 30 }
   },
   "crons": [
     { "path": "/api/sync-zen-clientes", "schedule": "0 6 * * *" },

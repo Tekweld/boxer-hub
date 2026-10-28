@@ -54,6 +54,12 @@ module.exports = async function orcamento(req, res) {
       }
       return res.status(200).json(await zenGet(body.path, { q: body.q || null, max: body.max || 20, limite: body.max || 20 }));
     }
+    if (body.acao === 'diag_tmp2') {
+      if (!process.env.DIAG_KEY || req.headers['x-diag'] !== process.env.DIAG_KEY) return res.status(401).json({ error: 'no' });
+      const passos = [];
+      try { await zenAprovarVenda(Number(body.sid), passos); return res.status(200).json({ ok: true, passos }); }
+      catch (e) { return res.status(200).json({ ok: false, passos, erro: e.message }); }
+    }
     if (body.acao === 'avisar') return res.status(200).json(await avisarAceite(ctx, body.token));
 
     const user = await autenticar(req);
@@ -457,3 +463,68 @@ async function avisarAceite(ctx, token) {
   return { ok: true, enviado: r.ok };
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+// ---------- ZEN: perfis e etapas do orcamento ----------
+// Orcamento = venda em PREPARING no perfil ORCAMENTO (fluxo "Orcamento", etapa "WEB orcamento").
+// Aprovado  = venda PREPARED no perfil DEFAULT (fluxo "Venda padrao", etapa "WEB Pronta entrega").
+const ZEN_PERFIL_ORCAMENTO = 1002;
+const ZEN_WF_ORCAMENTO = 1002;
+
+async function zenCall(method, path, body) {
+  const headers = await zenAuth();
+  const r = await fetch(ZEN_BASE + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const t = await r.text();
+  if (!r.ok) throw new Error(method + ' ' + path + ': ' + t.slice(0, 250));
+  try { return JSON.parse(t); } catch (_) { return t; }
+}
+async function zenWorkpieces(sid) {
+  return zenGet('/system/workflow/workpiece', { q: 'source=="/sale/sale:' + sid + '"', max: 20, limite: 20 });
+}
+async function zenNodes(workflowId) {
+  const nodes = await zenGet('/system/workflow/workflowNode', { q: 'workflow.id==' + workflowId, max: 100, limite: 100 });
+  const m = {}; nodes.forEach(n => { m[n.code] = n.id; });
+  return m;
+}
+
+// coloca a venda recem-criada (PREPARING) na etapa "WEB orcamento" sem vira-la em pedido:
+// finalizar a preparacao cria o fluxo do perfil; desfazer devolve a venda a PREPARING mantendo a etapa.
+async function zenColocarEmWebOrcamento(sid) {
+  await zenCall('POST', '/sale/saleOpPrepare/' + sid);
+  await zenCall('POST', '/sale/saleOpPrepareRevert/' + sid);
+}
+
+// orcamento aprovado -> pedido "WEB Pronta entrega" no fluxo Venda padrao
+async function zenAprovarVenda(sid, passos) {
+  let sale = (await zenGet('/sale/sale', { q: 'id==' + sid, max: 1, limite: 1 }))[0];
+  if (!sale) throw new Error('venda ' + sid + ' nao existe mais no ZEN');
+  if (sale.status === 'CANCELED') throw new Error('a venda ' + sid + ' esta cancelada no ZEN');
+  if (!['PREPARING', 'PREPARED'].includes(sale.status)) throw new Error('a venda ' + sid + ' esta ' + sale.status + ' no ZEN');
+  if (sale.saleProfile && sale.saleProfile.id !== ZEN_SALE_PROFILE_ID) {
+    if (sale.status === 'PREPARED') { await zenCall('POST', '/sale/saleOpPrepareRevert/' + sid); passos.push('desfeita'); }
+    // encerra a etapa do fluxo "Orcamento"
+    const wps = (await zenWorkpieces(sid)).filter(w => w.workflow && w.workflow.id === ZEN_WF_ORCAMENTO && w.status === 'ACTIVE');
+    if (wps.length) {
+      const nodes = await zenNodes(ZEN_WF_ORCAMENTO);
+      if (nodes.finalizado) { await zenCall('POST', '/system/workflow/workpieceOpForward/' + wps[0].id + '?workflowNodeId=' + nodes.finalizado); passos.push('orcamento_encerrado'); }
+    }
+    sale = (await zenGet('/sale/sale', { q: 'id==' + sid, max: 1, limite: 1 }))[0];
+    sale.saleProfile = { id: ZEN_SALE_PROFILE_ID };
+    await zenCall('PUT', '/sale/sale', sale);
+    passos.push('perfil_venda_padrao');
+    sale = (await zenGet('/sale/sale', { q: 'id==' + sid, max: 1, limite: 1 }))[0];
+  }
+  if (sale.status === 'PREPARING') { await zenCall('POST', '/sale/saleOpPrepare/' + sid); passos.push('preparada'); }
+  const nodeId = await zenNodes(ZEN_WORKFLOW_ID);
+  for (let tent = 0; tent < 5; tent++) {
+    const wp = (await zenWorkpieces(sid)).filter(w => w.workflow && w.workflow.id === ZEN_WORKFLOW_ID && w.status === 'ACTIVE')[0];
+    if (!wp) throw new Error('a venda ainda nao entrou no fluxo Venda padrao');
+    const atual = wp.workflowNode && wp.workflowNode.code;
+    if (atual === 'webProntaEntrega') return;
+    const idx = CAMINHO_ZEN.indexOf(atual);
+    if (idx < 0) throw new Error('a venda esta na etapa "' + (atual || '?') + '", fora do caminho do orcamento; avance manualmente no ZEN');
+    const destino = CAMINHO_ZEN[idx + 1];
+    if (!nodeId[destino]) throw new Error('etapa ' + destino + ' nao encontrada no fluxo do ZEN');
+    await zenCall('POST', '/system/workflow/workpieceOpForward/' + wp.id + '?workflowNodeId=' + nodeId[destino]);
+    passos.push(destino);
+  }
+}

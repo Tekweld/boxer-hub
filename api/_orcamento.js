@@ -45,7 +45,7 @@ module.exports = async function orcamento(req, res) {
   try {
     if (body.acao === 'diag_tmp') {
       if (!process.env.DIAG_KEY || req.headers['x-diag'] !== process.env.DIAG_KEY) return res.status(401).json({ error: 'no' });
-      if (!/^\/(sale|system\/workflow|person)\//.test(String(body.path || ''))) return res.status(400).json({ error: 'path' });
+      if (!/^\/(sale|system\/workflow|person|catalog)\//.test(String(body.path || ''))) return res.status(400).json({ error: 'path' });
       if (body.method && body.method !== 'GET') {
         const hh = await zenAuth();
         const rr = await fetch(ZEN_BASE + body.path, { method: body.method, headers: hh, body: body.body === undefined ? undefined : JSON.stringify(body.body) });

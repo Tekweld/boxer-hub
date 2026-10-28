@@ -318,6 +318,33 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Detalhe de UM reportTemplate -- so metadado do template (id/code/
+  // description/dataSource), nunca registro de cliente.
+  if (req.query?.debug_template_detalhe) {
+    const tplId = String(req.query.debug_template_detalhe);
+    try {
+      const r = await fetch(ZEN_BASE + '/system/report/reportTemplate/' + tplId, { headers: await zenAuth() });
+      const corpo = r.ok ? await r.json() : await r.text();
+      return res.status(200).json({ ok: r.ok, debug: true, tplId, corpo: removerComentariosSensiveis(corpo) });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
+  // Credito pode estar registrado no GRUPO (personGroup) em vez de em cada
+  // filial/CNPJ -- creditLineItem tem um campo person, que para um grupo
+  // seria... precisa descobrir a forma. Sonda os dois jeitos plausiveis.
+  if (req.query?.debug_credito_grupo) {
+    const grupoId = String(req.query.debug_credito_grupo);
+    const resultados = {};
+    try {
+      resultados.por_person_group = await zenGet('/financial/credit/creditLineItem', {
+        q: 'person.personGroup.id==' + grupoId, max: 50, limite: 50
+      }).catch(e => ({ erro: e.message.slice(0, 200) }));
+    } catch (e) { resultados.por_person_group = { erro: e.message.slice(0, 200) }; }
+    return res.status(200).json({ ok: true, debug: true, grupoId, resultados: removerComentariosSensiveis(resultados) });
+  }
+
   // Lista de reportTemplate filtrada por termo -- so metadado de template
   // (id/code/description), nunca registro de cliente. Serve para achar qual
   // template gera o DANFE/relatorio de NF sem adivinhar o id.

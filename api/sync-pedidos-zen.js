@@ -334,6 +334,50 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Testa varias hipoteses de nome de parametro para reportOpGenerate contra
+  // o template do DANFE (id 1119, achado via debug_templates) -- em vez de
+  // pedir pro Andre ficar tentando no console do Zen, tenta tudo aqui e para
+  // na primeira que funcionar. Resposta de erro do Zen e validacao de schema,
+  // nunca registro de cliente -- seguro expor.
+  if (req.query?.debug_tentar_relatorio) {
+    const invoiceId = Number(req.query.debug_tentar_relatorio);
+    const templateId = Number(req.query.debug_template_id) || 1119;
+    const headers = await zenAuth();
+    const candidatos = [
+      { id: Number(invoiceId) },
+      { invoiceId: Number(invoiceId) },
+      { outgoingInvoiceId: Number(invoiceId) },
+      { entityId: Number(invoiceId) },
+      { entity: { id: Number(invoiceId) } },
+      { ids: [Number(invoiceId)] },
+      { filter: 'id==' + invoiceId }
+    ];
+    const resultados = [];
+    try {
+      for (const parameters of candidatos) {
+        const body = { id: templateId, format: 'PDF', parameters };
+        const rr = await fetch(ZEN_BASE + '/system/report/reportOpGenerate', {
+          method: 'POST', headers, body: JSON.stringify(body)
+        });
+        const ct = rr.headers.get('content-type') || '';
+        let resumo;
+        if (ct.includes('json')) {
+          resumo = await rr.json();
+        } else if (rr.ok) {
+          const buf = await rr.arrayBuffer();
+          resumo = { binario: true, content_type: ct, bytes: buf.byteLength };
+        } else {
+          resumo = { texto: (await rr.text()).slice(0, 300) };
+        }
+        resultados.push({ parameters, status: rr.status, ok: rr.ok, resumo });
+        if (rr.ok) break;
+      }
+      return res.status(200).json({ ok: true, debug: true, invoiceId, templateId, resultados });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, resultados, erro: e.message.slice(0, 300) });
+    }
+  }
+
   // Como um pedido REAL do time preenche o pagamento. Copiar a forma que o Zen
   // ja usa e mais seguro que montar pelo schema: mostra inclusive qual condicao
   // de pagamento e a usual.

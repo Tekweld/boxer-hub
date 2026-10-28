@@ -430,6 +430,24 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Amostra de titulos (financial.Receivable) para achar o vinculo com a
+  // venda/pedido -- `source` e `barcode` sao os campos candidatos (source
+  // pode ser referencia polimorfica tipo '/sale/salePayment:<id>', igual ao
+  // workpiece.source documentado em ZEN-ERP-CONHECIMENTO.md; barcode seria
+  // o codigo de barras do boleto, se o Zen gerar).
+  if (req.query?.debug_receivable_amostra) {
+    try {
+      const regs = await zenGet('/financial/receivable', { q: 'flow==IN;status==APPROVED', max: 8, limite: 8, order: 'id desc' });
+      const amostra = regs.map(r => ({
+        id: r.id, source: r.source, barcode: r.barcode,
+        invoice_id: r.invoice?.id, person_id: r.person?.id, wallet: r.wallet?.description ?? r.wallet?.code ?? null
+      }));
+      return res.status(200).json({ ok: true, debug: true, amostra });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   if (req.query?.debug_dfe) {
     const invoiceId = String(req.query.debug_dfe);
     try {

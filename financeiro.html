@@ -292,42 +292,45 @@ function renderNfs() {
       <td>${fmtMoeda(n.valor_total)}</td>
       <td style="font-size:10px;color:#718096;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${n.chave_acesso || ''}">${n.chave_acesso || '—'}</td>
       <td style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
-        <button class="btn btn-primary btn-sm" id="baixarNf-${n.id}" onclick="baixarNF('${n.id}', '${String(n.numero_nf || n.id)}')">Baixar NF</button>
+        <button class="btn btn-primary btn-sm" id="baixarNf-${n.id}" onclick="baixarDocumentoNF('pdf', '${n.id}', '${String(n.numero_nf || n.id)}')">Baixar NF</button>
+        <button class="btn btn-outline btn-sm" id="baixarXml-${n.id}" onclick="baixarDocumentoNF('xml', '${n.id}', '${String(n.numero_nf || n.id)}')">XML</button>
         <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('nota_fiscal', '${n.id}', '${n.cliente_id}', 'NF ${String(n.numero_nf || '').replace(/'/g, "\\'")}')">Duvida</button>
       </td>
     </tr>`).join('')}</tbody>
   </table></div>`;
 }
 
-// Gera o PDF na hora, direto do Zen (nunca um arquivo salvo no Hub) --
-// por isso vai por fetch+blob em vez de <a href>: precisa mandar o token
-// de autenticacao no header, e o botao mostra "Gerando..." enquanto espera
-// (o Zen demora alguns segundos para montar o relatorio).
-async function baixarNF(nfId, numeroNf) {
-  const btn = document.getElementById('baixarNf-' + nfId);
+// Baixa o PDF (DANFE) ou o XML da NF -- arquivo que o Zen ja guarda pronto
+// desde a autorizacao da SEFAZ, nunca gerado na hora. Por isso vai por
+// fetch+blob em vez de <a href>: precisa mandar o token de autenticacao no
+// header.
+async function baixarDocumentoNF(tipo, nfId, numeroNf) {
+  const btnId = tipo === 'pdf' ? 'baixarNf-' + nfId : 'baixarXml-' + nfId;
+  const btn = document.getElementById(btnId);
   const textoOriginal = btn ? btn.textContent : null;
-  if (btn) { btn.disabled = true; btn.textContent = 'Gerando...'; }
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
   try {
-    const r = await fetch('/api/sync-financeiro?baixar_nf=' + nfId, {
+    const param = tipo === 'pdf' ? 'baixar_nf' : 'baixar_xml';
+    const r = await fetch('/api/sync-financeiro?' + param + '=' + nfId, {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + (SESSION?.access_token || '') }
     });
     if (!r.ok) {
       const erro = await r.json().catch(() => ({}));
-      toast(erro.error || 'Erro ao gerar a NF', 'error');
+      toast(erro.error || 'Documento nao disponivel', 'error');
       return;
     }
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'NF-' + numeroNf + '.pdf';
+    a.download = 'NF-' + numeroNf + '.' + tipo;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   } catch (e) {
-    toast('Erro ao gerar a NF', 'error');
+    toast('Documento nao disponivel', 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
   }

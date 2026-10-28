@@ -139,4 +139,37 @@ function removerComentariosSensiveis(valor, profundidade = 0) {
   return limpo;
 }
 
-module.exports = { zenAuth, zenGet, rsql, normDoc, removerComentariosSensiveis, ZEN_BASE, ZEN_TENANT };
+/**
+ * Documento fiscal real (XML + DANFE) de uma nota de saida.
+ *
+ * NAO vem de /system/report/reportOpGenerate (esse so gera template vazio
+ * generico, sempre o mesmo tamanho -- investigado e descartado em 2026-10-28).
+ * O Zen gera XML e PDF uma vez, na autorizacao da SEFAZ, e guarda os dois como
+ * arquivo pronto no registro fiscal.br.DfeNfeProcOut, achado via
+ * GET /fiscal/br/dfeNfeProcOut?q=invoice.id==<outgoingInvoiceId>:
+ *   - `file`       -> system.file.File do XML
+ *   - `fileDanfe`  -> system.file.File do PDF (DANFE)
+ * Baixar o binario de um File: POST /system/file/fileOpReadContent/{id}
+ * (GET devolve 405 -- confirmado por teste, nao esta na doc).
+ *
+ * `status` do DfeNfeProcOut pode vir ERROR (emissao falhou): nesse caso
+ * fileDanfe fica null e nao ha o que baixar -- tratar como "nao disponivel",
+ * nao como bug.
+ */
+async function zenBuscarDfeNfeProcOut(outgoingInvoiceId) {
+  const regs = await zenGet('/fiscal/br/dfeNfeProcOut', { q: 'invoice.id==' + outgoingInvoiceId, max: 10 });
+  return regs?.[0] || null;
+}
+
+async function zenBaixarArquivo(fileId) {
+  const headers = await zenAuth();
+  const r = await fetch(`${ZEN_BASE}/system/file/fileOpReadContent/${fileId}`, { method: 'POST', headers });
+  if (!r.ok) throw new Error(`fileOpReadContent ${fileId} -> ${r.status} ${(await r.text()).slice(0, 300)}`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  return buf;
+}
+
+module.exports = {
+  zenAuth, zenGet, rsql, normDoc, removerComentariosSensiveis, ZEN_BASE, ZEN_TENANT,
+  zenBuscarDfeNfeProcOut, zenBaixarArquivo
+};

@@ -22,18 +22,11 @@
 //
 // Padrao de exposicao igual ao sync-enderecos: paginado, orcamento de tempo,
 // devolve `proximo_offset` para encadear rodadas pela GitHub Actions.
-const { zenGet, zenAuth, ZEN_BASE } = require('./_zen');
+const { zenGet, zenBuscarDfeNfeProcOut, zenBaixarArquivo } = require('./_zen');
 
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 const ORCAMENTO_MS = 45000;
 const PASSO_ZEN = 200;
-
-// Template do DANFE (NF-e) no Zen -- achado em 2026-10-28 sondando
-// /system/report/reportTemplate (code '/fiscal/report/outgoingInvoiceFormNFe').
-// So cobre venda B2B comum (NFe); NFCe (balcao/consumidor) usa outro
-// template (id 1118) e nao e distinguido hoje em hub_notas_fiscais -- se
-// aparecer nota errada pedir pro Andre confirmar o tipo antes de generalizar.
-const TEMPLATE_DANFE_NFE = 1119;
 
 // Regra de negocio (Andre, 2026-09-08): nao sincronizar nada do Zen anterior a
 // 01/03/2025. Para historia anterior, cliente abre chamado com o suporte.
@@ -60,13 +53,20 @@ module.exports = async function handler(req, res) {
     Prefer: method === 'POST' ? 'return=representation' : 'return=minimal'
   });
 
-  // Baixar o PDF de uma NF, gerado na hora pelo Zen -- nao depende de
-  // nenhum arquivo salvo no Hub (hub_notas_fiscais.pdf_path nunca foi
-  // preenchido por nenhum sync; ver conversa de 2026-10-28). Autorizacao
-  // propria aqui porque e endpoint de uso normal do cliente/representante,
-  // nao so de quem sincroniza (o gate logo abaixo e so admin/manager).
+  // Baixar o PDF (DANFE) ou o XML de uma NF. O documento NAO e gerado na hora
+  // -- e o arquivo que o Zen ja guarda, pronto, desde a autorizacao da SEFAZ
+  // (ver _zen.js: zenBuscarDfeNfeProcOut/zenBaixarArquivo). Tentar gerar via
+  // /system/report/reportOpGenerate foi o caminho errado, investigado e
+  // descartado em 2026-10-28 -- sempre devolvia um PDF generico identico,
+  // porque esse endpoint e para relatorio, nao para reemitir o documento
+  // fiscal. Autorizacao propria aqui porque e endpoint de uso normal do
+  // cliente/representante, nao so de quem sincroniza (o gate logo abaixo e
+  // so admin/manager).
   const baixarNfId = req.query?.baixar_nf;
-  if (baixarNfId) {
+  const baixarXmlId = req.query?.baixar_xml;
+  if (baixarNfId || baixarXmlId) {
+    const notaId = baixarNfId || baixarXmlId;
+    const tipo = baixarNfId ? 'pdf' : 'xml';
     if (!authHeader) return res.status(401).json({ error: 'Autenticacao necessaria' });
     try {
       const userRes = await fetch(HUB_URL + '/auth/v1/user', {
@@ -82,7 +82,7 @@ module.exports = async function handler(req, res) {
       if (!perfil) return res.status(403).json({ error: 'Perfil nao encontrado' });
 
       const nfRes = await fetch(
-        HUB_URL + '/rest/v1/hub_notas_fiscais?id=eq.' + baixarNfId + '&ativo=eq.true&select=id,cliente_id,erp_nf_id',
+        HUB_URL + '/rest/v1/hub_notas_fiscais?id=eq.' + notaId + '&ativo=eq.true&select=id,cliente_id,erp_nf_id',
         { headers: hubH('GET') });
       const nf = (await nfRes.json())?.[0];
       if (!nf) return res.status(404).json({ error: 'Nota nao encontrada' });
@@ -100,18 +100,21 @@ module.exports = async function handler(req, res) {
       }
       if (!autorizado) return res.status(403).json({ error: 'Sem acesso a esta nota' });
 
-      const zenH = await zenAuth();
-      const rr = await fetch(ZEN_BASE + '/system/report/reportOpGenerate', {
-        method: 'POST', headers: zenH,
-        body: JSON.stringify({ id: TEMPLATE_DANFE_NFE, format: 'PDF', parameters: { id: Number(nf.erp_nf_id) } })
-      });
-      if (!rr.ok) {
-        const detalhe = (await rr.text()).slice(0, 300);
-        return res.status(502).json({ error: 'Zen nao gerou o PDF', detalhe });
+      const dfe = await zenBuscarDfeNfeProcOut(nf.erp_nf_id);
+      if (!dfe) return res.status(404).json({ error: 'Documento fiscal nao encontrado no Zen' });
+
+      const arquivo = tipo === 'pdf' ? dfe.fileDanfe : dfe.file;
+      if (!arquivo?.id) {
+        const motivo = dfe.status === 'ERROR'
+          ? 'Emissao fiscal desta nota falhou no Zen (status ERROR) -- nao ha documento para baixar.'
+          : 'Documento ainda nao disponivel (status ' + (dfe.status || 'desconhecido') + ').';
+        return res.status(422).json({ error: motivo });
       }
-      const buf = Buffer.from(await rr.arrayBuffer());
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', 'inline; filename="NF-' + nf.erp_nf_id + '.pdf"');
+
+      const buf = await zenBaixarArquivo(arquivo.id);
+      res.setHeader('Content-Type', tipo === 'pdf' ? 'application/pdf' : 'application/xml');
+      const ext = tipo === 'pdf' ? 'pdf' : 'xml';
+      res.setHeader('Content-Disposition', 'inline; filename="NF-' + nf.erp_nf_id + '.' + ext + '"');
       return res.status(200).send(buf);
     } catch (e) {
       return res.status(500).json({ error: e.message });

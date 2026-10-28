@@ -43,6 +43,11 @@ module.exports = async function orcamento(req, res) {
   const ctx = { SB_SERVICE };
 
   try {
+    if (body.acao === 'diag_tmp') {
+      if (!process.env.DIAG_KEY || req.headers['x-diag'] !== process.env.DIAG_KEY) return res.status(401).json({ error: 'no' });
+      if (!/^\/(sale|system\/workflow|person)\//.test(String(body.path || ''))) return res.status(400).json({ error: 'path' });
+      return res.status(200).json(await zenGet(body.path, { q: body.q || null, max: body.max || 20, limite: body.max || 20 }));
+    }
     if (body.acao === 'avisar') return res.status(200).json(await avisarAceite(ctx, body.token));
 
     const user = await autenticar(req);

@@ -437,7 +437,7 @@ module.exports = async function handler(req, res) {
   // o codigo de barras do boleto, se o Zen gerar).
   if (req.query?.debug_receivable_amostra) {
     try {
-      const regs = await zenGet('/financial/receivable', { q: 'flow==IN;status==APPROVED', max: 8, limite: 8, order: 'id desc' });
+      const regs = await zenGet('/financial/receivable', { q: 'flow==IN;status==APPROVED', max: 8, limite: 8, order: '-id' });
       const amostra = regs.map(r => ({
         id: r.id, source: r.source, barcode: r.barcode,
         invoice_id: r.invoice?.id, person_id: r.person?.id, wallet: r.wallet?.description ?? r.wallet?.code ?? null

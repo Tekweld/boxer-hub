@@ -60,6 +60,16 @@ module.exports = async function orcamento(req, res) {
       try { await zenAprovarVenda(Number(body.sid), passos); return res.status(200).json({ ok: true, passos }); }
       catch (e) { return res.status(200).json({ ok: false, passos, erro: e.message }); }
     }
+    if (body.acao === 'diag_tmp3') {
+      if (!process.env.DIAG_KEY || req.headers['x-diag'] !== process.env.DIAG_KEY) return res.status(401).json({ error: 'no' });
+      const o = { zen_person_id: 1001, vendedor_nome: 'TESTE Tecnico', vendedor_empresa: 'Empresa Teste', vendedor_telefone: '19971150215', vendedor_email: 't@t.com', cliente_contato: 'Fulano', cliente_email: 'c@c.com', cliente_celular: '19999999999', pagamento_tipo: 'avista', desconto_vista_pct: 3, parcelas: 1, frete_tipo: 'CIF', frete_valor: 0, observacoes: 'Observacao de teste do cliente' };
+      try {
+        const sale = await criarVendaZen(o, { codigo: 'ORC-TESTE' }, [{ codigo: '2005041', qtd: 1, unit: 100 }]);
+        const sid = sale.id;
+        if (body.cancelar) { const c = await zenCancelarVenda(sid, 'teste tecnico'); return res.status(200).json({ ok: true, sale, cancelamento: c }); }
+        return res.status(200).json({ ok: true, sale });
+      } catch (e) { return res.status(200).json({ ok: false, erro: e.message }); }
+    }
     if (body.acao === 'avisar') return res.status(200).json(await avisarAceite(ctx, body.token));
 
     const user = await autenticar(req);
@@ -71,6 +81,7 @@ module.exports = async function orcamento(req, res) {
       case 'listar': return res.status(200).json(await listar(ctx, user));
       case 'aprovar': return res.status(200).json(await aprovar(ctx, user, body.id));
       case 'cancelar': return res.status(200).json(await cancelar(ctx, user, body.id));
+      case 'arquivar': return res.status(200).json(await arquivar(ctx, user, body.id, body.arquivar !== false));
       default: return res.status(400).json({ error: 'acao invalida' });
     }
   } catch (e) {
@@ -114,7 +125,7 @@ async function autenticar(req) {
   if (!a.ok) return null;
   const acesso = await a.json();
   if (!acesso || !acesso.permitido) return null;
-  return { id: caller.id, email: caller.email, nome: acesso.nome || caller.email, role: acesso.role };
+  return { id: caller.id, email: caller.email, nome: acesso.nome || caller.email, role: acesso.role, empresa: acesso.empresa || null };
 }
 
 // ---------- regras da tabela (texto editavel no admin) ----------
@@ -139,6 +150,14 @@ function freteDaUF(linhas, uf) {
   return null;
 }
 
+function telOk(v) {
+  const d = String(v || '').replace(/\D/g, '');
+  if (d.length !== 10 && d.length !== 11) return false;
+  const ddd = parseInt(d.slice(0, 2), 10);
+  if (ddd < 11 || ddd > 99) return false;
+  if (d.length === 11 && d[2] !== '9') return false;
+  return true;
+}
 function soDigitos(v) { return String(v || '').replace(/\D/g, ''); }
 function r2(n) { return Math.round(n * 100) / 100; }
 function brl(n) { return Number(n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
@@ -173,7 +192,8 @@ async function criar(ctx, user, b) {
   if (!cl.nome || !String(cl.nome).trim()) throw erro(400, 'Informe o nome do cliente');
   if (cnpj.length !== 14 && cnpj.length !== 11) throw erro(400, 'CNPJ/CPF do cliente invalido');
   if (!cl.email || !/^\S+@\S+\.\S+$/.test(cl.email)) throw erro(400, 'Informe o e-mail do cliente');
-  if (soDigitos(cl.celular).length < 10) throw erro(400, 'Informe o celular do cliente (com DDD)');
+  if (!telOk(cl.celular)) throw erro(400, 'Celular do cliente invalido: use DDD + numero, ex.: (19) 99999-9999');
+  if (b.vendedor && b.vendedor.telefone && !telOk(b.vendedor.telefone)) throw erro(400, 'Seu telefone esta invalido: use DDD + numero, ex.: (19) 99999-9999');
 
   // precos recalculados no servidor, com a mesma formula da tabela
   const codigos = [...new Set(itensIn.map(i => String(i.codigo)))];
@@ -250,14 +270,21 @@ async function criar(ctx, user, b) {
   const hc = (await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=erp_cliente_id,bloqueado&limit=1', 'comercial'))[0];
   const zenPerson = hc && hc.erp_cliente_id ? Number(hc.erp_cliente_id) : null;
   if (hc && hc.bloqueado) avisos.push('Cliente bloqueado no ZEN');
+  let endereco = cl.endereco || null;
+  if (zenPerson && !endereco) {
+    try {
+      const ad = (await zenGet('/catalog/person/personAddress', { q: 'person.id==' + zenPerson, max: 1, limite: 1 }))[0];
+      if (ad && ad.street) endereco = [ad.street + (ad.number ? ', ' + ad.number : ''), ad.district, ad.zipcode ? 'CEP ' + ad.zipcode : null].filter(Boolean).join(' · ');
+    } catch (_) {}
+  }
 
   const row = {
-    tabela_id: 1, user_id: user.id, vendedor_nome: user.nome, vendedor_email: user.email,
+    tabela_id: 1, user_id: user.id, vendedor_nome: user.nome, vendedor_email: user.email, vendedor_empresa: user.empresa || null,
     vendedor_telefone: soDigitos(b.vendedor && b.vendedor.telefone) || null,
     uf, segmento: seg, classe: cls,
     cliente_nome: String(cl.nome).trim(), cliente_fantasia: cl.fantasia || null, cliente_cnpj: cnpj, cliente_ie: cl.ie || null,
     cliente_email: String(cl.email).trim().toLowerCase(), cliente_celular: soDigitos(cl.celular), cliente_telefone: soDigitos(cl.telefone) || null,
-    cliente_contato: cl.contato || null, cliente_cidade: cl.cidade || null, cliente_uf: cl.uf || uf, cliente_endereco: cl.endereco || null,
+    cliente_contato: cl.contato || null, cliente_cidade: cl.cidade || null, cliente_uf: cl.uf || uf, cliente_endereco: endereco,
     zen_person_id: zenPerson,
     pagamento_tipo: avista ? 'avista' : 'boleto', parcelas, desconto_vista_pct: avista ? cond.vista : 0,
     frete_tipo: freteTipo, frete_valor: freteValor,
@@ -282,7 +309,7 @@ async function criar(ctx, user, b) {
   }
   try {
     const sale = await criarVendaZen(row, orc, itens);
-    await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + orc.id, { zen_sale_id: sale.id, zen_status: sale.parcial ? 'parcial' : 'preparando', zen_erro: sale.parcial || null });
+    await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + orc.id, { zen_sale_id: sale.id, zen_status: sale.parcial ? 'parcial' : 'web_orcamento', zen_etapa: sale.parcial ? null : 'Orçamento · WEB orçamento', zen_erro: sale.parcial || null });
     out.zen = { ok: !sale.parcial, sale_id: sale.id, erro: sale.parcial || null };
   } catch (e) {
     await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + orc.id, { zen_status: 'erro', zen_erro: String(e.message).slice(0, 400) });
@@ -315,16 +342,19 @@ async function montarVendaZen(o, orc, itens) {
   }
   let addr = null;
   try { addr = (await zenGet('/catalog/person/personAddress', { q: 'person.id==' + o.zen_person_id, max: 1, limite: 1 }))[0]; } catch (_) {}
+  const fmtTel = d => { d = String(d || ''); return d.length === 11 ? '(' + d.slice(0, 2) + ') ' + d.slice(2, 7) + '-' + d.slice(7) : d.length === 10 ? '(' + d.slice(0, 2) + ') ' + d.slice(2, 6) + '-' + d.slice(6) : d; };
   const comentarios = [
-    'Orçamento ' + orc.codigo + ' (link enviado ao cliente; validade ' + VALIDADE_DIAS + ' dias)',
-    'Representante: ' + o.vendedor_nome + (o.vendedor_telefone ? ' · ' + o.vendedor_telefone : ''),
-    o.pagamento_tipo === 'avista' ? 'Pagamento à vista (' + o.desconto_vista_pct + '% de desconto)' : 'Boleto em ' + o.parcelas + 'x',
-    o.observacoes || null
-  ].filter(Boolean).join(' — ');
+    'Orçamento ' + orc.codigo + ' · enviado ao cliente por link · validade ' + VALIDADE_DIAS + ' dias',
+    'Representante: ' + o.vendedor_nome + (o.vendedor_empresa ? ' (' + o.vendedor_empresa + ')' : '') + (o.vendedor_telefone ? ' · ' + fmtTel(o.vendedor_telefone) : '') + (o.vendedor_email ? ' · ' + o.vendedor_email : ''),
+    'Contato do cliente: ' + [o.cliente_contato, o.cliente_email, fmtTel(o.cliente_celular)].filter(Boolean).join(' · '),
+    'Pagamento: ' + (o.pagamento_tipo === 'avista' ? 'à vista (' + o.desconto_vista_pct + '% de desconto)' : 'boleto em ' + o.parcelas + 'x'),
+    'Frete: ' + (o.frete_tipo || 'a combinar') + (o.frete_valor ? ' (' + brl(o.frete_valor) + ')' : ''),
+    o.observacoes ? 'Observações: ' + o.observacoes : null
+  ].filter(Boolean).join('\n');
   const sale = {
     company: { id: ZEN_COMPANY_ID },
     person: { id: Number(o.zen_person_id) },
-    saleProfile: { id: ZEN_SALE_PROFILE_ID },
+    saleProfile: { id: ZEN_PERFIL_ORCAMENTO },
     tags: 'ORCAMENTO,' + orc.codigo,
     freightType: o.frete_tipo === 'CIF' ? 'ISSUER' : (o.frete_tipo === 'FOB' ? 'RECIPIENT' : 'NONE'),
     properties: { comments: comentarios }
@@ -351,23 +381,96 @@ async function criarVendaZen(o, orc, itens) {
     const r = await fetch(ZEN_BASE + '/sale/salePayment', { method: 'POST', headers, body: JSON.stringify({ sale: { id: sale.id }, type: p.type, term: p.term }) });
     if (!r.ok) falhas.push('pagamento ' + p.term + 'd: ' + (await r.text()).slice(0, 120));
   }
-  return { id: sale.id, parcial: falhas.length ? 'Venda ' + sale.id + ' criada com falhas: ' + falhas.join(' | ').slice(0, 350) : null };
+  let etapa = true;
+  if (!falhas.length) {
+    try { await zenColocarEmWebOrcamento(sale.id); } catch (e) { etapa = false; falhas.push('etapa WEB orcamento: ' + e.message.slice(0, 120)); }
+  }
+  return { id: sale.id, etapa, parcial: falhas.length ? 'Venda ' + sale.id + ' criada com falhas: ' + falhas.join(' | ').slice(0, 350) : null };
 }
 
-// ---------- listar ----------
+// ---------- listar (reconcilia com o ZEN) ----------
+// O que o ZEN diz manda: venda removida/cancelada la encerra o orcamento aqui; venda movida para o
+// perfil "Venda padrao" (aprovada direto no ZEN) vira "aprovado"; itens/valores ajustados la voltam para ca.
+const CAMPOS_LISTA = 'id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,avisos,pagamento_tipo,parcelas,itens';
 async function listar(ctx, user) {
-  const rows = await sbGet(ctx, '/orcamentos?user_id=eq.' + user.id + '&ativo=eq.true&order=criado_em.desc&limit=100&select=id,codigo,token,cliente_nome,cliente_cnpj,total_final,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aprovado_em,zen_sale_id,zen_status,zen_erro,avisos,pagamento_tipo,parcelas', 'comercial');
+  const rows = await sbGet(ctx, '/orcamentos?user_id=eq.' + user.id + '&ativo=eq.true&order=criado_em.desc&limit=150&select=' + CAMPOS_LISTA, 'comercial');
+  let aviso_sync = null;
+  try { await sincronizarZen(ctx, rows); } catch (e) { aviso_sync = 'Nao foi possivel conferir o ZEN agora: ' + String(e.message).slice(0, 120); }
   const agora = Date.now();
   return {
-    ok: true,
-    orcamentos: rows.map(r => Object.assign({}, r, {
-      link: LINK_ORCAMENTO + r.token,
-      expirado: new Date(r.validade_em).getTime() < agora && ['enviado', 'visualizado'].includes(r.status)
-    }))
+    ok: true, aviso_sync,
+    orcamentos: rows.map(r => {
+      const o = Object.assign({}, r, {
+        link: LINK_ORCAMENTO + r.token,
+        expirado: new Date(r.validade_em).getTime() < agora && ['enviado', 'visualizado'].includes(r.status),
+        itens_resumo: (r.itens || []).map(i => i.qtd + 'x ' + (i.modelo || i.codigo))
+      });
+      delete o.itens;
+      return o;
+    })
   };
 }
 
-// ---------- aprovar: PREPARING -> PREPARED -> inicio -> orcamento -> WEB Pronta entrega ----------
+async function sincronizarZen(ctx, rows) {
+  const alvo = rows.filter(r => r.zen_sale_id && !r.arquivado && ['enviado', 'visualizado', 'aceito_cliente', 'aprovado'].includes(r.status)).slice(0, 60);
+  if (!alvo.length) return;
+  const ids = alvo.map(r => r.zen_sale_id).join(',');
+  const [vendas, wps, itensZen] = await Promise.all([
+    zenGet('/sale/sale', { q: 'id=in=(' + ids + ')', max: 100, limite: 100 }),
+    zenGet('/system/workflow/workpiece', { q: 'source=in=(' + alvo.map(r => '"/sale/sale:' + r.zen_sale_id + '"').join(',') + ');status==ACTIVE', max: 200, limite: 200 }),
+    zenGet('/sale/saleItem', { q: 'sale.id=in=(' + ids + ')', max: 500, limite: 500 })
+  ]);
+  const vb = {}; vendas.forEach(v => { vb[v.id] = v; });
+  const wb = {}; wps.forEach(w => { const m = /:(\d+)$/.exec(w.source || ''); if (m) wb[m[1]] = w; });
+  const ib = {}; itensZen.forEach(i => { const id = i.sale && i.sale.id; (ib[id] = ib[id] || []).push(i); });
+
+  for (const r of alvo) {
+    const v = vb[r.zen_sale_id];
+    const patch = {};
+    if (!v) {
+      Object.assign(patch, { status: 'cancelado', cancelado_por: 'zen', cancelado_em: new Date().toISOString(), zen_status: 'removido_zen', zen_etapa: 'Venda removida do ZEN', zen_erro: null });
+    } else if (v.status === 'CANCELED') {
+      Object.assign(patch, { status: 'cancelado', cancelado_por: 'zen', cancelado_em: new Date().toISOString(), zen_status: 'cancelado_zen', zen_etapa: 'Cancelada no ZEN', zen_erro: null });
+    } else {
+      const w = wb[r.zen_sale_id];
+      const noPerfilVenda = v.saleProfile && v.saleProfile.id === ZEN_SALE_PROFILE_ID;
+      const etapa = (w && w.workflow && w.workflow.description ? w.workflow.description : (v.saleProfile && v.saleProfile.description) || '') + (w && w.workflowNode ? ' · ' + w.workflowNode.description : (v.status === 'PREPARING' ? ' · Preparando' : ''));
+      if (etapa && etapa !== r.zen_etapa) patch.zen_etapa = etapa;
+      if (noPerfilVenda && ['PREPARED', 'APPROVED', 'FINISHED', 'PICKING'].includes(v.status)) {
+        if (r.status !== 'aprovado') { patch.status = 'aprovado'; patch.aprovado_em = new Date().toISOString(); }
+        const zs = w && w.workflowNode ? (w.workflowNode.code === 'webProntaEntrega' ? 'web_pronta_entrega' : 'no_fluxo') : 'no_fluxo';
+        if (zs !== r.zen_status) patch.zen_status = zs;
+        if (r.zen_erro) patch.zen_erro = null;
+      } else if (!noPerfilVenda && r.zen_status !== 'web_orcamento' && !['erro', 'parcial', 'erro_avanco'].includes(r.zen_status)) {
+        patch.zen_status = 'web_orcamento';
+      }
+      // itens/valores ajustados no ZEN
+      const its = (ib[r.zen_sale_id] || []).filter(i => i.productPacking && i.productPacking.product);
+      if (its.length) {
+        const velho = {}; (r.itens || []).forEach(i => { velho[String(i.codigo)] = i; });
+        const novos = its.map(i => {
+          const cod = String(i.productPacking.product.code);
+          const base = velho[cod] || { codigo: cod, modelo: i.productPacking.product.description || cod, categoria: '', unit_tabela: Number(i.unitValue), estoque: 'sem_info', previsao: null, ncm: '', ipi: 0, icms: 0, imagem_url: '' };
+          const q = Number(i.quantity), u = Number(i.unitValue);
+          return Object.assign({}, base, { qtd: q, unit: u, subtotal: r2(Number(i.totalValue) || q * u) });
+        });
+        const antes = JSON.stringify((r.itens || []).map(i => [String(i.codigo), i.qtd, i.unit]).sort());
+        const depois = JSON.stringify(novos.map(i => [String(i.codigo), i.qtd, i.unit]).sort());
+        if (antes !== depois) {
+          const totalItens = r2(novos.reduce((a, x) => a + x.subtotal, 0));
+          Object.assign(patch, { itens: novos, total_itens: totalItens, total_final: r2(totalItens + Number(r.frete_valor || 0)), zen_ajustado_em: new Date().toISOString() });
+        }
+      }
+    }
+    if (Object.keys(patch).length) {
+      patch.atualizado_em = new Date().toISOString();
+      await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + r.id, patch);
+      Object.assign(r, patch);
+    }
+  }
+}
+
+// ---------- aprovar: orcamento (perfil Orcamento / WEB orcamento) -> pedido (Venda padrao / WEB Pronta entrega) ----------
 async function aprovar(ctx, user, id) {
   if (!id) throw erro(400, 'id obrigatorio');
   const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id + '&select=*', 'comercial'))[0];
@@ -379,70 +482,63 @@ async function aprovar(ctx, user, id) {
     ? 'Cliente nao cadastrado no ZEN: cadastre o cliente e peca a Boxer para vincular a venda.'
     : 'Este orcamento nao tem venda no ZEN.');
 
-  const headers = await zenAuth();
   const sid = o.zen_sale_id;
   const passos = [];
   try {
-    const sale = (await zenGet('/sale/sale', { q: 'id==' + sid, max: 1, limite: 1 }))[0];
-    if (!sale) throw new Error('venda ' + sid + ' nao existe mais no ZEN');
-    if (sale.status === 'CANCELED') throw new Error('a venda ' + sid + ' esta cancelada no ZEN');
-    if (sale.status === 'PREPARING') {
-      const r = await fetch(ZEN_BASE + '/sale/saleOpPrepare/' + sid, { method: 'POST', headers });
-      if (!r.ok) throw new Error('finalizar preparacao: ' + (await r.text()).slice(0, 250));
-      passos.push('preparada');
-    }
-    const nodes = await zenGet('/system/workflow/workflowNode', { q: 'workflow.id==' + ZEN_WORKFLOW_ID, max: 100, limite: 100 });
-    const nodeId = {}; nodes.forEach(n => { nodeId[n.code] = n.id; });
-    for (let tent = 0; tent < 5; tent++) {
-      const wp = (await zenGet('/system/workflow/workpiece', { q: 'source=="/sale/sale:' + sid + '"', max: 1, limite: 1 }))[0];
-      if (!wp) throw new Error('a venda ainda nao entrou no fluxo (workpiece ausente)');
-      const atual = wp.workflowNode && wp.workflowNode.code;
-      if (atual === 'webProntaEntrega') break;
-      const idx = CAMINHO_ZEN.indexOf(atual);
-      if (idx < 0) throw new Error('a venda esta na etapa "' + (atual || '?') + '", fora do caminho do orcamento; avance manualmente no ZEN');
-      const destino = CAMINHO_ZEN[idx + 1];
-      if (!nodeId[destino]) throw new Error('etapa ' + destino + ' nao encontrada no fluxo do ZEN');
-      const r = await fetch(ZEN_BASE + '/system/workflow/workpieceOpForward/' + wp.id + '?workflowNodeId=' + nodeId[destino], { method: 'POST', headers });
-      if (!r.ok) throw new Error('avancar para ' + destino + ': ' + (await r.text()).slice(0, 250));
-      passos.push(destino);
-    }
+    await zenAprovarVenda(sid, passos);
   } catch (e) {
     await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { zen_status: 'erro_avanco', zen_erro: String(e.message).slice(0, 400) });
     throw erro(502, 'Nao foi possivel concluir no ZEN (' + (passos.join(' > ') || 'nenhuma etapa feita') + '): ' + e.message.slice(0, 200));
   }
-  await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { status: 'aprovado', aprovado_em: new Date().toISOString(), zen_status: 'web_pronta_entrega', zen_erro: null, atualizado_em: new Date().toISOString() });
+  await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { status: 'aprovado', aprovado_em: new Date().toISOString(), zen_status: 'web_pronta_entrega', zen_etapa: 'Venda padrão · WEB Pronta entrega', zen_erro: null, atualizado_em: new Date().toISOString() });
   return { ok: true, zen_sale_id: sid, passos };
 }
 
-// ---------- cancelar: so antes de virar pedido; cancela a venda no ZEN se ainda for rascunho ----------
+// ---------- cancelar: so antes de virar pedido; cancela a venda no ZEN ----------
+async function zenCancelarVenda(sid, motivo) {
+  const sale = (await zenGet('/sale/sale', { q: 'id==' + sid, max: 1, limite: 1 }))[0];
+  if (!sale) return { obs: 'a venda ' + sid + ' ja nao existe no ZEN', ok: true };
+  if (sale.status === 'CANCELED') return { ok: true };
+  if (!['PREPARING', 'PREPARED'].includes(sale.status) || (sale.saleProfile && sale.saleProfile.id === ZEN_SALE_PROFILE_ID && sale.status === 'PREPARED')) {
+    return { ok: false, obs: 'a venda ' + sid + ' ja esta em andamento no ZEN (' + sale.status + ') e foi mantida' };
+  }
+  try { await zenCall('POST', '/sale/saleOpCancel/' + sid, { reason: motivo, code: 'OTHER' }); return { ok: true }; }
+  catch (e) { return { ok: false, obs: 'nao foi possivel cancelar a venda no ZEN: ' + e.message.slice(0, 160) }; }
+}
 async function cancelar(ctx, user, id) {
   if (!id) throw erro(400, 'id obrigatorio');
   const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id + '&select=*', 'comercial'))[0];
   if (!o) throw erro(404, 'Orcamento nao encontrado');
   if (o.status === 'cancelado') return { ok: true, ja_cancelado: true };
   if (o.status === 'aprovado') throw erro(409, 'Este orcamento ja virou pedido no ZEN (' + o.zen_sale_id + '). Para cancelar, fale com o ADM de vendas.');
-  let zenObs = null;
+  let zenObs = null, zenOk = false;
   if (o.zen_sale_id) {
-    try {
-      const headers = await zenAuth();
-      const sale = (await zenGet('/sale/sale', { q: 'id==' + o.zen_sale_id, max: 1, limite: 1 }))[0];
-      if (sale && sale.status === 'PREPARING') {
-        const r = await fetch(ZEN_BASE + '/sale/saleOpCancel/' + o.zen_sale_id, { method: 'POST', headers });
-        if (!r.ok) zenObs = 'nao foi possivel cancelar a venda no ZEN: ' + (await r.text()).slice(0, 200);
-      } else if (sale && sale.status !== 'CANCELED') {
-        zenObs = 'venda ' + o.zen_sale_id + ' no ZEN esta ' + sale.status + ' e foi mantida';
-      }
-    } catch (e) { zenObs = 'ZEN: ' + String(e.message).slice(0, 200); }
+    try { const r = await zenCancelarVenda(o.zen_sale_id, 'Orçamento ' + o.codigo + ' cancelado pelo representante'); zenOk = r.ok; zenObs = r.obs || null; }
+    catch (e) { zenObs = 'ZEN: ' + String(e.message).slice(0, 160); }
   }
-  await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { status: 'cancelado', zen_status: zenObs ? o.zen_status : (o.zen_sale_id ? 'cancelado' : o.zen_status), zen_erro: zenObs, atualizado_em: new Date().toISOString() });
-  return { ok: true, aviso_zen: zenObs };
+  await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, {
+    status: 'cancelado', cancelado_por: 'representante', cancelado_em: new Date().toISOString(),
+    zen_status: o.zen_sale_id ? (zenOk ? 'cancelado_zen' : o.zen_status) : o.zen_status, zen_etapa: zenOk ? 'Cancelada no ZEN' : o.zen_etapa, zen_erro: zenObs, atualizado_em: new Date().toISOString()
+  });
+  return { ok: true, aviso_zen: zenObs && !zenOk ? zenObs : null };
+}
+
+// ---------- arquivar: tira da lista principal (nada e apagado) ----------
+async function arquivar(ctx, user, id, flag) {
+  if (!id) throw erro(400, 'id obrigatorio');
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id + '&select=id,status', 'comercial'))[0];
+  if (!o) throw erro(404, 'Orcamento nao encontrado');
+  if (flag && ['enviado', 'visualizado', 'aceito_cliente'].includes(o.status)) throw erro(409, 'Cancele o orcamento antes de arquivar');
+  await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { arquivado: !!flag, atualizado_em: new Date().toISOString() });
+  return { ok: true };
 }
 
 // ---------- aviso ao representante (publico, so por token) ----------
 async function avisarAceite(ctx, token) {
   if (!/^[0-9a-f-]{36}$/i.test(String(token || ''))) throw erro(400, 'token invalido');
-  const o = (await sbGet(ctx, '/orcamentos?token=eq.' + token + '&select=id,codigo,vendedor_email,vendedor_nome,cliente_nome,total_final,status,aceito_em,aceito_nome', 'comercial').catch(() => null));
+  const o = (await sbGet(ctx, '/orcamentos?token=eq.' + token + '&select=id,codigo,vendedor_email,vendedor_nome,cliente_nome,total_final,status,aceito_em,aceito_nome,cancelado_por,cancelado_em,zen_sale_id,zen_status', 'comercial').catch(() => null));
   const row = Array.isArray(o) ? o[0] : null;
+  if (row && row.status === 'cancelado' && row.cancelado_por === 'cliente') return avisarRecusa(ctx, row);
   if (!row || row.status !== 'aceito_cliente' || !row.vendedor_email) return { ok: true, enviado: false };
   const key = process.env.RESEND_API_KEY;
   if (!key) return { ok: true, enviado: false, motivo: 'RESEND_API_KEY nao configurada' };
@@ -462,6 +558,31 @@ async function avisarAceite(ctx, token) {
   });
   return { ok: true, enviado: r.ok };
 }
+// cliente recusou pelo link: cancela a venda no ZEN (se ainda for orcamento) e avisa o representante
+async function avisarRecusa(ctx, row) {
+  if (!row.cancelado_em || new Date(row.cancelado_em).getTime() < Date.now() - 10 * 60000) return { ok: true, enviado: false };
+  if (row.zen_sale_id && row.zen_status !== 'cancelado_zen') {
+    try {
+      const r = await zenCancelarVenda(row.zen_sale_id, 'Orçamento ' + row.codigo + ' recusado pelo cliente');
+      await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + row.id, r.ok ? { zen_status: 'cancelado_zen', zen_etapa: 'Cancelada no ZEN', zen_erro: null } : { zen_erro: r.obs });
+    } catch (_) {}
+  }
+  const key = process.env.RESEND_API_KEY;
+  if (!key || !row.vendedor_email) return { ok: true, enviado: false };
+  const corpo = `<p>Olá${row.vendedor_nome ? ', <strong>' + esc(row.vendedor_nome) + '</strong>' : ''}!</p>
+    <p><strong>${esc(row.cliente_nome)}</strong> recusou o orçamento <strong>${esc(row.codigo)}</strong> (${brl(row.total_final)}) pelo link.</p>
+    <p>O orçamento foi marcado como cancelado em <b>Meus orçamentos</b>${row.zen_sale_id ? ' e a venda ' + row.zen_sale_id + ' foi cancelada no ZEN' : ''}. Se foi engano, gere um novo orçamento.</p>`;
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+    body: JSON.stringify({
+      from: 'Boxer Orçamentos <noreply@boxersoldas.com.br>', to: [row.vendedor_email],
+      subject: 'Cliente recusou o orçamento ' + row.codigo + ' — ' + row.cliente_nome,
+      html: '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#f0f4f8;font-family:Arial,sans-serif"><div style="max-width:560px;margin:0 auto;padding:24px"><div style="background:#fff;border:1px solid #d0d8e8;border-radius:12px;padding:28px">' + corpo + '</div></div></body></html>'
+    })
+  });
+  return { ok: true, enviado: r.ok };
+}
+
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 // ---------- ZEN: perfis e etapas do orcamento ----------

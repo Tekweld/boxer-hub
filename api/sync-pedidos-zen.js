@@ -301,6 +301,23 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Mesma ideia, para um schema nomeado em components.schemas (ex: o corpo
+  // que uma operacao espera, achado via debug_rota).
+  if (req.query?.debug_schema) {
+    const nome = String(req.query.debug_schema);
+    try {
+      const rr = await fetch(ZEN_BASE + '/platform/openapi.json', { headers: await zenAuth() });
+      if (!rr.ok) return res.status(200).json({ ok: false, debug: true, status: rr.status });
+      const spec = await rr.json();
+      return res.status(200).json({
+        ok: true, debug: true, nome,
+        definicao: spec.components?.schemas?.[nome] || null
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   // Como um pedido REAL do time preenche o pagamento. Copiar a forma que o Zen
   // ja usa e mais seguro que montar pelo schema: mostra inclusive qual condicao
   // de pagamento e a usual.

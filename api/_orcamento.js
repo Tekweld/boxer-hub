@@ -136,7 +136,7 @@ function telOk(v) {
 }
 function docOk(v) {
   const d = String(v || '').replace(/\D/g, '');
-  if (/^(\d)+$/.test(d)) return false;
+  if (/^(\d)\1+$/.test(d)) return false;
   const dv = (base, pesos) => { const r = base.split('').reduce((a, n, i) => a + Number(n) * pesos[i], 0) % 11; return r < 2 ? 0 : 11 - r; };
   if (d.length === 11) return dv(d.slice(0, 9), [10, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(d[9]) && dv(d.slice(0, 10), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(d[10]);
   if (d.length === 14) return dv(d.slice(0, 12), [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(d[12]) && dv(d.slice(0, 13), [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(d[13]);
@@ -152,7 +152,24 @@ async function buscarCliente(ctx, cnpjIn) {
   if (cnpj.length !== 14 && cnpj.length !== 11) throw erro(400, 'Informe um CNPJ (14 digitos) ou CPF (11)');
   const rows = await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=razao_social,nome_fantasia,nome_exibicao,inscricao_estadual,email_principal,telefone,cidade,uf,erp_cliente_id,bloqueado&limit=1', 'comercial');
   const c = rows[0];
-  if (!c) return { encontrado: false, cnpj };
+  if (!c) {
+    // fora do cadastro do ZEN: tenta os dados publicos da Receita (BrasilAPI) para preencher razao social e endereco
+    let publico = null;
+    if (cnpj.length === 14) {
+      try {
+        const r = await fetch('https://brasilapi.com.br/api/cnpj/v1/' + cnpj, { signal: AbortSignal.timeout(5000) });
+        if (r.ok) {
+          const j = await r.json();
+          publico = {
+            razao_social: j.razao_social || '', nome_fantasia: j.nome_fantasia || '', email: j.email || '',
+            cidade: j.municipio || '', uf: j.uf || '', situacao: j.descricao_situacao_cadastral || '',
+            endereco: [[j.descricao_tipo_de_logradouro, j.logradouro].filter(Boolean).join(' ') + (j.numero ? ', ' + j.numero : ''), j.bairro, j.cep ? 'CEP ' + j.cep : null].filter(x => x && String(x).trim()).join(' · ')
+          };
+        }
+      } catch (_) { /* sem Receita agora: segue manual */ }
+    }
+    return { encontrado: false, cnpj, publico };
+  }
   return {
     encontrado: true, cnpj,
     razao_social: c.razao_social, nome_fantasia: c.nome_fantasia || c.nome_exibicao || '',
@@ -219,7 +236,15 @@ async function criar(ctx, user, b, edit) {
   if (itensIn.length > 60) throw erro(400, 'Itens demais para um orcamento');
   const cl = b.cliente || {};
   const cnpj = soDigitos(cl.cnpj);
-  if (!cl.nome || !String(cl.nome).trim()) throw erro(400, 'Informe o nome do cliente');
+  if (!cl.nome || !String(cl.nome).trim()) {
+    // orcamento feito sem sinal: a razao social e buscada aqui (cadastro do ZEN ou Receita)
+    try {
+      const bc = await buscarCliente(ctx, cnpj);
+      const nm = bc.encontrado ? bc.razao_social : (bc.publico && bc.publico.razao_social);
+      if (nm) { cl.nome = nm; if (!cl.cidade) cl.cidade = bc.encontrado ? bc.cidade : (bc.publico && bc.publico.cidade) || ''; if (!cl.endereco && bc.publico) cl.endereco = bc.publico.endereco; }
+    } catch (_) {}
+    if (!cl.nome || !String(cl.nome).trim()) cl.nome = 'Cliente CNPJ/CPF ' + cnpj;
+  }
   if (!docOk(cnpj)) throw erro(400, 'CNPJ/CPF do cliente invalido: confira os numeros');
   if (!cl.email || !/^\S+@\S+\.\S+$/.test(cl.email)) throw erro(400, 'Informe o e-mail do cliente');
   if (!telOk(cl.celular)) throw erro(400, 'Celular do cliente invalido: use DDD + numero, ex.: (19) 99999-9999');

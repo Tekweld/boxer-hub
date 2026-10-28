@@ -854,6 +854,11 @@ async function loadPedidos() {
 
   let url = '/hub_pedidos?select=id,numero,status,origem,valor_total,criado_em,erp_workflow_status,hub_clientes(razao_social)&order=criado_em.desc&ativo=eq.true';
   if (status) url += '&status=eq.' + status;
+  // Com revenda selecionada (ou dealer logado, que ja e sempre a sua),
+  // a lista mostra so os pedidos dela -- antes mostrava tudo que a RLS
+  // deixava ver, mesmo com uma revenda especifica em foco no topo.
+  const clienteId = getClienteAtivo();
+  if (clienteId) url += '&cliente_id=eq.' + clienteId;
 
   try {
     const pedidos = await sb(url);

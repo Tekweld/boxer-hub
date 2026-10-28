@@ -349,7 +349,9 @@ async function buscarClientes(termo) {
   wrap.innerHTML = '<div style="padding:16px;color:#718096;font-size:13px">Buscando...</div>';
 
   // A RLS ja limita: representante so ve a carteira dele, staff ve todos.
-  let url = '/hub_clientes?ativo=eq.true&select=id,nome_exibicao,cnpj,razao_social,uf,canal,bloqueado'
+  // hub_enderecos embutido para mostrar cidade/UF/rua na lista -- sem isso
+  // quem tem 5 filiais com o mesmo nome (ex: Luitex) nao sabe qual escolher.
+  let url = '/hub_clientes?ativo=eq.true&select=id,nome_exibicao,cnpj,razao_social,uf,cidade,canal,bloqueado,hub_enderecos(logradouro,numero,bairro,tipo)'
           + '&order=nome_exibicao.asc&limit=40';
   const t = (termo || '').trim();
   if (t) {
@@ -376,10 +378,13 @@ async function buscarClientes(termo) {
     }
     wrap.innerHTML = linhas.map(c => {
       const nome = (c.nome_exibicao || '').replace(/'/g, '&#39;').replace(/</g, '&lt;');
+      const end = (c.hub_enderecos || []).find(e => e.tipo === 'principal') || (c.hub_enderecos || [])[0];
+      const rua = end ? [end.logradouro, end.numero].filter(Boolean).join(', ') + (end.bairro ? ' — ' + end.bairro : '') : '';
       return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px;border-bottom:1px solid #e2e8f0">
         <div style="min-width:0">
           <div style="font-size:13px;font-weight:600;color:#1a202c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${nome}</div>
-          <div style="font-size:11px;color:#718096">${fmtCnpj(c.cnpj)} ${c.uf ? '· ' + c.uf : ''} ${c.canal ? '· ' + c.canal : ''}</div>
+          <div style="font-size:11px;color:#718096">${fmtCnpj(c.cnpj)} ${c.cidade ? '· ' + c.cidade : ''}${c.uf ? '/' + c.uf : ''} ${c.canal ? '· ' + c.canal : ''}</div>
+          ${rua ? `<div style="font-size:11px;color:#a0aec0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rua.replace(/</g, '&lt;')}</div>` : ''}
         </div>
         ${c.bloqueado
           ? '<span style="font-size:11px;color:#991b1b;background:#fee2e2;padding:3px 8px;border-radius:10px;white-space:nowrap">bloqueada</span>'

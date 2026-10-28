@@ -16,6 +16,25 @@
 // vem em workpiece.source, formatado '/sale/sale:<saleId>'.
 const { zenGet, zenAuth, ZEN_BASE, removerComentariosSensiveis } = require('./_zen');
 
+// O documento fiscal de verdade (XML + DANFE) NAO vem de reportOpGenerate --
+// isso so gera template vazio. O Zen guarda o XML/PDF ja prontos (gerados na
+// autorizacao da SEFAZ) no registro fiscal.br.DfeNfeProcOut, linkado por
+// invoice.id: campo `file` = XML, `fileDanfe` = PDF do DANFE, ambos
+// `system.file.File`. Baixa o binario de um File pelo id.
+async function zenBaixarArquivo(fileId) {
+  const headers = await zenAuth();
+  const r = await fetch(ZEN_BASE + '/system/file/fileOpReadContent/' + fileId, { headers });
+  if (!r.ok) throw new Error('fileOpReadContent ' + fileId + ' -> ' + r.status + ' ' + (await r.text()).slice(0, 300));
+  const buf = Buffer.from(await r.arrayBuffer());
+  const contentType = r.headers.get('content-type') || 'application/octet-stream';
+  return { buf, contentType };
+}
+
+async function zenBuscarDfeNfeProcOut(outgoingInvoiceId) {
+  const regs = await zenGet('/fiscal/br/dfeNfeProcOut', { q: 'invoice.id==' + outgoingInvoiceId, max: 10 });
+  return regs?.[0] || null;
+}
+
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 
 // Etapas do Zen que encerram o acompanhamento: depois delas o no nao muda mais
@@ -385,6 +404,35 @@ module.exports = async function handler(req, res) {
         ? campos.filter((c) => /pdf|xml|danfe|url|path|key|protocol|authoriz|document|arquivo|anexo/i.test(c))
         : null;
       return res.status(200).json({ ok: rr.ok, debug: true, invoiceId, status: rr.status, campos, interessantes, corpo });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
+  // Confirma a hipotese do DfeNfeProcOut contra dado real antes de reescrever
+  // o download de verdade: busca o registro pelo invoice.id, e baixa o File de
+  // XML e de DANFE so para medir bytes/content-type -- nao devolve o binario
+  // aqui (e so diagnostico).
+  if (req.query?.debug_dfe) {
+    const invoiceId = String(req.query.debug_dfe);
+    try {
+      const reg = await zenBuscarDfeNfeProcOut(invoiceId);
+      if (!reg) return res.status(200).json({ ok: true, debug: true, invoiceId, encontrado: false });
+      const resumo = {
+        id: reg.id, status: reg.status, chNFe: reg.chNFe, nProt: reg.nProt,
+        file_id: reg.file?.id ?? null, file_contentType: reg.file?.contentType ?? null,
+        fileDanfe_id: reg.fileDanfe?.id ?? null, fileDanfe_contentType: reg.fileDanfe?.contentType ?? null
+      };
+      const downloads = {};
+      if (reg.file?.id) {
+        try { const { buf, contentType } = await zenBaixarArquivo(reg.file.id); downloads.xml = { bytes: buf.length, contentType }; }
+        catch (e) { downloads.xml = { erro: e.message.slice(0, 200) }; }
+      }
+      if (reg.fileDanfe?.id) {
+        try { const { buf, contentType } = await zenBaixarArquivo(reg.fileDanfe.id); downloads.danfe = { bytes: buf.length, contentType }; }
+        catch (e) { downloads.danfe = { erro: e.message.slice(0, 200) }; }
+      }
+      return res.status(200).json({ ok: true, debug: true, invoiceId, encontrado: true, resumo, downloads });
     } catch (e) {
       return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
     }

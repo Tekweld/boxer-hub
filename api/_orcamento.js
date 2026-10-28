@@ -45,30 +45,6 @@ module.exports = async function orcamento(req, res) {
   const ctx = { SB_SERVICE };
 
   try {
-    if (body.acao === 'diag_edit') {
-      if (!process.env.DIAG_KEY || req.headers['x-diag'] !== process.env.DIAG_KEY) return res.status(401).json({ error: 'no' });
-      const o = { zen_person_id: 1001, vendedor_nome: 'TESTE Tecnico', vendedor_empresa: 'Empresa Teste', vendedor_telefone: '19971150215', vendedor_email: 't@t.com', cliente_contato: 'Fulano', cliente_email: 'c@c.com', cliente_celular: '19999999999', pagamento_tipo: 'avista', desconto_vista_pct: 3, parcelas: 1, frete_tipo: 'CIF', frete_valor: 0, observacoes: 'obs original' };
-      const log = [];
-      try {
-        const sale = await criarVendaZen(o, { codigo: 'ORC-TESTE' }, [{ codigo: '2005041', qtd: 1, unit: 100 }]);
-        const sid = sale.id; log.push('criada ' + sid);
-        const o2 = Object.assign({}, o, { pagamento_tipo: 'boleto', parcelas: 2, observacoes: 'obs EDITADA' });
-        await zenAtualizarVenda(sid, o2, { codigo: 'ORC-TESTE' }, [{ codigo: '2005041', qtd: 3, unit: 90 }, { codigo: '1510026', qtd: 2, unit: 50 }]);
-        log.push('atualizada');
-        const v = (await zenGet('/sale/sale', { q: 'id==' + sid, max: 1, limite: 1 }))[0];
-        const its = await zenGet('/sale/saleItem', { q: 'sale.id==' + sid, max: 20, limite: 20 });
-        const pg = await zenGet('/sale/salePayment', { q: 'sale.id==' + sid, max: 20, limite: 20 });
-        const wp = await zenWorkpieces(sid);
-        const canc = await zenCancelarVenda(sid, 'teste tecnico');
-        return res.status(200).json({ ok: true, log, status: v.status, perfil: v.saleProfile && v.saleProfile.code, total: v.totalValue, comments: v.properties && v.properties.comments, itens: its.map(i => i.quantity + 'x ' + i.productPacking.product.code + ' @' + i.unitValue), pagamentos: pg.map(p => p.term), etapa: wp.map(w => w.workflowNode && w.workflowNode.description), cancelamento: canc });
-      } catch (e) { return res.status(200).json({ ok: false, log, erro: e.message }); }
-    }
-    if (body.acao === 'diag_cancel') {
-      if (!process.env.DIAG_KEY || req.headers['x-diag'] !== process.env.DIAG_KEY) return res.status(401).json({ error: 'no' });
-      const c = await zenCancelarVenda(Number(body.sid), 'teste tecnico');
-      const v = (await zenGet('/sale/sale', { q: 'id==' + body.sid, max: 1, limite: 1 }))[0];
-      return res.status(200).json({ c, status: v && v.status });
-    }
     if (body.acao === 'avisar') return res.status(200).json(await avisarAceite(ctx, body.token));
 
     const user = await autenticar(req);

@@ -134,6 +134,14 @@ function telOk(v) {
   if (d.length === 11 && d[2] !== '9') return false;
   return true;
 }
+function docOk(v) {
+  const d = String(v || '').replace(/\D/g, '');
+  if (/^(\d)+$/.test(d)) return false;
+  const dv = (base, pesos) => { const r = base.split('').reduce((a, n, i) => a + Number(n) * pesos[i], 0) % 11; return r < 2 ? 0 : 11 - r; };
+  if (d.length === 11) return dv(d.slice(0, 9), [10, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(d[9]) && dv(d.slice(0, 10), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(d[10]);
+  if (d.length === 14) return dv(d.slice(0, 12), [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(d[12]) && dv(d.slice(0, 13), [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(d[13]);
+  return false;
+}
 function soDigitos(v) { return String(v || '').replace(/\D/g, ''); }
 function r2(n) { return Math.round(n * 100) / 100; }
 function brl(n) { return Number(n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
@@ -195,6 +203,13 @@ async function aplicarEdicao(ctx, o, row, itens, avisos) {
 // ---------- criar ----------
 async function criar(ctx, user, b, edit) {
   if (Number(b.tabela) !== 1) throw erro(400, 'Orcamento disponivel apenas na tabela de Revendas');
+  if (!edit && b.req_id) {
+    const ja = (await sbGet(ctx, '/orcamentos?user_id=eq.' + user.id + '&req_id=eq.' + encodeURIComponent(String(b.req_id).slice(0, 80)) + '&select=id,codigo,token,validade_em,avisos,total_final,zen_sale_id,zen_status,zen_erro&limit=1', 'comercial'))[0];
+    if (ja) return { ok: true, duplicado: true, id: ja.id, codigo: ja.codigo, link: LINK_ORCAMENTO + ja.token, validade_em: ja.validade_em, avisos: ja.avisos || [], total_final: ja.total_final, zen: { ok: !!ja.zen_sale_id && ja.zen_status !== 'parcial', sale_id: ja.zen_sale_id, erro: ja.zen_erro } };
+  }
+  const off = b.offline && b.offline.criado_em && !isNaN(new Date(b.offline.criado_em)) ? b.offline : null;
+  const offOk = !!off && (Date.now() - new Date(off.criado_em).getTime()) <= 7 * 86400000;
+  const mudou = [];
   const uf = String(b.uf || '').toUpperCase();
   const seg = String(b.segmento || '');
   const cls = parseInt(b.classe);
@@ -205,7 +220,7 @@ async function criar(ctx, user, b, edit) {
   const cl = b.cliente || {};
   const cnpj = soDigitos(cl.cnpj);
   if (!cl.nome || !String(cl.nome).trim()) throw erro(400, 'Informe o nome do cliente');
-  if (cnpj.length !== 14 && cnpj.length !== 11) throw erro(400, 'CNPJ/CPF do cliente invalido');
+  if (!docOk(cnpj)) throw erro(400, 'CNPJ/CPF do cliente invalido: confira os numeros');
   if (!cl.email || !/^\S+@\S+\.\S+$/.test(cl.email)) throw erro(400, 'Informe o e-mail do cliente');
   if (!telOk(cl.celular)) throw erro(400, 'Celular do cliente invalido: use DDD + numero, ex.: (19) 99999-9999');
   if (b.vendedor && b.vendedor.telefone && !telOk(b.vendedor.telefone)) throw erro(400, 'Seu telefone esta invalido: use DDD + numero, ex.: (19) 99999-9999');
@@ -240,8 +255,12 @@ async function criar(ctx, user, b, edit) {
     if (scm === undefined) throw erro(400, 'Produto ' + i.codigo + ' sem preco para este segmento/classe');
     const tb = p.pv_sp * parseFloat(st.mult_4_icms) / (1 - parseFloat(st.mult_total) / 100);
     const unitTabela = r2(tb * scm);
-    const precoMan = Number(i.preco);
-    const unit = (precoMan > 0 && precoMan < 10000000) ? r2(precoMan) : r2(unitTabela * fator);
+    const baseAtual = r2(unitTabela * fator);
+    const precoIn = Number(i.preco);
+    const precoValido = precoIn > 0 && precoIn < 10000000;
+    let unit = baseAtual;
+    if (precoValido && i.manual !== false) unit = r2(precoIn);
+    else if (precoValido && off) { if (Math.abs(precoIn - baseAtual) > 0.01) mudou.push(p.modelo || p.codigo); if (offOk) unit = r2(precoIn); }
     const q = parseInt(i.qtd);
     totalTabela += unitTabela * q;
     const dk = ['ok', 'prev', 'sem', 'sem_info'].includes(i.disp) ? i.disp : 'sem_info';
@@ -257,6 +276,12 @@ async function criar(ctx, user, b, edit) {
 
   // avisos (so informativos: o time ve na lista, nao bloqueia)
   const avisos = [];
+  if (off) {
+    avisos.push('Orcamento criado sem internet em ' + new Date(off.criado_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + ': o estoque informado e o da ultima consulta do aparelho. Confira antes de confirmar o pedido.');
+    if (mudou.length) avisos.push(offOk
+      ? 'A tabela de precos mudou desde a criacao offline (' + mudou.length + (mudou.length > 1 ? ' itens' : ' item') + '); mantidos os precos que o cliente viu: ' + mudou.slice(0, 5).join(', ')
+      : 'Rascunho com mais de 7 dias: precos atualizados pela tabela de hoje (' + mudou.length + (mudou.length > 1 ? ' itens mudaram' : ' item mudou') + ')');
+  }
   if (seg === 'Física') {
     let ind = null;
     for (const [c, min] of CLASSES_VALOR_FISICA) {
@@ -301,7 +326,7 @@ async function criar(ctx, user, b, edit) {
     cliente_nome: String(cl.nome).trim(), cliente_fantasia: cl.fantasia || null, cliente_cnpj: cnpj, cliente_ie: cl.ie || null,
     cliente_email: String(cl.email).trim().toLowerCase(), cliente_celular: soDigitos(cl.celular), cliente_telefone: soDigitos(cl.telefone) || null,
     cliente_contato: cl.contato || null, cliente_cidade: cl.cidade || null, cliente_uf: cl.uf || uf, cliente_endereco: endereco,
-    zen_person_id: zenPerson,
+    zen_person_id: zenPerson, req_id: b.req_id ? String(b.req_id).slice(0, 80) : null,
     pagamento_tipo: avista ? 'avista' : 'boleto', parcelas, desconto_vista_pct: avista ? cond.vista : 0,
     frete_tipo: freteTipo, frete_valor: freteValor,
     observacoes: b.observacoes ? String(b.observacoes).slice(0, 1500) : null,
@@ -413,6 +438,7 @@ const CAMPOS_LISTA = 'id,codigo,token,cliente_nome,cliente_cnpj,total_itens,tota
 async function listar(ctx, user) {
   const rows = await sbGet(ctx, '/orcamentos?user_id=eq.' + user.id + '&ativo=eq.true&order=criado_em.desc&limit=150&select=' + CAMPOS_LISTA, 'comercial');
   let aviso_sync = null;
+  try { await zenRetomarSemCliente(ctx, rows); } catch (_) {}
   try { await sincronizarZen(ctx, rows); } catch (e) { aviso_sync = 'Nao foi possivel conferir o ZEN agora: ' + String(e.message).slice(0, 120); }
   const agora = Date.now();
   return {
@@ -435,6 +461,22 @@ async function listar(ctx, user) {
   };
 }
 
+// orcamento feito com cliente ainda nao cadastrado no ZEN: quando o cadastro aparecer, a venda e criada sozinha
+async function zenRetomarSemCliente(ctx, rows) {
+  const alvo = rows.filter(r => r.zen_status === 'sem_cliente_zen' && !r.zen_sale_id && ['enviado', 'visualizado', 'aceito_cliente'].includes(r.status)).slice(0, 5);
+  for (const r of alvo) {
+    const hc = (await sbGet(ctx, '/hub_clientes?cnpj=eq.' + r.cliente_cnpj + '&select=erp_cliente_id&limit=1', 'comercial'))[0];
+    if (!hc || !hc.erp_cliente_id) continue;
+    try {
+      const full = (await sbGet(ctx, '/orcamentos?id=eq.' + r.id + '&select=*', 'comercial'))[0];
+      const row = Object.assign({}, full, { zen_person_id: Number(hc.erp_cliente_id) });
+      const sale = await criarVendaZen(row, full, full.itens);
+      const patch = { zen_person_id: row.zen_person_id, zen_sale_id: sale.id, zen_status: sale.parcial ? 'parcial' : 'web_orcamento', zen_etapa: sale.parcial ? null : 'Orçamento · WEB orçamento', zen_erro: sale.parcial || null };
+      await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + r.id, patch);
+      Object.assign(r, patch);
+    } catch (e) { /* tenta de novo na proxima listagem */ }
+  }
+}
 async function sincronizarZen(ctx, rows) {
   const alvo = rows.filter(r => r.zen_sale_id && !r.arquivado && ['enviado', 'visualizado', 'aceito_cliente', 'aprovado'].includes(r.status)).slice(0, 60);
   if (!alvo.length) return;

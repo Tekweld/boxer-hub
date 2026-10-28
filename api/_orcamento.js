@@ -240,7 +240,8 @@ async function criar(ctx, user, b, edit) {
     if (scm === undefined) throw erro(400, 'Produto ' + i.codigo + ' sem preco para este segmento/classe');
     const tb = p.pv_sp * parseFloat(st.mult_4_icms) / (1 - parseFloat(st.mult_total) / 100);
     const unitTabela = r2(tb * scm);
-    const unit = r2(unitTabela * fator);
+    const precoMan = Number(i.preco);
+    const unit = (precoMan > 0 && precoMan < 10000000) ? r2(precoMan) : r2(unitTabela * fator);
     const q = parseInt(i.qtd);
     totalTabela += unitTabela * q;
     const dk = ['ok', 'prev', 'sem', 'sem_info'].includes(i.disp) ? i.disp : 'sem_info';
@@ -408,7 +409,7 @@ async function criarVendaZen(o, orc, itens) {
 // ---------- listar (reconcilia com o ZEN) ----------
 // O que o ZEN diz manda: venda removida/cancelada la encerra o orcamento aqui; venda movida para o
 // perfil "Venda padrao" (aprovada direto no ZEN) vira "aprovado"; itens/valores ajustados la voltam para ca.
-const CAMPOS_LISTA = 'id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,cliente_celular,cliente_email,avisos,pagamento_tipo,parcelas,uf,segmento,classe,observacoes,itens';
+const CAMPOS_LISTA = 'id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,cliente_celular,cliente_email,avisos,pagamento_tipo,parcelas,desconto_vista_pct,uf,segmento,classe,observacoes,itens';
 async function listar(ctx, user) {
   const rows = await sbGet(ctx, '/orcamentos?user_id=eq.' + user.id + '&ativo=eq.true&order=criado_em.desc&limit=150&select=' + CAMPOS_LISTA, 'comercial');
   let aviso_sync = null;
@@ -422,7 +423,11 @@ async function listar(ctx, user) {
         expirado: new Date(r.validade_em).getTime() < agora && ['enviado', 'visualizado'].includes(r.status),
         itens_resumo: (r.itens || []).map(i => i.qtd + 'x ' + (i.modelo || i.codigo)),
         cliente_celular: r.cliente_celular, cliente_email: r.cliente_email,
-        itens_edicao: (r.itens || []).map(i => ({ codigo: String(i.codigo), qtd: i.qtd }))
+        itens_edicao: (r.itens || []).map(i => {
+          const f = r.pagamento_tipo === 'avista' ? 1 - Number(r.desconto_vista_pct || 0) / 100 : 1;
+          const man = i.unit_tabela && Math.abs(Number(i.unit) - r2(Number(i.unit_tabela) * f)) > 0.01;
+          return Object.assign({ codigo: String(i.codigo), qtd: i.qtd }, man ? { preco: Number(i.unit) } : {});
+        })
       });
       delete o.itens;
       return o;

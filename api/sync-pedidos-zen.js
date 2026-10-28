@@ -448,6 +448,22 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Confirma o vinculo NF->venda->pedido Hub: sale.Sale tem campo `invoice`
+  // direto (achado via debug_schema). Se bater, da pra resolver pedido_id de
+  // qualquer NF/titulo so com o invoice.id que ja temos.
+  if (req.query?.debug_sale_por_invoice) {
+    const invoiceId = String(req.query.debug_sale_por_invoice);
+    try {
+      const vendas = await zenGet('/sale/sale', { q: 'invoice.id==' + invoiceId, max: 5 });
+      return res.status(200).json({
+        ok: true, debug: true, invoiceId,
+        vendas: vendas.map(v => ({ id: v.id, code: v.code, tags: v.tags, status: v.status }))
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   if (req.query?.debug_dfe) {
     const invoiceId = String(req.query.debug_dfe);
     try {

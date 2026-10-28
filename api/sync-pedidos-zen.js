@@ -318,6 +318,22 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Lista de reportTemplate filtrada por termo -- so metadado de template
+  // (id/code/description), nunca registro de cliente. Serve para achar qual
+  // template gera o DANFE/relatorio de NF sem adivinhar o id.
+  if (req.query?.debug_templates) {
+    const termo = String(req.query.debug_templates).toLowerCase();
+    try {
+      const tpls = await zenGet('/system/report/reportTemplate', { max: 200, limite: 1000 });
+      const achados = tpls
+        .filter(t => (t.code || '').toLowerCase().includes(termo) || (t.description || '').toLowerCase().includes(termo))
+        .map(t => ({ id: t.id, code: t.code, description: t.description }));
+      return res.status(200).json({ ok: true, debug: true, termo, total: tpls.length, achados });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   // Como um pedido REAL do time preenche o pagamento. Copiar a forma que o Zen
   // ja usa e mais seguro que montar pelo schema: mostra inclusive qual condicao
   // de pagamento e a usual.

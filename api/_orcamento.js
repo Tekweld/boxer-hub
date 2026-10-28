@@ -13,7 +13,9 @@
 //   cliente   {cnpj}                -> dados do cliente a partir do cadastro sincronizado do ZEN
 //   criar     {...}                 -> cria orcamento (+ venda PREPARING no ZEN; dry:true so simula)
 //   listar    {}                    -> orcamentos do usuario logado
-//   aprovar   {id}                  -> confirma o aceite e avanca a venda no ZEN
+//   aprovar   {id}                  -> confirma o aceite: a venda vira pedido (Venda padrao / WEB Pronta entrega)
+//   cancelar  {id}                  -> cancela o orcamento (e a venda no ZEN, se ainda for orcamento)
+//   arquivar  {id, arquivar}        -> tira da lista principal
 //   avisar    {token}               -> (publica) avisa o representante por e-mail que o cliente aceitou
 const { zenAuth, zenGet, ZEN_BASE } = require('./_zen');
 
@@ -43,33 +45,6 @@ module.exports = async function orcamento(req, res) {
   const ctx = { SB_SERVICE };
 
   try {
-    if (body.acao === 'diag_tmp') {
-      if (!process.env.DIAG_KEY || req.headers['x-diag'] !== process.env.DIAG_KEY) return res.status(401).json({ error: 'no' });
-      if (!/^\/(sale|system\/workflow|person|catalog)\//.test(String(body.path || ''))) return res.status(400).json({ error: 'path' });
-      if (body.method && body.method !== 'GET') {
-        const hh = await zenAuth();
-        const rr = await fetch(ZEN_BASE + body.path, { method: body.method, headers: hh, body: body.body === undefined ? undefined : JSON.stringify(body.body) });
-        const tt = await rr.text();
-        return res.status(200).json({ http: rr.status, resp: tt.slice(0, 6000) });
-      }
-      return res.status(200).json(await zenGet(body.path, { q: body.q || null, max: body.max || 20, limite: body.max || 20 }));
-    }
-    if (body.acao === 'diag_tmp2') {
-      if (!process.env.DIAG_KEY || req.headers['x-diag'] !== process.env.DIAG_KEY) return res.status(401).json({ error: 'no' });
-      const passos = [];
-      try { await zenAprovarVenda(Number(body.sid), passos); return res.status(200).json({ ok: true, passos }); }
-      catch (e) { return res.status(200).json({ ok: false, passos, erro: e.message }); }
-    }
-    if (body.acao === 'diag_tmp3') {
-      if (!process.env.DIAG_KEY || req.headers['x-diag'] !== process.env.DIAG_KEY) return res.status(401).json({ error: 'no' });
-      const o = { zen_person_id: 1001, vendedor_nome: 'TESTE Tecnico', vendedor_empresa: 'Empresa Teste', vendedor_telefone: '19971150215', vendedor_email: 't@t.com', cliente_contato: 'Fulano', cliente_email: 'c@c.com', cliente_celular: '19999999999', pagamento_tipo: 'avista', desconto_vista_pct: 3, parcelas: 1, frete_tipo: 'CIF', frete_valor: 0, observacoes: 'Observacao de teste do cliente' };
-      try {
-        const sale = await criarVendaZen(o, { codigo: 'ORC-TESTE' }, [{ codigo: '2005041', qtd: 1, unit: 100 }]);
-        const sid = sale.id;
-        if (body.cancelar) { const c = await zenCancelarVenda(sid, 'teste tecnico'); return res.status(200).json({ ok: true, sale, cancelamento: c }); }
-        return res.status(200).json({ ok: true, sale });
-      } catch (e) { return res.status(200).json({ ok: false, erro: e.message }); }
-    }
     if (body.acao === 'avisar') return res.status(200).json(await avisarAceite(ctx, body.token));
 
     const user = await autenticar(req);

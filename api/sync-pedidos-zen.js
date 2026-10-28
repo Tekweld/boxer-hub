@@ -366,6 +366,30 @@ module.exports = async function handler(req, res) {
   // pedir pro Andre ficar tentando no console do Zen, tenta tudo aqui e para
   // na primeira que funcionar. Resposta de erro do Zen e validacao de schema,
   // nunca registro de cliente -- seguro expor.
+  // Registro cru de UMA nota fiscal. Objetivo: parar de adivinhar o corpo de
+  // reportOpGenerate e checar se o Zen ja guarda o link do PDF/XML/DANFE no
+  // proprio registro (varios ERPs geram o documento uma vez, na autorizacao
+  // da SEFAZ, e so guardam o link -- nao regeram sob demanda). Sanitizado
+  // (removerComentariosSensiveis) porque outgoingInvoice expande company/
+  // person e pode arrastar o mesmo campo de comentario que vazou credencial
+  // nesta sessao via debug_amostra (ja removido).
+  if (req.query?.debug_invoice) {
+    const invoiceId = String(req.query.debug_invoice);
+    try {
+      const headers = await zenAuth();
+      const rr = await fetch(ZEN_BASE + '/fiscal/outgoingInvoice/' + invoiceId, { headers });
+      const corpoCru = rr.ok ? await rr.json() : await rr.text();
+      const corpo = removerComentariosSensiveis(corpoCru);
+      const campos = corpo && typeof corpo === 'object' ? Object.keys(corpo) : null;
+      const interessantes = campos
+        ? campos.filter((c) => /pdf|xml|danfe|url|path|key|protocol|authoriz|document|arquivo|anexo/i.test(c))
+        : null;
+      return res.status(200).json({ ok: rr.ok, debug: true, invoiceId, status: rr.status, campos, interessantes, corpo });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   if (req.query?.debug_tentar_relatorio) {
     const invoiceId = Number(req.query.debug_tentar_relatorio);
     const templateId = Number(req.query.debug_template_id) || 1119;

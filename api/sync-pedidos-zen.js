@@ -282,6 +282,25 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Definicao completa (schema, nao dado) de UM path da spec -- so para nao
+  // ter que adivinhar o corpo de uma operacao (ex: reportOpGenerate) depois
+  // de achar o nome dela via debug_spec. Spec e documentacao da API, nunca
+  // contem registro de cliente/empresa -- seguro por natureza.
+  if (req.query?.debug_rota) {
+    const rota = String(req.query.debug_rota);
+    try {
+      const rr = await fetch(ZEN_BASE + '/platform/openapi.json', { headers: await zenAuth() });
+      if (!rr.ok) return res.status(200).json({ ok: false, debug: true, status: rr.status });
+      const spec = await rr.json();
+      return res.status(200).json({
+        ok: true, debug: true, rota,
+        definicao: spec.paths?.[rota] || null
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   // Como um pedido REAL do time preenche o pagamento. Copiar a forma que o Zen
   // ja usa e mais seguro que montar pelo schema: mostra inclusive qual condicao
   // de pagamento e a usual.

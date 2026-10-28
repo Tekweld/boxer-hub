@@ -115,4 +115,28 @@ function normDoc(v) {
   return String(v || '').replace(/\D/g, '');
 }
 
-module.exports = { zenAuth, zenGet, rsql, normDoc, ZEN_BASE, ZEN_TENANT };
+/**
+ * Qualquer objeto do Zen que carregue uma empresa (venda.company, assetTag,
+ * creditLine, etc.) expande o Person dela inteiro — e o Person da propria
+ * Tekweld/Boxer guarda em `properties.comments` senha e dado bancario em
+ * texto puro. Vazou numa sessao de debug em 2026-10-28 (ver sync-pedidos-zen.js
+ * e sync-zen-clientes.js). Remove esse campo recursivamente de qualquer
+ * payload que v for exposto por um endpoint de diagnostico — nunca devolver
+ * um objeto cru do Zen sem passar por aqui antes.
+ */
+function removerComentariosSensiveis(valor, profundidade = 0) {
+  if (!valor || typeof valor !== 'object' || profundidade > 8) return valor;
+  if (Array.isArray(valor)) return valor.map(v => removerComentariosSensiveis(v, profundidade + 1));
+  const limpo = {};
+  for (const [chave, v] of Object.entries(valor)) {
+    if (chave === 'properties' && v && typeof v === 'object' && 'comments' in v) {
+      const { comments, ...resto } = v;
+      limpo[chave] = resto;
+      continue;
+    }
+    limpo[chave] = removerComentariosSensiveis(v, profundidade + 1);
+  }
+  return limpo;
+}
+
+module.exports = { zenAuth, zenGet, rsql, normDoc, removerComentariosSensiveis, ZEN_BASE, ZEN_TENANT };

@@ -8,7 +8,7 @@
 //
 // Chame com ?dry=1 para simular: le do Zen, reporta o que faria, nao grava nada.
 
-const { zenGet, normDoc } = require('./_zen');
+const { zenGet, normDoc, removerComentariosSensiveis } = require('./_zen');
 
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 
@@ -78,8 +78,21 @@ module.exports = async function handler(req, res) {
       const zenH = await require('./_zen').zenAuth();
       const out = {};
       if (dumpId) {
+        // So campos estruturais, nunca o objeto cru: Person carrega
+        // `properties.comments` que, para a empresa (ex: Tekweld, id 1001),
+        // guarda senha e dado bancario em texto puro -- vazou nesta sessao
+        // via debug_amostra (removido) ao expandir relacao company/person.
         const r = await fetch('https://api.zenerp.app.br/catalog/person/person/' + dumpId, { headers: zenH });
-        out.person = { ok: r.ok, http: r.status, raw: r.ok ? await r.json() : await r.text() };
+        const corpo = r.ok ? await r.json() : null;
+        out.person = {
+          ok: r.ok, http: r.status,
+          resumo: corpo ? {
+            id: corpo.id, documentNumber: corpo.documentNumber, name: corpo.name, fantasyName: corpo.fantasyName,
+            category1: corpo.category1?.description, category2: corpo.category2?.description,
+            city: corpo.city?.name, uf: corpo.city?.state?.code, tags: corpo.tags,
+            fiscalProfilePerson: corpo.fiscalProfilePerson?.description
+          } : (r.ok ? null : await r.text())
+        };
       }
       if (dumpCats) {
         // Endpoint /catalog/person/personCategory nao existe (404). Provar
@@ -217,7 +230,9 @@ module.exports = async function handler(req, res) {
       if (dumpCredit) {
         const r = await fetch('https://api.zenerp.app.br/financial/credit/creditLine?first=0&max=50', { headers: zenH });
         const raw = r.ok ? await r.json() : await r.text();
-        out.credit_lines = { ok: r.ok, http: r.status, raw };
+        // creditLine expande a empresa emissora (Tekweld) inteira -- remover
+        // properties.comments (senha/dado bancario, ver nota no sync-pedidos-zen.js).
+        out.credit_lines = { ok: r.ok, http: r.status, raw: removerComentariosSensiveis(raw) };
       }
       return res.status(200).json({ ok: true, ...out });
     } catch (e) {

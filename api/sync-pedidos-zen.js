@@ -14,7 +14,7 @@
 // Armadilha que ja custou tempo (ver bav-boxer/backend/app/zen_pedidos.py):
 // `workpiece.id` NAO e o id da venda. O caminho e sale.workpiece.id, e a volta
 // vem em workpiece.source, formatado '/sale/sale:<saleId>'.
-const { zenGet, zenAuth, ZEN_BASE } = require('./_zen');
+const { zenGet, zenAuth, ZEN_BASE, removerComentariosSensiveis } = require('./_zen');
 
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 
@@ -75,9 +75,9 @@ module.exports = async function handler(req, res) {
       const nos = await zenGet('/system/workflow/workpieceNode', { max: 5, limite: 5 });
       return res.status(200).json({
         ok: true, debug: true,
-        workpiece_exemplos: wps.slice(0, 3),
+        workpiece_exemplos: removerComentariosSensiveis(wps.slice(0, 3)),
         workpiece_campos: wps[0] ? Object.keys(wps[0]) : null,
-        no_exemplos: nos.slice(0, 3),
+        no_exemplos: removerComentariosSensiveis(nos.slice(0, 3)),
         no_campos: nos[0] ? Object.keys(nos[0]) : null
       });
     } catch (e) {
@@ -299,7 +299,10 @@ module.exports = async function handler(req, res) {
         sale_id: p.sale?.id,
         type: p.type,
         term: typeof p.term === 'object' ? { id: p.term?.id, code: p.term?.code, description: p.term?.description } : p.term,
-        assetTag: p.assetTag
+        // so o id -- assetTag.person pode expandir a empresa emissora (Tekweld)
+        // com `properties.comments` cheio de senha/dado bancario (vazou nesta
+        // sessao via debug_amostra, removido logo abaixo).
+        assetTag_id: p.assetTag?.id ?? null
       }));
       const contaTipo = enxuto.reduce((a, p) => { a[p.type || 'null'] = (a[p.type || 'null'] || 0) + 1; return a; }, {});
       const contaTermo = enxuto.reduce((a, p) => {
@@ -359,22 +362,12 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // Amostra crua de um recurso arbitrario para descobrir o formato antes de
-  // codar contra ele. Vale para qualquer entidade -- e mais barato que sondar.
-  if (req.query?.debug_amostra) {
-    const rec = String(req.query.debug_amostra);
-    try {
-      const linhas = await zenGet('/' + rec, { max: 5, limite: 5 });
-      return res.status(200).json({
-        ok: true, debug: true, recurso: rec,
-        total: linhas.length,
-        campos: linhas[0] ? Object.keys(linhas[0]) : null,
-        exemplos: linhas.slice(0, 3)
-      });
-    } catch (e) {
-      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 400) });
-    }
-  }
+  // debug_amostra REMOVIDO em 2026-10-28: dumpava o recurso cru para
+  // qualquer entidade pedida, sem filtrar campos. Numa sondagem de
+  // financial/receivableSettlementBillingTitle isso expandiu a empresa
+  // emissora (Tekweld, person id 1001) ate o campo `properties.comments`,
+  // que guarda senha e dado bancario em texto puro -- vazou na conversa.
+  // Nao recriar sem projetar campos explicitamente (como debug_pay faz).
 
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;
   if (debugSale) {
@@ -398,7 +391,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({
         ok: true, debug: true,
         venda_campos: venda ? Object.keys(venda) : null,
-        venda,
+        venda: removerComentariosSensiveis(venda),
         workpiece_id: wpId || null,
         nos,
         workpiece_por_source: nosPorSource

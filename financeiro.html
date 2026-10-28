@@ -82,12 +82,28 @@ tbody tr:hover{background:#f0f7ff}
       <button class="btn btn-outline" onclick="abrirNovaSolicitacaoGeral('Duvida sobre titulos')">Nova solicitacao</button>
     </div>
     <div id="kpiResumo"></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+      <div style="flex:1 1 220px"><label style="display:block;font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Buscar (numero, pedido, cliente)</label>
+        <input id="filtroTituloBusca" oninput="renderTitulos()" placeholder="Ex: 63524 ou HUB-2026-00004" style="width:100%"></div>
+      <div><label style="display:block;font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Vencimento de</label>
+        <input id="filtroTituloDe" type="date" onchange="renderTitulos()"></div>
+      <div><label style="display:block;font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Ate</label>
+        <input id="filtroTituloAte" type="date" onchange="renderTitulos()"></div>
+    </div>
     <div id="titulosList"></div>
   </div>
   <div class="panel-content hidden" id="tab-nfs">
     <div class="page-header">
       <h2 class="page-title">Notas Fiscais</h2>
       <button class="btn btn-outline" onclick="abrirNovaSolicitacaoGeral('Duvida sobre nota fiscal')">Nova solicitacao</button>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+      <div style="flex:1 1 220px"><label style="display:block;font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Buscar (numero NF, pedido, cliente)</label>
+        <input id="filtroNfBusca" oninput="renderNfs()" placeholder="Ex: 142042 ou HUB-2026-00004" style="width:100%"></div>
+      <div><label style="display:block;font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Emissao de</label>
+        <input id="filtroNfDe" type="date" onchange="renderNfs()"></div>
+      <div><label style="display:block;font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Ate</label>
+        <input id="filtroNfAte" type="date" onchange="renderNfs()"></div>
     </div>
     <div id="nfsList"></div>
   </div>
@@ -173,63 +189,114 @@ async function renderResumoTitulos(titulos, clienteId) {
   </div>`;
 }
 
+// Cache local das listas carregadas: filtro so re-renderiza (sem refetch),
+// digitar na busca responde na hora.
+let _titulosCache = [];
+let _nfsCache = [];
+
+function filtroTexto(valor, termo) {
+  return String(valor || '').toLowerCase().includes(termo);
+}
+
 async function loadTitulos() {
   const wrap = document.getElementById('titulosList');
   const clienteId = getClienteAtivo();
   try {
-    // hub_clientes(razao_social) embutido -- sem revenda selecionada,
+    // hub_clientes/hub_pedidos embutidos -- sem revenda selecionada,
     // staff/representante veem titulo de varios clientes de uma vez e
-    // precisam saber de qual e cada um.
-    let url = '/hub_titulos?ativo=eq.true&order=data_vencimento.asc&select=*,hub_clientes(razao_social)';
+    // precisam saber de qual e cada um; numero do pedido entra na busca.
+    let url = '/hub_titulos?ativo=eq.true&order=data_vencimento.asc&select=*,hub_clientes(razao_social),hub_pedidos(numero)';
     if (clienteId) url += '&cliente_id=eq.' + clienteId;
-    const titulos = await sb(url);
-    renderResumoTitulos(titulos, clienteId);
-    if (!titulos.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhum titulo encontrado</h3></div>'; return; }
-    wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Cliente</th><th>Numero</th><th>Vencimento</th><th>Valor</th><th>Aberto</th><th>Status</th><th>Atraso</th><th></th></tr></thead>
-      <tbody>${titulos.map(t => `<tr>
-        <td>${t.hub_clientes?.razao_social || '—'}</td>
-        <td>${t.numero_titulo || '—'}</td>
-        <td>${fmtData(t.data_vencimento)}</td>
-        <td>${fmtMoeda(t.valor_original)}</td>
-        <td>${fmtMoeda(t.valor_aberto)}</td>
-        <td><span class="status-badge status-${t.status}">${t.status}</span></td>
-        <td>${t.dias_atraso > 0 ? t.dias_atraso + 'd' : '—'}</td>
-        <td style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
-          ${t.url_boleto
-            ? `<a href="${t.url_boleto}" target="_blank" class="btn btn-primary btn-sm">Baixar boleto</a>`
-            : '<span style="font-size:11px;color:#a0aec0">Boleto nao integrado</span>'}
-          <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('titulo', '${t.id}', '${t.cliente_id}', 'Titulo ${(t.numero_titulo || '').replace(/'/g, "\\'")}')">Duvida</button>
-        </td>
-      </tr>`).join('')}</tbody>
-    </table></div>`;
-  } catch (e) { wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar titulos</h3></div>'; }
+    _titulosCache = await sb(url);
+    renderTitulos();
+  } catch (e) {
+    _titulosCache = [];
+    wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar titulos</h3></div>';
+  }
+}
+
+function renderTitulos() {
+  const wrap = document.getElementById('titulosList');
+  const clienteId = getClienteAtivo();
+  const termo = (document.getElementById('filtroTituloBusca')?.value || '').trim().toLowerCase();
+  const de = document.getElementById('filtroTituloDe')?.value || '';
+  const ate = document.getElementById('filtroTituloAte')?.value || '';
+
+  const titulos = _titulosCache.filter(t => {
+    if (de && (t.data_vencimento || '') < de) return false;
+    if (ate && (t.data_vencimento || '') > ate) return false;
+    if (!termo) return true;
+    return filtroTexto(t.numero_titulo, termo) || filtroTexto(t.hub_pedidos?.numero, termo) || filtroTexto(t.hub_clientes?.razao_social, termo);
+  });
+
+  renderResumoTitulos(titulos, clienteId);
+  if (!titulos.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhum titulo encontrado</h3></div>'; return; }
+  wrap.innerHTML = `<div style="overflow-x:auto"><table>
+    <thead><tr><th>Cliente</th><th>Numero</th><th>Pedido</th><th>Vencimento</th><th>Valor</th><th>Aberto</th><th>Status</th><th>Atraso</th><th></th></tr></thead>
+    <tbody>${titulos.map(t => `<tr>
+      <td>${t.hub_clientes?.razao_social || '—'}</td>
+      <td>${t.numero_titulo || '—'}</td>
+      <td>${t.hub_pedidos?.numero || '—'}</td>
+      <td>${fmtData(t.data_vencimento)}</td>
+      <td>${fmtMoeda(t.valor_original)}</td>
+      <td>${fmtMoeda(t.valor_aberto)}</td>
+      <td><span class="status-badge status-${t.status}">${t.status}</span></td>
+      <td>${t.dias_atraso > 0 ? t.dias_atraso + 'd' : '—'}</td>
+      <td style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+        ${t.url_boleto
+          ? `<a href="${t.url_boleto}" target="_blank" class="btn btn-primary btn-sm">Baixar boleto</a>`
+          : '<span style="font-size:11px;color:#a0aec0">Boleto nao integrado</span>'}
+        <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('titulo', '${t.id}', '${t.cliente_id}', 'Titulo ${(t.numero_titulo || '').replace(/'/g, "\\'")}')">Duvida</button>
+      </td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
 }
 
 async function loadNFs() {
   const wrap = document.getElementById('nfsList');
   const clienteId = getClienteAtivo();
   try {
-    let url = '/hub_notas_fiscais?ativo=eq.true&order=data_emissao.desc&select=*,hub_clientes(razao_social)';
+    let url = '/hub_notas_fiscais?ativo=eq.true&order=data_emissao.desc&select=*,hub_clientes(razao_social),hub_pedidos(numero)';
     if (clienteId) url += '&cliente_id=eq.' + clienteId;
-    const nfs = await sb(url);
-    if (!nfs.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhuma nota fiscal encontrada</h3></div>'; return; }
-    wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Cliente</th><th>Numero</th><th>Serie</th><th>Emissao</th><th>Valor</th><th>Chave</th><th></th></tr></thead>
-      <tbody>${nfs.map(n => `<tr>
-        <td>${n.hub_clientes?.razao_social || '—'}</td>
-        <td><strong>${n.numero_nf}</strong></td>
-        <td>${n.serie || '—'}</td>
-        <td>${fmtData(n.data_emissao)}</td>
-        <td>${fmtMoeda(n.valor_total)}</td>
-        <td style="font-size:10px;color:#718096;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${n.chave_acesso || ''}">${n.chave_acesso || '—'}</td>
-        <td style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
-          <button class="btn btn-primary btn-sm" id="baixarNf-${n.id}" onclick="baixarNF('${n.id}', '${String(n.numero_nf || n.id)}')">Baixar NF</button>
-          <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('nota_fiscal', '${n.id}', '${n.cliente_id}', 'NF ${String(n.numero_nf || '').replace(/'/g, "\\'")}')">Duvida</button>
-        </td>
-      </tr>`).join('')}</tbody>
-    </table></div>`;
-  } catch (e) { wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar notas</h3></div>'; }
+    _nfsCache = await sb(url);
+    renderNfs();
+  } catch (e) {
+    _nfsCache = [];
+    wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar notas</h3></div>';
+  }
+}
+
+function renderNfs() {
+  const wrap = document.getElementById('nfsList');
+  const termo = (document.getElementById('filtroNfBusca')?.value || '').trim().toLowerCase();
+  const de = document.getElementById('filtroNfDe')?.value || '';
+  const ate = document.getElementById('filtroNfAte')?.value || '';
+
+  const nfs = _nfsCache.filter(n => {
+    if (de && (n.data_emissao || '') < de) return false;
+    if (ate && (n.data_emissao || '') > ate) return false;
+    if (!termo) return true;
+    return filtroTexto(n.numero_nf, termo) || filtroTexto(n.hub_pedidos?.numero, termo)
+      || filtroTexto(n.hub_clientes?.razao_social, termo) || filtroTexto(n.chave_acesso, termo);
+  });
+
+  if (!nfs.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhuma nota fiscal encontrada</h3></div>'; return; }
+  wrap.innerHTML = `<div style="overflow-x:auto"><table>
+    <thead><tr><th>Cliente</th><th>Numero</th><th>Pedido</th><th>Serie</th><th>Emissao</th><th>Valor</th><th>Chave</th><th></th></tr></thead>
+    <tbody>${nfs.map(n => `<tr>
+      <td>${n.hub_clientes?.razao_social || '—'}</td>
+      <td><strong>${n.numero_nf}</strong></td>
+      <td>${n.hub_pedidos?.numero || '—'}</td>
+      <td>${n.serie || '—'}</td>
+      <td>${fmtData(n.data_emissao)}</td>
+      <td>${fmtMoeda(n.valor_total)}</td>
+      <td style="font-size:10px;color:#718096;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${n.chave_acesso || ''}">${n.chave_acesso || '—'}</td>
+      <td style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-primary btn-sm" id="baixarNf-${n.id}" onclick="baixarNF('${n.id}', '${String(n.numero_nf || n.id)}')">Baixar NF</button>
+        <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('nota_fiscal', '${n.id}', '${n.cliente_id}', 'NF ${String(n.numero_nf || '').replace(/'/g, "\\'")}')">Duvida</button>
+      </td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
 }
 
 // Gera o PDF na hora, direto do Zen (nunca um arquivo salvo no Hub) --

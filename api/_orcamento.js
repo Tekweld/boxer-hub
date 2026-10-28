@@ -63,6 +63,12 @@ module.exports = async function orcamento(req, res) {
         return res.status(200).json({ ok: true, log, status: v.status, perfil: v.saleProfile && v.saleProfile.code, total: v.totalValue, comments: v.properties && v.properties.comments, itens: its.map(i => i.quantity + 'x ' + i.productPacking.product.code + ' @' + i.unitValue), pagamentos: pg.map(p => p.term), etapa: wp.map(w => w.workflowNode && w.workflowNode.description), cancelamento: canc });
       } catch (e) { return res.status(200).json({ ok: false, log, erro: e.message }); }
     }
+    if (body.acao === 'diag_cancel') {
+      if (!process.env.DIAG_KEY || req.headers['x-diag'] !== process.env.DIAG_KEY) return res.status(401).json({ error: 'no' });
+      const c = await zenCancelarVenda(Number(body.sid), 'teste tecnico');
+      const v = (await zenGet('/sale/sale', { q: 'id==' + body.sid, max: 1, limite: 1 }))[0];
+      return res.status(200).json({ c, status: v && v.status });
+    }
     if (body.acao === 'avisar') return res.status(200).json(await avisarAceite(ctx, body.token));
 
     const user = await autenticar(req);
@@ -535,7 +541,11 @@ async function zenCancelarVenda(sid, motivo) {
   if (!['PREPARING', 'PREPARED'].includes(sale.status) || (sale.saleProfile && sale.saleProfile.id === ZEN_SALE_PROFILE_ID && sale.status === 'PREPARED')) {
     return { ok: false, obs: 'a venda ' + sid + ' ja esta em andamento no ZEN (' + sale.status + ') e foi mantida' };
   }
-  try { await zenCall('POST', '/sale/saleOpCancel/' + sid, { reason: motivo, code: 'OTHER' }); return { ok: true }; }
+  try {
+    // o ZEN so cancela venda PREPARED/APPROVED: a venda do orcamento (PREPARING) e finalizada antes
+    if (sale.status === 'PREPARING') await zenCall('POST', '/sale/saleOpPrepare/' + sid);
+    await zenCall('POST', '/sale/saleOpCancel/' + sid, { reason: motivo, code: 'OTHER' }); return { ok: true };
+  }
   catch (e) { return { ok: false, obs: 'nao foi possivel cancelar a venda no ZEN: ' + e.message.slice(0, 160) }; }
 }
 async function cancelar(ctx, user, id) {

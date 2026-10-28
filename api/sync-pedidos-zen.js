@@ -23,7 +23,9 @@ const { zenGet, zenAuth, ZEN_BASE, removerComentariosSensiveis } = require('./_z
 // `system.file.File`. Baixa o binario de um File pelo id.
 async function zenBaixarArquivo(fileId) {
   const headers = await zenAuth();
-  const r = await fetch(ZEN_BASE + '/system/file/fileOpReadContent/' + fileId, { headers });
+  // POST, nao GET -- confirmado na spec (debug_rota): opera como as demais
+  // Op* do Zen, sem corpo, so o id no path. GET devolve 405.
+  const r = await fetch(ZEN_BASE + '/system/file/fileOpReadContent/' + fileId, { method: 'POST', headers });
   if (!r.ok) throw new Error('fileOpReadContent ' + fileId + ' -> ' + r.status + ' ' + (await r.text()).slice(0, 300));
   const buf = Buffer.from(await r.arrayBuffer());
   const contentType = r.headers.get('content-type') || 'application/octet-stream';
@@ -413,6 +415,21 @@ module.exports = async function handler(req, res) {
   // o download de verdade: busca o registro pelo invoice.id, e baixa o File de
   // XML e de DANFE so para medir bytes/content-type -- nao devolve o binario
   // aqui (e so diagnostico).
+  // debug_dfe_amostra: lista algumas NFs com status PROCESSED de verdade --
+  // a 65501 usada nos testes anteriores deu ERROR, por isso fileDanfe vinha
+  // nulo. Serve so para achar um invoiceId bom para validar o caso de sucesso.
+  if (req.query?.debug_dfe_amostra) {
+    try {
+      const regs = await zenGet('/fiscal/br/dfeNfeProcOut', { q: 'status==PROCESSED', max: 10, limite: 10 });
+      return res.status(200).json({
+        ok: true, debug: true,
+        amostra: regs.map(r => ({ id: r.id, invoice_id: r.invoice?.id, status: r.status, chNFe: r.chNFe }))
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   if (req.query?.debug_dfe) {
     const invoiceId = String(req.query.debug_dfe);
     try {

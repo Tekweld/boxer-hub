@@ -8,7 +8,7 @@
 //
 // Chame com ?dry=1 para simular: le do Zen, reporta o que faria, nao grava nada.
 
-const { zenGet, normDoc, removerComentariosSensiveis } = require('./_zen');
+const { zenGet, normDoc, removerComentariosSensiveis, zenAuth, ZEN_BASE } = require('./_zen');
 
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 
@@ -554,19 +554,53 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
 
   if (!semLimite.length) return { verificados: atuais.length, sem_limite: 0, consulta_erros: consultaErros.length ? consultaErros : undefined };
 
-  // busca o limite real no Zen em lotes (RSQL OR por person.id)
+  // Limite real do Zen -- NAO vem de /financial/credit/creditLineItem (essa
+  // consulta nunca achava nada; foi assim que a Luitex pareceu "sem credito"
+  // quando na verdade tem R$500.000,00 registrados NO GRUPO). A fonte certa,
+  // confirmada contra producao no codigo do Monitor de Pedidos
+  // (src/lib/zen.ts::zenBuscarLimiteCredito): o cubo
+  // /financial/credit/dataSource/creditLineStats via
+  // POST /system/data/dataSourceOpRead, com PERSON_GROUP_IDS ou PERSON_IDS.
+  // Grupo tem PRIORIDADE sobre o da pessoa (mesma regra do Zen/Monitor):
+  // cliente cadastrado com personGroup pode ter o limite todo no grupo e
+  // nada na pessoa, como e o caso da Luitex (grupo 1139).
+  const grupoPorCliente = {};
+  for (const b of bodies) if (b.grupo_erp_id) grupoPorCliente[b.erp_cliente_id] = b.grupo_erp_id;
+
   const porId = {};
-  for (let i = 0; i < semLimite.length; i += 25) {
-    const lote = semLimite.slice(i, i + 25);
-    const q = lote.map(id => `person.id==${id}`).join(',');
+  const gruposResolvidos = {}; // grupoErpId -> valor (cache: nao pede o mesmo grupo 2x)
+
+  for (const erpId of semLimite) {
     try {
-      const itens = await zenGet('/financial/credit/creditLineItem', { q: `(${q})`, max: 50 });
-      for (const it of itens) {
-        const pid = String(it.person?.id ?? '');
-        if (pid) porId[pid] = (porId[pid] || 0) + (+it.value || 0);
+      const grupoId = grupoPorCliente[erpId];
+      let valor = null;
+
+      if (grupoId) {
+        if (!(grupoId in gruposResolvidos)) {
+          const linhas = await zenCreditoDataSource('/financial/credit/dataSource/creditLineStats', {
+            FLOW: 1, PERSON_GROUP_IDS: [grupoId]
+          });
+          gruposResolvidos[grupoId] = linhas
+            .map(l => l.personGroup_credit_balance)
+            .find(v => v !== null && v !== 'null' && v !== undefined);
+          gruposResolvidos[grupoId] = gruposResolvidos[grupoId] != null ? Number(gruposResolvidos[grupoId]) : null;
+        }
+        valor = gruposResolvidos[grupoId];
       }
+
+      if (valor === null || valor === undefined) {
+        const linhas = await zenCreditoDataSource('/financial/credit/dataSource/creditLineStats', {
+          FLOW: 1, PERSON_IDS: [Number(erpId)]
+        });
+        const achado = linhas
+          .map(l => l.person_credit_balance)
+          .find(v => v !== null && v !== 'null' && v !== undefined);
+        valor = achado != null ? Number(achado) : null;
+      }
+
+      if (valor !== null && valor > 0) porId[erpId] = valor;
     } catch (e) {
-      console.warn('[ZEN] falha ao buscar creditLineItem do lote', i, ':', e.message.slice(0, 120));
+      console.warn('[ZEN] falha ao buscar creditLineStats de', erpId, ':', e.message.slice(0, 150));
     }
   }
 
@@ -591,6 +625,18 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
     atualizados,
     consulta_erros: consultaErros.length ? consultaErros : undefined
   };
+}
+
+// /system/data/dataSourceOpRead e o cubo de dados do Zen -- diferente de
+// zenGet (que e RSQL contra um recurso REST comum). Confirmado contra
+// producao no codigo do Monitor de Pedidos (src/lib/zen.ts).
+async function zenCreditoDataSource(code, parameters) {
+  const headers = await zenAuth();
+  const r = await fetch(ZEN_BASE + '/system/data/dataSourceOpRead', {
+    method: 'POST', headers, body: JSON.stringify({ code, parameters })
+  });
+  if (!r.ok) throw new Error('dataSourceOpRead ' + code + ' -> ' + r.status + ' ' + (await r.text()).slice(0, 200));
+  return r.json();
 }
 
 function canalDe(p) {

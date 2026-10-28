@@ -370,19 +370,22 @@ module.exports = async function handler(req, res) {
     const invoiceId = Number(req.query.debug_tentar_relatorio);
     const templateId = Number(req.query.debug_template_id) || 1119;
     const headers = await zenAuth();
+    // Template (debug_template_detalhe=1119) nao tem dataSource proprio --
+    // "type":"HTML" e "properties":{} vazio -- entao o dataSource que liga
+    // o relatorio ao registro certo precisa vir NESTA chamada, nao
+    // `parameters` solto (que e so para variavel de template, tipo
+    // timbrado). ArgsDataSourceOpRead exige `code` (provavelmente o path
+    // do recurso) + `parameters` (o filtro, dentro do dataSource).
     const candidatos = [
-      { id: Number(invoiceId) },
-      { invoiceId: Number(invoiceId) },
-      { outgoingInvoiceId: Number(invoiceId) },
-      { entityId: Number(invoiceId) },
-      { entity: { id: Number(invoiceId) } },
-      { ids: [Number(invoiceId)] },
-      { filter: 'id==' + invoiceId }
+      { body: { id: templateId, format: 'PDF', dataSource: { code: '/fiscal/outgoingInvoice', parameters: { id: invoiceId } } } },
+      { body: { id: templateId, format: 'PDF', dataSource: { code: '/fiscal/outgoingInvoice', parameters: { q: 'id==' + invoiceId } } } },
+      { body: { id: templateId, format: 'PDF', dataSource: { code: 'fiscal.outgoingInvoice', parameters: { id: invoiceId } } } },
+      { body: { id: templateId, format: 'PDF', dataSource: { code: '/fiscal/outgoingInvoice/' + invoiceId, parameters: {} } } },
+      { body: { id: templateId, format: 'PDF', parameters: { id: invoiceId } } }
     ];
     const resultados = [];
     try {
-      for (const parameters of candidatos) {
-        const body = { id: templateId, format: 'PDF', parameters };
+      for (const { body } of candidatos) {
         const rr = await fetch(ZEN_BASE + '/system/report/reportOpGenerate', {
           method: 'POST', headers, body: JSON.stringify(body)
         });
@@ -396,8 +399,11 @@ module.exports = async function handler(req, res) {
         } else {
           resumo = { texto: (await rr.text()).slice(0, 300) };
         }
-        resultados.push({ parameters, status: rr.status, ok: rr.ok, resumo });
-        if (rr.ok) break;
+        // Nunca para no primeiro 200: o bug encontrado em 2026-10-28 foi
+        // exatamente isso -- "ok" com um PDF generico/vazio sempre do mesmo
+        // tamanho. Roda todos os candidatos e compara bytes para achar o que
+        // realmente muda com o invoiceId.
+        resultados.push({ tentativa: body, status: rr.status, ok: rr.ok, resumo });
       }
       return res.status(200).json({ ok: true, debug: true, invoiceId, templateId, resultados });
     } catch (e) {

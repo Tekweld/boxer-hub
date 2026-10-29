@@ -196,8 +196,11 @@ module.exports = async function handler(req, res) {
     const offset = Number(req.query.offset) || 0;
     const resultado = { processadas: 0, atualizadas: 0 };
     try {
+      // Alvo principal agora e nota_fiscal_id (hit-rate alto, toda venda tem
+      // NF); pedido_id e so bonus quando a venda veio do Hub (hoje raro --
+      // ver conversa de 2026-10-29, so 1 pedido real sincronizado ate agora).
       const rTit = await fetch(HUB_URL +
-        '/rest/v1/hub_titulos?pedido_id=is.null&erp_titulo_id=not.is.null&ativo=eq.true' +
+        '/rest/v1/hub_titulos?nota_fiscal_id=is.null&erp_titulo_id=not.is.null&ativo=eq.true' +
         '&select=id,erp_titulo_id&order=erp_titulo_id.asc&offset=' + offset + '&limit=' + PASSO,
         { headers: hubH('GET') });
       const lote = rTit.ok ? await rTit.json() : [];
@@ -212,12 +215,20 @@ module.exports = async function handler(req, res) {
         });
         const invoicePorTitulo = {};
         for (const rec of receivables) if (rec.invoice?.id) invoicePorTitulo[String(rec.id)] = String(rec.invoice.id);
-        const mapaPedido = await resolverPedidoIdsPorInvoice(Object.values(invoicePorTitulo), hubH);
+        const invoiceIds = Object.values(invoicePorTitulo);
+        const [mapaPedido, mapaNf] = await Promise.all([
+          resolverPedidoIdsPorInvoice(invoiceIds, hubH),
+          resolverNotaFiscalIdsPorInvoice(invoiceIds, hubH)
+        ]);
         const patches = await Promise.all(lote.map(async (t) => {
           const invId = invoicePorTitulo[t.erp_titulo_id];
-          if (!invId || !mapaPedido[invId]) return false;
+          if (!invId) return false;
+          const patch = {};
+          if (mapaPedido[invId]) patch.pedido_id = mapaPedido[invId];
+          if (mapaNf[invId]) patch.nota_fiscal_id = mapaNf[invId];
+          if (!Object.keys(patch).length) return false;
           const pr = await fetch(HUB_URL + '/rest/v1/hub_titulos?id=eq.' + t.id, {
-            method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify({ pedido_id: mapaPedido[invId] })
+            method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify(patch)
           });
           return pr.ok;
         }));
@@ -309,6 +320,25 @@ async function resolverPedidoIdsPorInvoice(invoiceIds, hubH) {
   return resultado;
 }
 
+// Resolve invoice.id (Zen) -> hub_notas_fiscais.id (uuid Hub), em lote.
+// Liga titulo -> NF de forma estavel (hub_titulos.nota_fiscal_id), sem
+// precisar reconsultar o Zen toda vez que a tela do financeiro abrir.
+async function resolverNotaFiscalIdsPorInvoice(invoiceIds, hubH) {
+  const ids = [...new Set(invoiceIds.filter(Boolean))];
+  if (!ids.length) return {};
+  const mapa = {};
+  for (let i = 0; i < ids.length; i += 200) {
+    const fatia = ids.slice(i, i + 200);
+    const q = fatia.map((id) => 'erp_nf_id.eq.' + id).join(',');
+    const resp = await fetch(
+      HUB_URL + '/rest/v1/hub_notas_fiscais?or=(' + q + ')&select=id,erp_nf_id',
+      { headers: hubH('GET') });
+    if (!resp.ok) continue;
+    for (const nf of (await resp.json())) mapa[nf.erp_nf_id] = nf.id;
+  }
+  return mapa;
+}
+
 // ---------- TITULOS ----------
 async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
   const r = { lidos: 0, aplicaveis: 0, sem_cliente_hub: 0, gravados: 0, erros: [] };
@@ -355,12 +385,18 @@ async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
   // resolverPedidoIdsPorInvoice) antes de gravar. Nem todo titulo tem
   // invoice (ex: antecipacao) -- fica null, esperado.
   try {
-    const mapaPedido = await resolverPedidoIdsPorInvoice(pendentes.map((p) => p.invoiceId), hubH);
+    const invoiceIds = pendentes.map((p) => p.invoiceId);
+    const [mapaPedido, mapaNf] = await Promise.all([
+      resolverPedidoIdsPorInvoice(invoiceIds, hubH),
+      resolverNotaFiscalIdsPorInvoice(invoiceIds, hubH)
+    ]);
     for (const p of pendentes) {
-      if (p.invoiceId && mapaPedido[p.invoiceId]) p.row.pedido_id = mapaPedido[p.invoiceId];
+      if (!p.invoiceId) continue;
+      if (mapaPedido[p.invoiceId]) p.row.pedido_id = mapaPedido[p.invoiceId];
+      if (mapaNf[p.invoiceId]) p.row.nota_fiscal_id = mapaNf[p.invoiceId];
     }
   } catch (e) {
-    r.erros.push({ etapa: 'resolver_pedido', detalhe: e.message.slice(0, 200) });
+    r.erros.push({ etapa: 'resolver_pedido_nf', detalhe: e.message.slice(0, 200) });
   }
   const bufferGravar = pendentes.map((p) => p.row);
 

@@ -147,30 +147,30 @@ module.exports = async function handler(req, res) {
   // Backfill de pedido_id/chave_acesso para linhas gravadas ANTES desta
   // correcao (2026-10-29: chave_acesso vinha de campo inexistente em
   // outgoingInvoice, e pedido_id nunca foi resolvido). Paginado com
-  // orcamento de tempo -- chamar de novo com os offsets devolvidos ate
-  // `concluido: true`. Titulo precisa reconsultar o Zen pelo erp_titulo_id
-  // porque o Hub nao guarda invoice.id, so a NF guarda.
-  if (req.query?.backfill_pedido) {
-    const t0b = Date.now();
-    const ORCAMENTO_BACKFILL_MS = 18000; // maxDuration da function e 60s (vercel.json) -- reserva boa margem
+  // orcamento de tempo -- chamar de novo com o offset devolvido ate
+  // `concluido: true`. NF e titulo em parametros SEPARADOS (nao
+  // `backfill_pedido` combinado): rodando junto, a NF sempre consumia o
+  // orcamento inteiro e o titulo ficava travado no mesmo offset, sempre
+  // "processadas: 0" -- bug visto ao vivo em 2026-10-29.
+  if (req.query?.backfill_pedido_nf) {
+    const ORCAMENTO_MS_BF = 45000;
     const PASSO = 50;
-    const offsetNf = Number(req.query.offset_nf) || 0;
-    const offsetTit = Number(req.query.offset_titulo) || 0;
-    const resultado = { nf: { processadas: 0, atualizadas: 0 }, titulo: { processadas: 0, atualizadas: 0 } };
+    const offset = Number(req.query.offset) || 0;
+    const resultado = { processadas: 0, atualizadas: 0 };
     try {
       const rNf = await fetch(HUB_URL +
         '/rest/v1/hub_notas_fiscais?pedido_id=is.null&erp_nf_id=not.is.null&ativo=eq.true' +
-        '&select=id,erp_nf_id&order=erp_nf_id.asc&offset=' + offsetNf + '&limit=' + PASSO,
+        '&select=id,erp_nf_id&order=erp_nf_id.asc&offset=' + offset + '&limit=' + PASSO,
         { headers: hubH('GET') });
-      const lotesNf = rNf.ok ? await rNf.json() : [];
-      if (lotesNf.length) {
-        resultado.nf.processadas = lotesNf.length;
-        const invoiceIds = lotesNf.map((n) => n.erp_nf_id);
+      const lote = rNf.ok ? await rNf.json() : [];
+      if (lote.length) {
+        resultado.processadas = lote.length;
+        const invoiceIds = lote.map((n) => n.erp_nf_id);
         const [mapaDfe, mapaPedido] = await Promise.all([
           zenBuscarDfeInfoPorInvoiceIds(invoiceIds),
           resolverPedidoIdsPorInvoice(invoiceIds, hubH)
         ]);
-        const patchesNf = await Promise.all(lotesNf.map(async (n) => {
+        const patches = await Promise.all(lote.map(async (n) => {
           const patch = {};
           const chave = mapaDfe[n.erp_nf_id]?.chNFe;
           if (chave) patch.chave_acesso = chave.slice(0, 50);
@@ -181,41 +181,51 @@ module.exports = async function handler(req, res) {
           });
           return pr.ok;
         }));
-        resultado.nf.atualizadas = patchesNf.filter(Boolean).length;
+        resultado.atualizadas = patches.filter(Boolean).length;
       }
-      resultado.nf.proximo_offset = lotesNf.length < PASSO ? null : offsetNf + PASSO;
+      resultado.proximo_offset = lote.length < PASSO ? null : offset + PASSO;
+      resultado.concluido = resultado.proximo_offset === null;
+      return res.status(200).json({ ok: true, ...resultado });
+    } catch (e) {
+      return res.status(500).json({ ok: false, erro: e.message, ...resultado });
+    }
+  }
 
-      if (Date.now() - t0b < ORCAMENTO_BACKFILL_MS) {
-        const rTit = await fetch(HUB_URL +
-          '/rest/v1/hub_titulos?pedido_id=is.null&erp_titulo_id=not.is.null&ativo=eq.true' +
-          '&select=id,erp_titulo_id&order=erp_titulo_id.asc&offset=' + offsetTit + '&limit=' + PASSO,
-          { headers: hubH('GET') });
-        const lotesTit = rTit.ok ? await rTit.json() : [];
-        if (lotesTit.length) {
-          resultado.titulo.processadas = lotesTit.length;
-          const receivables = await zenGet('/financial/receivable', {
-            q: '(' + lotesTit.map((t) => 'id==' + t.erp_titulo_id).join(',') + ')',
-            max: lotesTit.length, limite: lotesTit.length
+  if (req.query?.backfill_pedido_titulo) {
+    const PASSO = 50;
+    const offset = Number(req.query.offset) || 0;
+    const resultado = { processadas: 0, atualizadas: 0 };
+    try {
+      const rTit = await fetch(HUB_URL +
+        '/rest/v1/hub_titulos?pedido_id=is.null&erp_titulo_id=not.is.null&ativo=eq.true' +
+        '&select=id,erp_titulo_id&order=erp_titulo_id.asc&offset=' + offset + '&limit=' + PASSO,
+        { headers: hubH('GET') });
+      const lote = rTit.ok ? await rTit.json() : [];
+      if (lote.length) {
+        resultado.processadas = lote.length;
+        // Titulo nao guarda invoice.id no Hub -- reconsulta o Zen pelo
+        // erp_titulo_id para pegar o invoice.id de novo (financial.Receivable
+        // tem o campo `invoice`, confirmado via debug_schema em 2026-10-29).
+        const receivables = await zenGet('/financial/receivable', {
+          q: '(' + lote.map((t) => 'id==' + t.erp_titulo_id).join(',') + ')',
+          max: lote.length, limite: lote.length
+        });
+        const invoicePorTitulo = {};
+        for (const rec of receivables) if (rec.invoice?.id) invoicePorTitulo[String(rec.id)] = String(rec.invoice.id);
+        const mapaPedido = await resolverPedidoIdsPorInvoice(Object.values(invoicePorTitulo), hubH);
+        const patches = await Promise.all(lote.map(async (t) => {
+          const invId = invoicePorTitulo[t.erp_titulo_id];
+          if (!invId || !mapaPedido[invId]) return false;
+          const pr = await fetch(HUB_URL + '/rest/v1/hub_titulos?id=eq.' + t.id, {
+            method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify({ pedido_id: mapaPedido[invId] })
           });
-          const invoicePorTitulo = {};
-          for (const rec of receivables) if (rec.invoice?.id) invoicePorTitulo[String(rec.id)] = String(rec.invoice.id);
-          const mapaPedido = await resolverPedidoIdsPorInvoice(Object.values(invoicePorTitulo), hubH);
-          const patchesTit = await Promise.all(lotesTit.map(async (t) => {
-            const invId = invoicePorTitulo[t.erp_titulo_id];
-            if (!invId || !mapaPedido[invId]) return false;
-            const pr = await fetch(HUB_URL + '/rest/v1/hub_titulos?id=eq.' + t.id, {
-              method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify({ pedido_id: mapaPedido[invId] })
-            });
-            return pr.ok;
-          }));
-          resultado.titulo.atualizadas = patchesTit.filter(Boolean).length;
-        }
-        resultado.titulo.proximo_offset = lotesTit.length < PASSO ? null : offsetTit + PASSO;
-      } else {
-        resultado.titulo.proximo_offset = offsetTit;
+          return pr.ok;
+        }));
+        resultado.atualizadas = patches.filter(Boolean).length;
+        resultado.sem_invoice = lote.length - Object.keys(invoicePorTitulo).length;
       }
-
-      resultado.concluido = resultado.nf.proximo_offset === null && resultado.titulo.proximo_offset === null;
+      resultado.proximo_offset = lote.length < PASSO ? null : offset + PASSO;
+      resultado.concluido = resultado.proximo_offset === null;
       return res.status(200).json({ ok: true, ...resultado });
     } catch (e) {
       return res.status(500).json({ ok: false, erro: e.message, ...resultado });

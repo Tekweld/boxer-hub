@@ -22,7 +22,7 @@
 //
 // Padrao de exposicao igual ao sync-enderecos: paginado, orcamento de tempo,
 // devolve `proximo_offset` para encadear rodadas pela GitHub Actions.
-const { zenGet, zenBuscarDfeNfeProcOut, zenBaixarArquivo } = require('./_zen');
+const { zenGet, zenBuscarDfeNfeProcOut, zenBaixarArquivo, zenBuscarVendasPorInvoiceIds, zenBuscarDfeInfoPorInvoiceIds } = require('./_zen');
 
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 const ORCAMENTO_MS = 45000;
@@ -144,6 +144,82 @@ module.exports = async function handler(req, res) {
     return res.status(401).json({ error: 'Autenticacao necessaria' });
   }
 
+  // Backfill de pedido_id/chave_acesso para linhas gravadas ANTES desta
+  // correcao (2026-10-29: chave_acesso vinha de campo inexistente em
+  // outgoingInvoice, e pedido_id nunca foi resolvido). Paginado com
+  // orcamento de tempo -- chamar de novo com os offsets devolvidos ate
+  // `concluido: true`. Titulo precisa reconsultar o Zen pelo erp_titulo_id
+  // porque o Hub nao guarda invoice.id, so a NF guarda.
+  if (req.query?.backfill_pedido) {
+    const t0b = Date.now();
+    const ORCAMENTO_BACKFILL_MS = 25000;
+    const PASSO = 150;
+    const offsetNf = Number(req.query.offset_nf) || 0;
+    const offsetTit = Number(req.query.offset_titulo) || 0;
+    const resultado = { nf: { processadas: 0, atualizadas: 0 }, titulo: { processadas: 0, atualizadas: 0 } };
+    try {
+      const rNf = await fetch(HUB_URL +
+        '/rest/v1/hub_notas_fiscais?pedido_id=is.null&erp_nf_id=not.is.null&ativo=eq.true' +
+        '&select=id,erp_nf_id&order=erp_nf_id.asc&offset=' + offsetNf + '&limit=' + PASSO,
+        { headers: hubH('GET') });
+      const lotesNf = rNf.ok ? await rNf.json() : [];
+      if (lotesNf.length) {
+        resultado.nf.processadas = lotesNf.length;
+        const invoiceIds = lotesNf.map((n) => n.erp_nf_id);
+        const [mapaDfe, mapaPedido] = await Promise.all([
+          zenBuscarDfeInfoPorInvoiceIds(invoiceIds),
+          resolverPedidoIdsPorInvoice(invoiceIds, hubH)
+        ]);
+        for (const n of lotesNf) {
+          const patch = {};
+          const chave = mapaDfe[n.erp_nf_id]?.chNFe;
+          if (chave) patch.chave_acesso = chave.slice(0, 50);
+          if (mapaPedido[n.erp_nf_id]) patch.pedido_id = mapaPedido[n.erp_nf_id];
+          if (!Object.keys(patch).length) continue;
+          const pr = await fetch(HUB_URL + '/rest/v1/hub_notas_fiscais?id=eq.' + n.id, {
+            method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify(patch)
+          });
+          if (pr.ok) resultado.nf.atualizadas++;
+        }
+      }
+      resultado.nf.proximo_offset = lotesNf.length < PASSO ? null : offsetNf + PASSO;
+
+      if (Date.now() - t0b < ORCAMENTO_BACKFILL_MS) {
+        const rTit = await fetch(HUB_URL +
+          '/rest/v1/hub_titulos?pedido_id=is.null&erp_titulo_id=not.is.null&ativo=eq.true' +
+          '&select=id,erp_titulo_id&order=erp_titulo_id.asc&offset=' + offsetTit + '&limit=' + PASSO,
+          { headers: hubH('GET') });
+        const lotesTit = rTit.ok ? await rTit.json() : [];
+        if (lotesTit.length) {
+          resultado.titulo.processadas = lotesTit.length;
+          const receivables = await zenGet('/financial/receivable', {
+            q: '(' + lotesTit.map((t) => 'id==' + t.erp_titulo_id).join(',') + ')',
+            max: lotesTit.length, limite: lotesTit.length
+          });
+          const invoicePorTitulo = {};
+          for (const rec of receivables) if (rec.invoice?.id) invoicePorTitulo[String(rec.id)] = String(rec.invoice.id);
+          const mapaPedido = await resolverPedidoIdsPorInvoice(Object.values(invoicePorTitulo), hubH);
+          for (const t of lotesTit) {
+            const invId = invoicePorTitulo[t.erp_titulo_id];
+            if (!invId || !mapaPedido[invId]) continue;
+            const pr = await fetch(HUB_URL + '/rest/v1/hub_titulos?id=eq.' + t.id, {
+              method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify({ pedido_id: mapaPedido[invId] })
+            });
+            if (pr.ok) resultado.titulo.atualizadas++;
+          }
+        }
+        resultado.titulo.proximo_offset = lotesTit.length < PASSO ? null : offsetTit + PASSO;
+      } else {
+        resultado.titulo.proximo_offset = offsetTit;
+      }
+
+      resultado.concluido = resultado.nf.proximo_offset === null && resultado.titulo.proximo_offset === null;
+      return res.status(200).json({ ok: true, ...resultado });
+    } catch (e) {
+      return res.status(500).json({ ok: false, erro: e.message, ...resultado });
+    }
+  }
+
   const t0 = Date.now();
   const alvo = String(req.query?.alvo || 'ambos'); // 'titulos' | 'notas' | 'ambos'
   const dryRun = req.query?.dry === '1';
@@ -193,12 +269,40 @@ async function carregarMapaClientes(hubH) {
   return idHub;
 }
 
+// Resolve invoice.id (Zen) -> hub_pedidos.id (uuid Hub), em lote. Usado por
+// titulo e NF -- os dois so guardam invoice.id, e sale.Sale tem o campo
+// `invoice` direto (achado/confirmado em 2026-10-29: venda 51705 <->
+// invoice 74838). Venda sem origem no Hub (sem erp_pedido_id gravado)
+// simplesmente nao aparece no mapa -- pedido_id fica null, esperado.
+async function resolverPedidoIdsPorInvoice(invoiceIds, hubH) {
+  const mapaSale = await zenBuscarVendasPorInvoiceIds(invoiceIds);
+  const saleIds = [...new Set(Object.values(mapaSale))];
+  if (!saleIds.length) return {};
+
+  const mapaPedido = {};
+  for (let i = 0; i < saleIds.length; i += 200) {
+    const fatia = saleIds.slice(i, i + 200);
+    const q = fatia.map((id) => 'erp_pedido_id.eq.' + id).join(',');
+    const resp = await fetch(
+      HUB_URL + '/rest/v1/hub_pedidos?or=(' + q + ')&select=id,erp_pedido_id',
+      { headers: hubH('GET') });
+    if (!resp.ok) continue;
+    for (const p of (await resp.json())) mapaPedido[p.erp_pedido_id] = p.id;
+  }
+
+  const resultado = {};
+  for (const [invoiceId, saleId] of Object.entries(mapaSale)) {
+    if (mapaPedido[saleId]) resultado[invoiceId] = mapaPedido[saleId];
+  }
+  return resultado;
+}
+
 // ---------- TITULOS ----------
 async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
   const r = { lidos: 0, aplicaveis: 0, sem_cliente_hub: 0, gravados: 0, erros: [] };
 
   let cursor = desde ? Number(desde) : 0;
-  const bufferGravar = [];
+  const pendentes = []; // { row, invoiceId } -- pedido_id resolvido em lote no final
 
   while (Date.now() - t0 < ORCAMENTO_MS) {
     // Zen tem bug conhecido de paginacao com filtro complexo -- a defesa usada
@@ -227,13 +331,26 @@ async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
       const clienteId = idHub[String(tit.person?.id)];
       if (!clienteId) { r.sem_cliente_hub++; continue; }
       r.aplicaveis++;
-      bufferGravar.push(mapearTitulo(tit, clienteId, hoje));
+      pendentes.push({ row: mapearTitulo(tit, clienteId, hoje), invoiceId: tit.invoice?.id ? String(tit.invoice.id) : null });
     }
 
     if (lote.length < PASSO_ZEN) { r.concluido = true; break; }
   }
 
   r.proximo_desde = r.concluido ? null : cursor;
+
+  // Resolve pedido_id em lote (titulo so guarda invoice.id -- ver
+  // resolverPedidoIdsPorInvoice) antes de gravar. Nem todo titulo tem
+  // invoice (ex: antecipacao) -- fica null, esperado.
+  try {
+    const mapaPedido = await resolverPedidoIdsPorInvoice(pendentes.map((p) => p.invoiceId), hubH);
+    for (const p of pendentes) {
+      if (p.invoiceId && mapaPedido[p.invoiceId]) p.row.pedido_id = mapaPedido[p.invoiceId];
+    }
+  } catch (e) {
+    r.erros.push({ etapa: 'resolver_pedido', detalhe: e.message.slice(0, 200) });
+  }
+  const bufferGravar = pendentes.map((p) => p.row);
 
   if (!dryRun && bufferGravar.length) {
     for (let i = 0; i < bufferGravar.length; i += 200) {
@@ -358,7 +475,6 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
         erp_nf_id: String(nf.id),
         numero_nf: String(nf.number || nf.code || nf.id).slice(0, 20),
         serie: (nf.series || '').toString().slice(0, 5) || null,
-        chave_acesso: (nf.accessKey || nf.key || '').slice(0, 50) || null,
         data_emissao: (nf.issueDate || nf.date || '').slice(0, 10) || null,
         valor_total: Number(nf.totalValue) || 0,
         status: nf.status === 'CANCELED' ? 'cancelada' : 'ativa',
@@ -370,6 +486,26 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
   }
 
   r.proximo_desde = r.concluido ? null : cursor;
+
+  // chave_acesso e pedido_id em lote. outgoingInvoice NAO tem accessKey/key
+  // (codigo antigo assumia isso -- sempre vinha null); a chave de verdade
+  // mora no documento fiscal (fiscal.br.DfeNfeProcOut.chNFe), mesma fonte do
+  // download real de PDF/XML. pedido_id vem de sale.invoice (ver
+  // resolverPedidoIdsPorInvoice) -- NF de venda fora do Hub fica sem pedido,
+  // esperado.
+  try {
+    const invoiceIds = buffer.map((b) => b.erp_nf_id);
+    const [mapaDfe, mapaPedido] = await Promise.all([
+      zenBuscarDfeInfoPorInvoiceIds(invoiceIds),
+      resolverPedidoIdsPorInvoice(invoiceIds, hubH)
+    ]);
+    for (const b of buffer) {
+      b.chave_acesso = (mapaDfe[b.erp_nf_id]?.chNFe || '').slice(0, 50) || null;
+      if (mapaPedido[b.erp_nf_id]) b.pedido_id = mapaPedido[b.erp_nf_id];
+    }
+  } catch (e) {
+    r.erros.push({ etapa: 'resolver_chave_pedido', detalhe: e.message.slice(0, 200) });
+  }
 
   if (!dryRun && buffer.length) {
     for (let i = 0; i < buffer.length; i += 200) {

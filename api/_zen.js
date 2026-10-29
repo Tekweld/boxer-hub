@@ -169,7 +169,52 @@ async function zenBaixarArquivo(fileId) {
   return buf;
 }
 
+/**
+ * Resolve, em lote, invoice.id -> sale.id. `sale.Sale` tem campo `invoice`
+ * direto (achado via debug_schema em 2026-10-29, confirmado com dado real:
+ * venda 51705 <-> invoice 74838). E assim que NF e titulo (que so guardam
+ * invoice.id) linkam de volta ao pedido do Hub (hub_pedidos.erp_pedido_id =
+ * String(sale.id)). RSQL nao documenta "in" -- agrupa por OR em chunks para
+ * nao estourar o tamanho da URL. Venda sem tag 'HUB,...' (nao veio do Hub)
+ * simplesmente nao da match em hub_pedidos depois -- comportamento esperado,
+ * nao erro.
+ */
+async function zenBuscarVendasPorInvoiceIds(invoiceIds, tamanhoChunk = 40) {
+  const ids = [...new Set(invoiceIds.filter(Boolean).map(String))];
+  const mapa = {};
+  for (let i = 0; i < ids.length; i += tamanhoChunk) {
+    const fatia = ids.slice(i, i + tamanhoChunk);
+    const q = '(' + fatia.map((id) => 'invoice.id==' + id).join(',') + ')';
+    const vendas = await zenGet('/sale/sale', { q, max: fatia.length, limite: fatia.length });
+    for (const v of vendas) {
+      if (v.invoice?.id) mapa[String(v.invoice.id)] = String(v.id);
+    }
+  }
+  return mapa;
+}
+
+/**
+ * Resolve, em lote, invoice.id -> {chNFe, status} via fiscal.br.DfeNfeProcOut.
+ * Serve para preencher chave_acesso -- outgoingInvoice (fiscal.OutgoingInvoice)
+ * NAO tem campo accessKey/key (o codigo antigo assumia isso e chave_acesso
+ * sempre vinha null; a chave de verdade mora no documento fiscal, nao na
+ * nota em si -- ver zenBuscarDfeNfeProcOut).
+ */
+async function zenBuscarDfeInfoPorInvoiceIds(invoiceIds, tamanhoChunk = 40) {
+  const ids = [...new Set(invoiceIds.filter(Boolean).map(String))];
+  const mapa = {};
+  for (let i = 0; i < ids.length; i += tamanhoChunk) {
+    const fatia = ids.slice(i, i + tamanhoChunk);
+    const q = '(' + fatia.map((id) => 'invoice.id==' + id).join(',') + ')';
+    const regs = await zenGet('/fiscal/br/dfeNfeProcOut', { q, max: fatia.length, limite: fatia.length });
+    for (const d of regs) {
+      if (d.invoice?.id) mapa[String(d.invoice.id)] = { chNFe: d.chNFe || null, status: d.status || null };
+    }
+  }
+  return mapa;
+}
+
 module.exports = {
   zenAuth, zenGet, rsql, normDoc, removerComentariosSensiveis, ZEN_BASE, ZEN_TENANT,
-  zenBuscarDfeNfeProcOut, zenBaixarArquivo
+  zenBuscarDfeNfeProcOut, zenBaixarArquivo, zenBuscarVendasPorInvoiceIds, zenBuscarDfeInfoPorInvoiceIds
 };

@@ -152,8 +152,8 @@ module.exports = async function handler(req, res) {
   // porque o Hub nao guarda invoice.id, so a NF guarda.
   if (req.query?.backfill_pedido) {
     const t0b = Date.now();
-    const ORCAMENTO_BACKFILL_MS = 25000;
-    const PASSO = 150;
+    const ORCAMENTO_BACKFILL_MS = 18000; // maxDuration da function e 60s (vercel.json) -- reserva boa margem
+    const PASSO = 50;
     const offsetNf = Number(req.query.offset_nf) || 0;
     const offsetTit = Number(req.query.offset_titulo) || 0;
     const resultado = { nf: { processadas: 0, atualizadas: 0 }, titulo: { processadas: 0, atualizadas: 0 } };
@@ -170,17 +170,18 @@ module.exports = async function handler(req, res) {
           zenBuscarDfeInfoPorInvoiceIds(invoiceIds),
           resolverPedidoIdsPorInvoice(invoiceIds, hubH)
         ]);
-        for (const n of lotesNf) {
+        const patchesNf = await Promise.all(lotesNf.map(async (n) => {
           const patch = {};
           const chave = mapaDfe[n.erp_nf_id]?.chNFe;
           if (chave) patch.chave_acesso = chave.slice(0, 50);
           if (mapaPedido[n.erp_nf_id]) patch.pedido_id = mapaPedido[n.erp_nf_id];
-          if (!Object.keys(patch).length) continue;
+          if (!Object.keys(patch).length) return false;
           const pr = await fetch(HUB_URL + '/rest/v1/hub_notas_fiscais?id=eq.' + n.id, {
             method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify(patch)
           });
-          if (pr.ok) resultado.nf.atualizadas++;
-        }
+          return pr.ok;
+        }));
+        resultado.nf.atualizadas = patchesNf.filter(Boolean).length;
       }
       resultado.nf.proximo_offset = lotesNf.length < PASSO ? null : offsetNf + PASSO;
 
@@ -199,14 +200,15 @@ module.exports = async function handler(req, res) {
           const invoicePorTitulo = {};
           for (const rec of receivables) if (rec.invoice?.id) invoicePorTitulo[String(rec.id)] = String(rec.invoice.id);
           const mapaPedido = await resolverPedidoIdsPorInvoice(Object.values(invoicePorTitulo), hubH);
-          for (const t of lotesTit) {
+          const patchesTit = await Promise.all(lotesTit.map(async (t) => {
             const invId = invoicePorTitulo[t.erp_titulo_id];
-            if (!invId || !mapaPedido[invId]) continue;
+            if (!invId || !mapaPedido[invId]) return false;
             const pr = await fetch(HUB_URL + '/rest/v1/hub_titulos?id=eq.' + t.id, {
               method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify({ pedido_id: mapaPedido[invId] })
             });
-            if (pr.ok) resultado.titulo.atualizadas++;
-          }
+            return pr.ok;
+          }));
+          resultado.titulo.atualizadas = patchesTit.filter(Boolean).length;
         }
         resultado.titulo.proximo_offset = lotesTit.length < PASSO ? null : offsetTit + PASSO;
       } else {

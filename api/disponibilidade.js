@@ -245,6 +245,24 @@ async function acessoTabela(req, res) {
         if (Array.isArray(u) && u[0]) motivo = !u[0].ativo ? 'revogado' : 'expirado';
         else if (await contar('tabela_solicitacoes?select=id&email=eq.' + encodeURIComponent(email) + '&status=eq.pendente') > 0) motivo = 'pendente';
         await logEvento('codigo_negado', email, { ip, motivo });
+        // avisa os admins (no maximo 1 e-mail por pessoa a cada 24h) de que alguem sem acesso tentou entrar
+        if (motivo !== 'pendente') {
+          try {
+            const ja = await contar('tabela_acessos_log?select=id&email=eq.' + encodeURIComponent(email) + '&evento=eq.aviso_admin_acesso&criado_em=gte.' + encodeURIComponent(new Date(Date.now() - 24 * 3600 * 1000).toISOString()));
+            if (!ja) {
+              const admins = await fetch(HUB_URL + '/rest/v1/rpc/tabela_emails_admin', { method: 'POST', headers: H, body: '{}' }).then(r => r.json()).catch(() => []);
+              if (Array.isArray(admins) && admins.length) {
+                const frase = { nao_cadastrado: 'tentou entrar na Tabela de Preços, mas <strong>não está cadastrado</strong>.', revogado: 'tentou entrar na Tabela de Preços, mas o acesso está <strong>inativo (suspenso)</strong>.', expirado: 'tentou entrar na Tabela de Preços, mas o acesso <strong>expirou</strong>.' }[motivo] || 'tentou entrar na Tabela de Preços e foi negado.';
+                const alvo = 'https://app.boxersoldas.com.br/admin_supabase.html?aba=acessos' + (motivo === 'nao_cadastrado' ? '&novo=' + encodeURIComponent(email) : '&busca=' + encodeURIComponent(email));
+                const enviado = await resendEnviar(admins, 'Tentativa de acesso — ' + email,
+                  emailShell('<p style="font-size:15px;color:#1a202c;margin:0 0 12px"><strong>' + escHtml(email) + '</strong> ' + frase + '</p>' +
+                    '<p style="font-size:13px;color:#4a5568;margin:0 0 14px">Se for alguém esperado, ' + (motivo === 'nao_cadastrado' ? 'cadastre agora: a pessoa recebe o código por e-mail e entra sozinha.' : 'reative ou renove o acesso no painel.') + ' Se não reconhece, ignore: ninguém entra sem estar cadastrado.</p>' +
+                    '<p style="text-align:center;margin:18px 0"><a href="' + alvo + '" style="background:#1d327b;color:#fff;text-decoration:none;padding:11px 24px;border-radius:8px;font-size:14px;font-weight:600">' + (motivo === 'nao_cadastrado' ? 'Cadastrar agora' : 'Abrir painel → Acessos') + '</a></p>'));
+                if (enviado) await logEvento('aviso_admin_acesso', email, { motivo });
+              }
+            }
+          } catch (e) { console.error('aviso admin acesso falhou', e && e.message); }
+        }
         return respostaStatus(motivo);
       }
 

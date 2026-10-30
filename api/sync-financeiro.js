@@ -25,7 +25,15 @@
 const { zenGet, zenBuscarDfeNfeProcOut, zenBaixarArquivo, zenBuscarVendasPorInvoiceIds, zenBuscarDfeInfoPorInvoiceIds } = require('./_zen');
 
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
-const ORCAMENTO_MS = 45000;
+// 15s de LEITURA -- deixa margem de sobra para resolucao (chave_acesso/
+// nota_fiscal_id) e gravacao em lote antes do limite real da function
+// (maxDuration 60s, vercel.json). Era 45s, maior que o limite de ENTAO (30s)
+// -- bug antigo que travou o cron "Sync financeiro ZenERP" por pelo menos
+// duas semanas (2026-10-17 a 2026-10-30, visto em producao). O mecanismo foi
+// desenhado para isso: GitHub Actions encadeia ate 120 rodadas via
+// `proximo_desde`, entao um orcamento pequeno por chamada e seguro, nao
+// serve de nada deixar grande.
+const ORCAMENTO_MS = 15000;
 const PASSO_ZEN = 200;
 
 // Regra de negocio (Andre, 2026-09-08): nao sincronizar nada do Zen anterior a

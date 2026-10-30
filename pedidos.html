@@ -889,6 +889,14 @@ async function openPedido(id) {
     if (!pedido) return;
     const eventos = await sb('/hub_pedido_eventos?pedido_id=eq.' + id + '&select=etapa,origem,detalhe,criado_em&order=criado_em.asc')
       .catch(() => []);
+    // NF/XML/Boleto do pedido -- so aparece quando o sync ja ligou invoice.id
+    // a este pedido via sale.invoice (ver api/sync-financeiro.js); pedido
+    // recem-submetido ou de venda ainda nao faturada fica sem nada aqui, e
+    // normal.
+    const [notasPedido, titulosPedido] = await Promise.all([
+      sb('/hub_notas_fiscais?pedido_id=eq.' + id + '&ativo=eq.true&select=*&order=data_emissao.desc').catch(() => []),
+      sb('/hub_titulos?pedido_id=eq.' + id + '&ativo=eq.true&select=*').catch(() => [])
+    ]);
 
     openModal(`
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
@@ -924,6 +932,7 @@ async function openPedido(id) {
           <td>${fmtMoeda(i.subtotal_item)}</td>
         </tr>`).join('')}</tbody>
       </table></div>` : '<p style="color:#718096;font-size:13px">Nenhum item</p>'}
+      ${renderFinanceiroPedido(notasPedido, titulosPedido)}
       <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0">
         <button class="btn btn-outline" onclick="abrirSolicitacoes('pedido', '${pedido.id}', '${pedido.cliente_id}', 'Pedido ${esc(pedido.numero || 'Rascunho')}')">Abrir solicitacao</button>
         ${acoesPedido(pedido)}
@@ -933,6 +942,38 @@ async function openPedido(id) {
   } catch (e) {
     toast('Erro ao abrir pedido', 'error');
   }
+}
+
+// NF/XML/Boleto deste pedido especifico. So mostra algo quando o sync ja
+// resolveu o vinculo pedido<->NF via sale.invoice (api/sync-financeiro.js,
+// resolverPedidoIdsPorInvoice) -- a maioria dos pedidos ainda nao tem isso
+// porque so 1 venda do Hub foi sincronizada no Zen ate agora (2026-10-30);
+// vai se preencher sozinho conforme o volume de pedidos reais crescer.
+function renderFinanceiroPedido(notas, titulos) {
+  if (!notas.length && !titulos.length) return '';
+  const CORES_STATUS = {
+    aberto: '#1e40af', vencido: '#991b1b', pago: '#065f46', parcial: '#92400e'
+  };
+  const badgeTitulo = (t) => `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase;background:#f0f4f8;color:${CORES_STATUS[t.status] || '#4a5568'}">${esc(t.status)}</span>`;
+
+  return `<div style="margin-top:16px;padding-top:16px;border-top:1px solid #e2e8f0">
+    <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Financeiro deste pedido</div>
+    ${notas.map(n => `
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:8px 0;border-bottom:1px solid #f0f4f8">
+        <div style="font-size:13px"><strong>NF ${esc(n.numero_nf)}</strong><span style="color:#718096"> — ${fmtData(n.data_emissao)} — ${fmtMoeda(n.valor_total)}</span></div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" id="baixarNf-${n.id}" onclick="baixarDocumentoNF('pdf', '${n.id}', '${esc(String(n.numero_nf || n.id))}')">Baixar NF</button>
+          <button class="btn btn-outline btn-sm" id="baixarXml-${n.id}" onclick="baixarDocumentoNF('xml', '${n.id}', '${esc(String(n.numero_nf || n.id))}')">XML</button>
+        </div>
+      </div>`).join('')}
+    ${titulos.map(t => `
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:8px 0;border-bottom:1px solid #f0f4f8">
+        <div style="font-size:13px"><strong>Titulo ${esc(t.numero_titulo)}</strong><span style="color:#718096"> — vence ${fmtData(t.data_vencimento)} — ${fmtMoeda(t.valor_aberto)}</span> ${badgeTitulo(t)}</div>
+        ${t.url_boleto
+          ? `<a href="${t.url_boleto}" target="_blank" class="btn btn-primary btn-sm">Boleto</a>`
+          : '<span style="font-size:11px;color:#a0aec0">Boleto nao integrado</span>'}
+      </div>`).join('')}
+  </div>`;
 }
 
 // O nome do no do workflow no Zen e escrito para quem opera o ERP, nao para o

@@ -605,6 +605,42 @@ function fmtCnpj(c) {
   return c.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
 }
 
+// Baixa o PDF (DANFE) ou o XML da NF -- arquivo que o Zen ja guarda pronto
+// desde a autorizacao da SEFAZ, nunca gerado na hora. Compartilhado (hub.js)
+// porque financeiro.html e pedidos.html (detalhe do pedido) precisam do
+// mesmo botao.
+async function baixarDocumentoNF(tipo, nfId, numeroNf) {
+  const btnId = tipo === 'pdf' ? 'baixarNf-' + nfId : 'baixarXml-' + nfId;
+  const btn = document.getElementById(btnId);
+  const textoOriginal = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  try {
+    const param = tipo === 'pdf' ? 'baixar_nf' : 'baixar_xml';
+    const r = await fetch('/api/sync-financeiro?' + param + '=' + nfId, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + (SESSION?.access_token || '') }
+    });
+    if (!r.ok) {
+      const erro = await r.json().catch(() => ({}));
+      toast(erro.error || 'Documento nao disponivel', 'error');
+      return;
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'NF-' + numeroNf + '.' + tipo;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (e) {
+    toast('Documento nao disponivel', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
+  }
+}
+
 function debounce(fn, ms = 300) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };

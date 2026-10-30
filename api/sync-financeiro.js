@@ -47,6 +47,13 @@ const PASSO_ZEN = 200;
 // GRAVADO normalmente (so sem o enriquecimento nesta rodada); NF pega isso
 // depois via backfill_pedido_nf, titulo relê tudo de novo amanha.
 const MAX_RESOLVER = 400;
+// Teto FIXO de registros lidos por chamada, alem do orcamento de tempo --
+// ORCAMENTO_MS sozinho e instavel (quando o Zen responde rapido, 8s ainda
+// cabem milhares de registros, e isso que fez a duracao da function crescer
+// de rodada em rodada -- 26s, 37s, >60s -- ate estourar de novo em producao,
+// 2026-10-30). Com teto de registro, o pior caso por chamada fica previsivel
+// independente da velocidade da rede.
+const MAX_LIDOS_POR_CHAMADA = 600;
 
 // Regra de negocio (Andre, 2026-09-08): nao sincronizar nada do Zen anterior a
 // 01/03/2025. Para historia anterior, cliente abre chamado com o suporte.
@@ -385,7 +392,7 @@ async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
   let cursor = desde ? Number(desde) : 0;
   const pendentes = []; // { row, invoiceId } -- pedido_id resolvido em lote no final
 
-  while (Date.now() - t0 < ORCAMENTO_MS) {
+  while (Date.now() - t0 < ORCAMENTO_MS && r.lidos < MAX_LIDOS_POR_CHAMADA) {
     // Zen tem bug conhecido de paginacao com filtro complexo -- a defesa usada
     // por _zen.js (anti-ciclo por id) so vale quando pagino a mesma query.
     // Aqui uso a estrategia de "id ascendente": pega tudo com id > cursor,
@@ -544,7 +551,7 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
   r.cursor_inicial = cursor;
   const buffer = [];
 
-  while (Date.now() - t0 < ORCAMENTO_MS - 5000) { // 5s reserva para o gravar
+  while (Date.now() - t0 < ORCAMENTO_MS && r.lidos < MAX_LIDOS_POR_CHAMADA) {
     let lote;
     try {
       lote = await zenGet('/fiscal/outgoingInvoice', {

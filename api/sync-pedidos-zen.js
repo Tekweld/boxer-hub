@@ -378,6 +378,29 @@ module.exports = async function handler(req, res) {
   // Credito pode estar registrado no GRUPO (personGroup) em vez de em cada
   // filial/CNPJ -- creditLineItem tem um campo person, que para um grupo
   // seria... precisa descobrir a forma. Sonda os dois jeitos plausiveis.
+  // Confirma os nomes de campo do cubo creditLineStats antes de confiar
+  // (regra do projeto: nunca assumir campo sem testar contra dado real) --
+  // especificamente se ele tem o limite BRUTO (personGroup_credit /
+  // person_credit) separado do saldo (personGroup_credit_balance /
+  // person_credit_balance), usado em 2026-10-30 para corrigir
+  // inicializarCreditoFaltante (sync-zen-clientes.js), que gravava os dois
+  // com o mesmo valor.
+  if (req.query?.debug_creditlinestats) {
+    try {
+      const headers = await zenAuth();
+      const porGrupo = req.query.grupo
+        ? { code: '/financial/credit/dataSource/creditLineStats', parameters: { FLOW: 1, PERSON_GROUP_IDS: [Number(req.query.grupo)] } }
+        : { code: '/financial/credit/dataSource/creditLineStats', parameters: { FLOW: 1, PERSON_IDS: [Number(req.query.pessoa)] } };
+      const r = await fetch(ZEN_BASE + '/system/data/dataSourceOpRead', {
+        method: 'POST', headers, body: JSON.stringify(porGrupo)
+      });
+      const corpo = r.ok ? await r.json() : await r.text();
+      return res.status(200).json({ ok: r.ok, debug: true, parametros: porGrupo.parameters, corpo });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   if (req.query?.debug_credito_grupo) {
     const grupoId = String(req.query.debug_credito_grupo);
     const resultados = {};

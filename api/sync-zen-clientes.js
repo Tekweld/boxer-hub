@@ -537,7 +537,7 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
   for (let i = 0; i < ids.length; i += 300) {
     const lote = ids.slice(i, i + 300);
     const r = await fetch(
-      HUB_URL + '/rest/v1/hub_clientes?erp_cliente_id=in.(' + lote.join(',') + ')&select=erp_cliente_id,limite_credito',
+      HUB_URL + '/rest/v1/hub_clientes?erp_cliente_id=in.(' + lote.join(',') + ')&select=erp_cliente_id,limite_credito,limite_disponivel',
       { headers: hubH('GET') }
     );
     if (!r.ok) {
@@ -548,8 +548,16 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
     if (Array.isArray(parte)) atuais = atuais.concat(parte);
   }
 
+  // Tambem reprocessa quem ja tem limite_credito == limite_disponivel e os
+  // dois > 0 -- essa e a ASSINATURA do bug antigo (corrigido em 2026-10-30):
+  // a versao anterior gravava os dois campos com o MESMO valor (o saldo
+  // disponivel), nunca o limite bruto. Sem isto, clientes ja "preenchidos
+  // errado" (ex: Luitex, visto ao vivo pelo Andre comparando com o Zen)
+  // ficariam errados para sempre, porque o filtro original so pegava quem
+  // estava zerado/nulo.
   const semLimite = atuais
-    .filter(c => !c.limite_credito || +c.limite_credito === 0)
+    .filter(c => !c.limite_credito || +c.limite_credito === 0
+      || (+c.limite_credito > 0 && +c.limite_credito === +c.limite_disponivel))
     .map(c => c.erp_cliente_id);
 
   if (!semLimite.length) return { verificados: atuais.length, sem_limite: 0, consulta_erros: consultaErros.length ? consultaErros : undefined };
@@ -567,44 +575,50 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
   const grupoPorCliente = {};
   for (const b of bodies) if (b.grupo_erp_id) grupoPorCliente[b.erp_cliente_id] = b.grupo_erp_id;
 
-  const porId = {};
-  const gruposResolvidos = {}; // grupoErpId -> valor (cache: nao pede o mesmo grupo 2x)
+  const porId = {}; // erpId -> { credito, saldo }
+  const gruposResolvidos = {}; // grupoErpId -> { credito, saldo } (cache: nao pede o mesmo grupo 2x)
+
+  // le um numero de uma lista de linhas do cubo, pelo nome do campo --
+  // helper pequeno porque precisa ler 2 campos (credito bruto e saldo) em
+  // vez de 1 so, duas vezes (grupo e pessoa).
+  const lerCampo = (linhas, campo) => {
+    const achado = linhas.map(l => l[campo]).find(v => v !== null && v !== 'null' && v !== undefined);
+    return achado != null ? Number(achado) : null;
+  };
 
   for (const erpId of semLimite) {
     try {
       const grupoId = grupoPorCliente[erpId];
-      let valor = null;
+      let par = null; // { credito, saldo }
 
       if (grupoId) {
         if (!(grupoId in gruposResolvidos)) {
           const linhas = await zenCreditoDataSource('/financial/credit/dataSource/creditLineStats', {
             FLOW: 1, PERSON_GROUP_IDS: [grupoId]
           });
-          gruposResolvidos[grupoId] = linhas
-            .map(l => l.personGroup_credit_balance)
-            .find(v => v !== null && v !== 'null' && v !== undefined);
-          gruposResolvidos[grupoId] = gruposResolvidos[grupoId] != null ? Number(gruposResolvidos[grupoId]) : null;
+          const saldo = lerCampo(linhas, 'personGroup_credit_balance');
+          const credito = lerCampo(linhas, 'personGroup_credit');
+          gruposResolvidos[grupoId] = saldo != null ? { credito: credito ?? saldo, saldo } : null;
         }
-        valor = gruposResolvidos[grupoId];
+        par = gruposResolvidos[grupoId];
       }
 
-      if (valor === null || valor === undefined) {
+      if (!par) {
         const linhas = await zenCreditoDataSource('/financial/credit/dataSource/creditLineStats', {
           FLOW: 1, PERSON_IDS: [Number(erpId)]
         });
-        const achado = linhas
-          .map(l => l.person_credit_balance)
-          .find(v => v !== null && v !== 'null' && v !== undefined);
-        valor = achado != null ? Number(achado) : null;
+        const saldo = lerCampo(linhas, 'person_credit_balance');
+        const credito = lerCampo(linhas, 'person_credit');
+        par = saldo != null ? { credito: credito ?? saldo, saldo } : null;
       }
 
-      if (valor !== null && valor > 0) porId[erpId] = valor;
+      if (par && par.saldo > 0) porId[erpId] = par;
     } catch (e) {
       console.warn('[ZEN] falha ao buscar creditLineStats de', erpId, ':', e.message.slice(0, 150));
     }
   }
 
-  const encontrados = Object.keys(porId).filter(id => porId[id] > 0);
+  const encontrados = Object.keys(porId).filter(id => porId[id].saldo > 0);
   if (dryRun) {
     return { verificados: atuais.length, sem_limite: semLimite.length, encontrados_no_zen: encontrados.length, dry_run: true };
   }
@@ -613,7 +627,7 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
   for (const id of encontrados) {
     const r = await fetch(HUB_URL + '/rest/v1/hub_clientes?erp_cliente_id=eq.' + id, {
       method: 'PATCH', headers: hubH('PATCH'),
-      body: JSON.stringify({ limite_credito: porId[id], limite_disponivel: porId[id] })
+      body: JSON.stringify({ limite_credito: porId[id].credito, limite_disponivel: porId[id].saldo })
     });
     if (r.ok) atualizados++;
   }

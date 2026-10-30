@@ -257,7 +257,9 @@ function renderFinanceiro() {
           <button class="btn btn-primary btn-sm" id="baixarNf-${l.id}" onclick="baixarDocumentoNF('pdf', '${l.id}', '${String(l.numero_nf || l.id)}')">Baixar NF</button>
           <button class="btn btn-outline btn-sm" id="baixarXml-${l.id}" onclick="baixarDocumentoNF('xml', '${l.id}', '${String(l.numero_nf || l.id)}')">XML</button>
         ` : ''}
-        ${t?.url_boleto ? `<a href="${t.url_boleto}" target="_blank" class="btn btn-primary btn-sm">Boleto</a>` : ''}
+        ${t ? (t.url_boleto
+          ? `<a href="${t.url_boleto}" target="_blank" class="btn btn-primary btn-sm">Boleto</a>`
+          : '<span style="font-size:11px;color:#a0aec0">Boleto nao integrado</span>') : ''}
         <button class="btn btn-outline btn-sm" onclick="abrirSolicitacoes('${ehNf ? 'nota_fiscal' : 'titulo'}', '${l.id}', '${l.cliente_id}', '${assunto}')">Duvida</button>
       </td>
     </tr>`; }).join('')}</tbody>

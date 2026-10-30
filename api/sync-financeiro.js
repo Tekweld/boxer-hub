@@ -381,22 +381,23 @@ async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
 
   r.proximo_desde = r.concluido ? null : cursor;
 
-  // Resolve pedido_id em lote (titulo so guarda invoice.id -- ver
-  // resolverPedidoIdsPorInvoice) antes de gravar. Nem todo titulo tem
-  // invoice (ex: antecipacao) -- fica null, esperado.
+  // Resolve nota_fiscal_id em lote -- so Supabase (sem chamada ao Zen), barato
+  // mesmo com milhares de titulos (o sync de titulo relê TODOS os abertos
+  // toda rodada, de proposito, para pegar status/saldo atualizado -- ver
+  // comentario no topo do arquivo). pedido_id NAO entra aqui: exigiria uma
+  // chamada ao Zen por lote de 40 invoice ids (resolverPedidoIdsPorInvoice),
+  // e com milhares de titulos isso e o que estourou o timeout da function em
+  // producao (2026-10-30, cron "Sync financeiro ZenERP" -> 504). pedido_id
+  // fica so no backfill manual (?backfill_pedido_titulo=1), que roda sob
+  // demanda com seu proprio orcamento.
   try {
     const invoiceIds = pendentes.map((p) => p.invoiceId);
-    const [mapaPedido, mapaNf] = await Promise.all([
-      resolverPedidoIdsPorInvoice(invoiceIds, hubH),
-      resolverNotaFiscalIdsPorInvoice(invoiceIds, hubH)
-    ]);
+    const mapaNf = await resolverNotaFiscalIdsPorInvoice(invoiceIds, hubH);
     for (const p of pendentes) {
-      if (!p.invoiceId) continue;
-      if (mapaPedido[p.invoiceId]) p.row.pedido_id = mapaPedido[p.invoiceId];
-      if (mapaNf[p.invoiceId]) p.row.nota_fiscal_id = mapaNf[p.invoiceId];
+      if (p.invoiceId && mapaNf[p.invoiceId]) p.row.nota_fiscal_id = mapaNf[p.invoiceId];
     }
   } catch (e) {
-    r.erros.push({ etapa: 'resolver_pedido_nf', detalhe: e.message.slice(0, 200) });
+    r.erros.push({ etapa: 'resolver_nf', detalhe: e.message.slice(0, 200) });
   }
   const bufferGravar = pendentes.map((p) => p.row);
 
@@ -535,24 +536,22 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
 
   r.proximo_desde = r.concluido ? null : cursor;
 
-  // chave_acesso e pedido_id em lote. outgoingInvoice NAO tem accessKey/key
-  // (codigo antigo assumia isso -- sempre vinha null); a chave de verdade
-  // mora no documento fiscal (fiscal.br.DfeNfeProcOut.chNFe), mesma fonte do
-  // download real de PDF/XML. pedido_id vem de sale.invoice (ver
-  // resolverPedidoIdsPorInvoice) -- NF de venda fora do Hub fica sem pedido,
-  // esperado.
+  // chave_acesso em lote. outgoingInvoice NAO tem accessKey/key (codigo antigo
+  // assumia isso -- sempre vinha null); a chave de verdade mora no documento
+  // fiscal (fiscal.br.DfeNfeProcOut.chNFe), mesma fonte do download real de
+  // PDF/XML. pedido_id NAO entra aqui de proposito: exige uma chamada ao Zen
+  // por lote de 40 invoice ids (resolverPedidoIdsPorInvoice) e, somado a
+  // zenBuscarDfeInfoPorInvoiceIds, estourou o timeout da function em producao
+  // quando o buffer ficou grande (2026-10-30, cron "Sync financeiro ZenERP"
+  // -> 504). Fica so no backfill manual (?backfill_pedido_nf=1).
   try {
     const invoiceIds = buffer.map((b) => b.erp_nf_id);
-    const [mapaDfe, mapaPedido] = await Promise.all([
-      zenBuscarDfeInfoPorInvoiceIds(invoiceIds),
-      resolverPedidoIdsPorInvoice(invoiceIds, hubH)
-    ]);
+    const mapaDfe = await zenBuscarDfeInfoPorInvoiceIds(invoiceIds);
     for (const b of buffer) {
       b.chave_acesso = (mapaDfe[b.erp_nf_id]?.chNFe || '').slice(0, 50) || null;
-      if (mapaPedido[b.erp_nf_id]) b.pedido_id = mapaPedido[b.erp_nf_id];
     }
   } catch (e) {
-    r.erros.push({ etapa: 'resolver_chave_pedido', detalhe: e.message.slice(0, 200) });
+    r.erros.push({ etapa: 'resolver_chave', detalhe: e.message.slice(0, 200) });
   }
 
   if (!dryRun && buffer.length) {

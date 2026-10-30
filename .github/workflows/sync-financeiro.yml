@@ -4,8 +4,14 @@
 # volume tende a ser alto. Manual (workflow_dispatch) para retomar de onde
 # parou passando `desde=<id>` ou rodar so `alvo=titulos` / `alvo=notas`.
 #
-# O endpoint tem orcamento de 45s (funcao Vercel morre em 60s) e devolve
-# `proximo_desde`; este job encadeia as rodadas ate `concluido:true`.
+# O endpoint tem orcamento de 15s de leitura por chamada (funcao Vercel morre
+# em 60s) e devolve `proximo_desde` PARA CADA ALVO -- este job encadeia as
+# rodadas ate os dois (titulos e notas) chegarem em `concluido:true`. Sao
+# cursores independentes porque titulo (financial.Receivable) e NF
+# (fiscal.OutgoingInvoice) vivem em espacos de id diferentes no Zen -- um
+# cursor compartilhado travava o job inteiro sempre que um dos dois
+# terminava antes do outro (bug corrigido em 2026-10-30, duas semanas de
+# cron falhando sem ninguem notar).
 name: Sync financeiro ZenERP
 
 on:
@@ -54,14 +60,23 @@ jobs:
             exit 1
           fi
 
-          desde="$DESDE"
+          # Titulo (financial.Receivable) e NF (fiscal.OutgoingInvoice) vivem
+          # em espacos de id diferentes no Zen -- cursores SEPARADOS. Usar um
+          # so (como era antes) fazia o cursor de um nao servir pra nada no
+          # outro, e como titulo sempre consome o orcamento de leitura
+          # primeiro (relê tudo todo dia, de proposito), NF nunca avancava e
+          # o job abortava com "cursor nao avancou" (visto ao vivo em
+          # producao, 2026-10-30).
+          desde_titulos="$DESDE"
+          desde_nf="$DESDE"
           total_gravados=0
           rodada=0
 
           while [ "$rodada" -lt 120 ]; do
             rodada=$((rodada + 1))
             url="https://hub.boxersoldas.com.br/api/sync-financeiro?alvo=${ALVO}&dry=${DRY}"
-            [ -n "$desde" ] && url="${url}&desde=${desde}"
+            [ -n "$desde_titulos" ] && url="${url}&desde_titulos=${desde_titulos}"
+            [ -n "$desde_nf" ] && url="${url}&desde_nf=${desde_nf}"
             [ -n "$DESDE_DATA" ] && url="${url}&desde_data=${DESDE_DATA}"
 
             corpo=$(mktemp)
@@ -70,7 +85,7 @@ jobs:
               -H "x-cron-secret: $CRON_SECRET" \
               --max-time 120)
 
-            echo "--- rodada $rodada (desde ${desde:-inicio}) -> HTTP $codigo"
+            echo "--- rodada $rodada (titulos ${desde_titulos:-inicio} / nf ${desde_nf:-inicio}) -> HTTP $codigo"
             jq . "$corpo" 2>/dev/null || cat "$corpo"; echo
 
             if [ "$codigo" != "200" ]; then
@@ -82,32 +97,34 @@ jobs:
             g_nf=$(jq -r  '.notas.gravados // 0'   "$corpo")
             total_gravados=$((total_gravados + g_tit + g_nf))
 
-            # Um alvo por vez decide continuar: se algum ainda tiver
-            # proximo_desde, seguir a partir dele. Se tanto titulos quanto notas
-            # nao mandaram proximo_desde, e fim.
             prox_tit=$(jq -r '.titulos.proximo_desde // empty' "$corpo")
             prox_nf=$(jq -r  '.notas.proximo_desde // empty'   "$corpo")
 
-            if [ -z "$prox_tit" ] && [ -z "$prox_nf" ]; then
+            # Cada alvo so e considerado concluido quando ele mesmo deixa de
+            # mandar proximo_desde -- nao depende mais do outro.
+            tit_concluido=1; [ -n "$prox_tit" ] && tit_concluido=0
+            nf_concluido=1;  [ -n "$prox_nf" ]  && nf_concluido=0
+
+            if [ "$tit_concluido" = "1" ] && [ "$nf_concluido" = "1" ]; then
               echo "Concluido. Total gravado nesta execucao: $total_gravados"
               exit 0
             fi
 
-            # O menor dos dois cursores garante que nada e pulado -- o alvo que
-            # ficou para tras retoma naturalmente na proxima rodada.
-            proximo=""
-            if [ -n "$prox_tit" ] && [ -n "$prox_nf" ]; then
-              proximo=$([ "$prox_tit" -lt "$prox_nf" ] && echo "$prox_tit" || echo "$prox_nf")
-            else
-              proximo="${prox_tit:-$prox_nf}"
-            fi
-
-            if [ -z "$proximo" ] || [ "$proximo" = "$desde" ]; then
-              echo "::error::cursor nao avancou (ficou em $desde) -- abortando"
+            # So aborta por "nao avancou" o alvo que realmente nao concluiu E
+            # nao mudou de cursor -- o outro pode estar legitimamente parado
+            # (ja concluido) sem isso ser erro.
+            if [ "$tit_concluido" = "0" ] && [ "$prox_tit" = "$desde_titulos" ]; then
+              echo "::error::cursor de titulos nao avancou (ficou em $desde_titulos) -- abortando"
               exit 1
             fi
-            desde="$proximo"
+            if [ "$nf_concluido" = "0" ] && [ "$prox_nf" = "$desde_nf" ]; then
+              echo "::error::cursor de nf nao avancou (ficou em $desde_nf) -- abortando"
+              exit 1
+            fi
+
+            [ "$tit_concluido" = "0" ] && desde_titulos="$prox_tit"
+            [ "$nf_concluido" = "0" ] && desde_nf="$prox_nf"
           done
 
-          echo "::error::teto de rodadas atingido sem concluir (ultimo desde $desde)"
+          echo "::error::teto de rodadas atingido sem concluir (titulos $desde_titulos / nf $desde_nf)"
           exit 1

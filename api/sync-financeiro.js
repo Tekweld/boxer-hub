@@ -254,7 +254,20 @@ module.exports = async function handler(req, res) {
   const t0 = Date.now();
   const alvo = String(req.query?.alvo || 'ambos'); // 'titulos' | 'notas' | 'ambos'
   const dryRun = req.query?.dry === '1';
-  const desde = req.query?.desde || null; // id inicial (para retomar / limitar volume)
+  // Titulo (financial.Receivable) e NF (fiscal.OutgoingInvoice) vivem em
+  // espacos de id TOTALMENTE diferentes no Zen. Usar um `desde` so para os
+  // dois (como era antes) faz o cursor de um nao fazer sentido nenhum para o
+  // outro -- bug visto ao vivo em producao (2026-10-30): o script do GitHub
+  // tomava o menor dos dois `proximo_desde` e mandava para ambos na rodada
+  // seguinte, e como titulo sempre consumia o orcamento de tempo inteiro
+  // primeiro (fila maior, le tudo de novo todo dia de proposito -- ver
+  // comentario em sincronizarTitulos), NF nunca avancava e o job abortava com
+  // "cursor nao avancou". `desde` continua aceito como atalho manual (aplica
+  // aos dois, para teste/retomada pontual); os cursores de producao sao
+  // `desde_titulos`/`desde_nf`, independentes.
+  const desde = req.query?.desde || null;
+  const desdeTitulos = req.query?.desde_titulos || desde;
+  const desdeNf = req.query?.desde_nf || desde;
 
   const r = { dry_run: dryRun, alvo };
 
@@ -264,11 +277,17 @@ module.exports = async function handler(req, res) {
     const idHub = await carregarMapaClientes(hubH);
     r.clientes_mapeados = Object.keys(idHub).length;
 
+    // t0 proprio para cada etapa (nao o mesmo t0 da function inteira) -- com
+    // alvo=ambos, titulo roda primeiro e, se dividisse o mesmo relogio com
+    // NF, sempre consumia o orcamento inteiro e NF nunca tinha tempo nenhum
+    // (ver bug acima). Cada etapa tem direito ao seu proprio ORCAMENTO_MS de
+    // leitura; a function inteira ainda cabe dentro do maxDuration (vercel.
+    // json) com folga mesmo somando as duas.
     if (alvo === 'titulos' || alvo === 'ambos') {
-      r.titulos = await sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 });
+      r.titulos = await sincronizarTitulos({ idHub, hubH, dryRun, desde: desdeTitulos, t0: Date.now() });
     }
     if (alvo === 'notas' || alvo === 'ambos') {
-      r.notas = await sincronizarNotas({ idHub, hubH, dryRun, desde, t0 });
+      r.notas = await sincronizarNotas({ idHub, hubH, dryRun, desde: desdeNf, t0: Date.now() });
     }
 
     r.duracao_ms = Date.now() - t0;
@@ -468,7 +487,14 @@ function mapearTitulo(tit, clienteId, hoje) {
     data_pagamento: status === 'pago' ? (tit.date || '').slice(0, 10) || null : null,
     status,
     dias_atraso: diasAtraso,
-    ativo: true
+    ativo: true,
+    // Sempre presente (mesmo null) -- POST em lote no Supabase (PostgREST)
+    // exige que TODOS os objetos do array tenham o mesmo conjunto de chaves
+    // (PGRST102 "All object keys must match"). So setar esta chave quando
+    // resolvido (como estava) quebra o lote inteiro assim que uma linha nao
+    // bate e outra bate. Bug visto ao vivo em producao (cron sync-financeiro,
+    // 2026-10-30).
+    nota_fiscal_id: null
   };
 }
 

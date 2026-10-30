@@ -6,6 +6,12 @@
 
 const ZEN_BASE   = process.env.ZEN_BASE_URL || 'https://api.zenerp.app.br';
 const ZEN_TENANT = process.env.ZEN_TENANT   || 'boxer';
+// Timeout por chamada individual ao Zen -- sem isto, uma unica requisicao
+// lenta/travada consome sozinha o orcamento inteiro da function (visto ao
+// vivo em producao, 2026-10-30: rodadas de 26s/33s/37s intercaladas com
+// >60s mesmo depois de limitar registros por chamada -- instabilidade de
+// rede do lado do Zen, nao do nosso codigo).
+const ZEN_TIMEOUT_MS = 10000;
 
 let _tokenCache = null;   // { token, obtidoEm }
 const TOKEN_TTL_MS = 30 * 60 * 1000;
@@ -28,7 +34,8 @@ async function zenAuth(forcar = false) {
   const r = await fetch(`${ZEN_BASE}/system/security/tokenOpRequest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'tenant': ZEN_TENANT },
-    body: JSON.stringify({ email, password: senha })
+    body: JSON.stringify({ email, password: senha }),
+    signal: AbortSignal.timeout(ZEN_TIMEOUT_MS)
   });
   if (!r.ok) throw new Error(`Falha na autenticacao Zen: ${r.status} ${await r.text()}`);
 
@@ -64,11 +71,11 @@ async function zenGet(path, { q = null, order = null, max = 200, limite = 20000,
     if (q) qs.set('q', q);
     if (order) qs.set('order', order);
 
-    let r = await fetch(`${ZEN_BASE}${path}?${qs}`, { headers });
+    let r = await fetch(`${ZEN_BASE}${path}?${qs}`, { headers, signal: AbortSignal.timeout(ZEN_TIMEOUT_MS) });
 
     // token pode expirar no meio de uma varredura longa
     if (r.status === 401 || r.status === 403) {
-      r = await fetch(`${ZEN_BASE}${path}?${qs}`, { headers: await zenAuth(true) });
+      r = await fetch(`${ZEN_BASE}${path}?${qs}`, { headers: await zenAuth(true), signal: AbortSignal.timeout(ZEN_TIMEOUT_MS) });
     }
     if (!r.ok) throw new Error(`Zen GET ${path} -> ${r.status} ${await r.text()}`);
 

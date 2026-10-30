@@ -85,6 +85,29 @@ module.exports = async function handler(req, res) {
     return res.status(401).json({ error: 'Autenticacao necessaria' });
   }
 
+  // Reproduz a query exata que financeiro.html faz (via service role, bypassa
+  // RLS) para isolar se "Erro ao carregar financeiro" (visto ao vivo em
+  // 2026-10-30) e problema de schema/embed do PostgREST ou so RLS.
+  if (req.query?.debug_fin_query) {
+    try {
+      const urlNf = HUB_URL + '/rest/v1/hub_notas_fiscais?ativo=eq.true&order=data_emissao.desc&select=*,hub_clientes(razao_social),hub_pedidos(numero)&limit=3';
+      const urlTit = HUB_URL + '/rest/v1/hub_titulos?ativo=eq.true&nota_fiscal_id=not.is.null&select=*,hub_pedidos(numero)&limit=3';
+      const [rNf, rTit] = await Promise.all([
+        fetch(urlNf, { headers: hubH('GET') }),
+        fetch(urlTit, { headers: hubH('GET') })
+      ]);
+      const corpoNf = await rNf.text();
+      const corpoTit = await rTit.text();
+      return res.status(200).json({
+        ok: true, debug: true,
+        nf: { status: rNf.status, corpo: corpoNf.slice(0, 1500) },
+        titulo: { status: rTit.status, corpo: corpoTit.slice(0, 1500) }
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   // Diagnostico: devolve o payload cru do Zen para uma venda, em vez de
   // sincronizar. Existe dentro deste endpoint (e nao num /api/debug proprio)
   // porque o plano Hobby limita a 12 Serverless Functions e nao ha vaga.

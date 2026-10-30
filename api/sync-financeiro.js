@@ -411,8 +411,18 @@ async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
     }
     if (!lote.length) { r.concluido = true; break; }
 
+    // Bug conhecido do Zen (ver ZEN-ERP-CONHECIMENTO.md secao 3): depois do
+    // ultimo item real, a API as vezes devolve a MESMA pagina de novo (cheia,
+    // nao vazia) em vez de lista vazia. zenGet so detecta isso DENTRO de uma
+    // unica chamada (pagina interna); aqui o loop externo chama zenGet de
+    // novo a cada rodada, entao precisa do mesmo cuidado: se o maior id do
+    // lote nao avancou, e a mesma pagina de novo -- trata como fim, senao o
+    // cursor trava para sempre (visto ao vivo em producao, 2026-10-30: nf
+    // preso 5 rodadas seguidas no mesmo id, sempre com pagina "cheia").
+    const maiorIdLote = Math.max(...lote.map(x => x.id));
+    if (maiorIdLote <= cursor) { r.concluido = true; break; }
+    cursor = maiorIdLote;
     r.lidos += lote.length;
-    cursor = Math.max(...lote.map(x => x.id));
 
     const hoje = new Date().toISOString().slice(0, 10);
     for (const tit of lote) {
@@ -566,8 +576,14 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
     }
     if (!lote.length) { r.concluido = true; break; }
 
+    // Mesmo bug do Zen descrito em sincronizarTitulos (ZEN-ERP-CONHECIMENTO.md
+    // secao 3): pagina "cheia" repetida apos o ultimo item real. Sem isto, nf
+    // trava para sempre no mesmo cursor (visto ao vivo em producao,
+    // 2026-10-30).
+    const maiorIdLote = Math.max(...lote.map(x => x.id));
+    if (maiorIdLote <= cursor) { r.concluido = true; break; }
+    cursor = maiorIdLote;
     r.lidos += lote.length;
-    cursor = Math.max(...lote.map(x => x.id));
 
     for (const nf of lote) {
       const clienteId = idHub[String(nf.person?.id)];

@@ -195,7 +195,7 @@ function emailShell(inner) {
 
 async function acessoTabela(req, res) {
   res.setHeader('Access-Control-Allow-Origin', ACESSO_ORIGEM);
-  res.setHeader('Access-Control-Allow-Headers', 'content-type');
+  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Vary', 'Origin');
   if (req.method === 'OPTIONS') return res.status(204).end();
@@ -224,6 +224,39 @@ async function acessoTabela(req, res) {
   if (!RE_EMAIL.test(email)) return res.status(400).json({ error: 'email invalido' });
 
   try {
+    // ---- admin: define o perfil do painel (admin / editor / usuario) de uma pessoa, a partir da aba Acessos ----
+    if (acao === 'perfil_painel') {
+      const auth = req.headers.authorization || '';
+      if (!/^Bearer /i.test(auth)) return res.status(401).json({ error: 'login necessario' });
+      const ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJtZXB4Y25yc29mb2Zvc3d1YnV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MTczNzMsImV4cCI6MjA5NTI5MzM3M30.S55ouFczRYlUYNFf5PotYKXBPT5idypTSmbzR-x2Pk0';
+      const uh = { apikey: ANON, Authorization: auth, 'Content-Type': 'application/json' };
+      const eAdmin = await fetch(HUB_URL + '/rest/v1/rpc/eh_perfil_admin', { method: 'POST', headers: uh, body: '{}' }).then(r => r.json()).catch(() => false);
+      if (eAdmin !== true) return res.status(403).json({ error: 'apenas admin' });
+      const quem = await fetch(HUB_URL + '/auth/v1/user', { headers: { apikey: ANON, Authorization: auth } }).then(r => r.json()).catch(() => ({}));
+      const perfil = String(body.perfil || '');
+      if (!['admin', 'editor', 'usuario'].includes(perfil)) return res.status(400).json({ error: 'perfil invalido' });
+      if (perfil !== 'usuario' && !RE_BOXER.test(email)) return res.status(400).json({ error: 'admin e editor so para e-mails @boxersoldas.com.br' });
+      const nome = String(body.nome || '').trim().slice(0, 120) || email;
+      const idRes = async () => { const v = await fetch(HUB_URL + '/rest/v1/rpc/auth_id_por_email', { method: 'POST', headers: H, body: JSON.stringify({ p: email }) }).then(r => r.json()).catch(() => null); return typeof v === 'string' ? v : null; };
+      let id = await idRes();
+      if (!id && perfil !== 'usuario') {
+        await fetch(HUB_URL + '/auth/v1/admin/users', { method: 'POST', headers: H, body: JSON.stringify({ email, email_confirm: true }) }).catch(() => {});
+        id = await idRes();
+      }
+      if (!id) return res.status(200).json({ ok: true, painel: 'sem_usuario' }); // nunca entrou: nada para remover
+      if (quem && quem.id === id && perfil !== 'admin') return res.status(400).json({ error: 'voce nao pode tirar o proprio acesso de admin' });
+      if (perfil === 'usuario') {
+        const d = await fetch(HUB_URL + '/rest/v1/perfis?id=eq.' + id + '&permissao=in.(admin,editor)', { method: 'DELETE', headers: { ...H, 'Prefer': 'return=minimal' } });
+        if (!d.ok) return res.status(500).json({ error: 'nao foi possivel remover o perfil do painel' });
+        await logEvento('perfil_painel', email, { perfil, por: quem && quem.email });
+        return res.status(200).json({ ok: true, painel: 'removido' });
+      }
+      const u = await fetch(HUB_URL + '/rest/v1/perfis?on_conflict=id', { method: 'POST', headers: { ...H, 'Prefer': 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ id, nome, permissao: perfil }) });
+      if (!u.ok) { console.error('upsert perfis falhou', await u.text()); return res.status(500).json({ error: 'nao foi possivel gravar o perfil do painel' }); }
+      await logEvento('perfil_painel', email, { perfil, por: quem && quem.email });
+      return res.status(200).json({ ok: true, painel: perfil });
+    }
+
     if (acao === 'codigo') {
       const desde = new Date(Date.now() - 15 * 60 * 1000).toISOString();
       const enviados = await contar('tabela_acessos_log?select=id&email=eq.' + encodeURIComponent(email) + '&evento=eq.codigo_enviado&criado_em=gte.' + encodeURIComponent(desde));

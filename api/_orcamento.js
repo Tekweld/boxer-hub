@@ -17,6 +17,8 @@
 //   cancelar  {id}                  -> cancela o orcamento (e a venda no ZEN, se ainda for orcamento)
 //   arquivar  {id, arquivar}        -> tira da lista principal
 //   avisar    {token}               -> (publica) avisa o representante por e-mail que o cliente aceitou
+//   painel    {dias}                -> (gestor) funil, desempenho por representante e ajuste de preco
+//   lembretes {}                    -> (agendador, header x-lembretes-key) e-mail diario de acompanhamento aos representantes
 const { zenAuth, zenGet, ZEN_BASE } = require('./_zen');
 
 const SB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
@@ -46,14 +48,20 @@ module.exports = async function orcamento(req, res) {
 
   try {
     if (body.acao === 'avisar') return res.status(200).json(await avisarAceite(ctx, body.token));
+    if (body.acao === 'lembretes') {
+      const k = process.env.LEMBRETES_KEY;
+      if (!k || req.headers['x-lembretes-key'] !== k) return res.status(401).json({ error: 'chave invalida' });
+      return res.status(200).json(await lembretes(ctx));
+    }
 
     const user = await autenticar(req);
     if (!user) return res.status(401).json({ error: 'Sessao invalida ou sem acesso a tabela' });
 
     switch (body.acao) {
-      case 'cliente': return res.status(200).json(await buscarCliente(ctx, body.cnpj));
+      case 'cliente': return res.status(200).json(await buscarCliente(ctx, body.cnpj, user));
+      case 'painel': return res.status(200).json(await painel(ctx, user, body));
       case 'criar': return res.status(200).json(await criar(ctx, user, body));
-      case 'listar': return res.status(200).json(await listar(ctx, user));
+      case 'listar': return res.status(200).json(await listar(ctx, user, body.leve === true));
       case 'aprovar': return res.status(200).json(await aprovar(ctx, user, body.id));
       case 'editar': return res.status(200).json(await editar(ctx, user, body));
       case 'cancelar': return res.status(200).json(await cancelar(ctx, user, body.id));
@@ -147,7 +155,16 @@ function r2(n) { return Math.round(n * 100) / 100; }
 function brl(n) { return Number(n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
 
 // ---------- cliente ----------
-async function buscarCliente(ctx, cnpjIn) {
+async function buscarCliente(ctx, cnpjIn, user) {
+  const r = await buscarClienteBase(ctx, cnpjIn);
+  if (user) {
+    try {
+      r.ultimo = (await sbGet(ctx, '/orcamentos?user_id=eq.' + user.id + '&cliente_cnpj=eq.' + soDigitos(cnpjIn) + '&status=neq.cancelado&order=criado_em.desc&limit=1&select=codigo,classe,segmento,uf,criado_em,total_final', 'comercial'))[0] || null;
+    } catch (_) { r.ultimo = null; }
+  }
+  return r;
+}
+async function buscarClienteBase(ctx, cnpjIn) {
   const cnpj = soDigitos(cnpjIn);
   if (cnpj.length !== 14 && cnpj.length !== 11) throw erro(400, 'Informe um CNPJ (14 digitos) ou CPF (11)');
   const rows = await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=razao_social,nome_fantasia,nome_exibicao,inscricao_estadual,email_principal,telefone,cidade,uf,erp_cliente_id,bloqueado&limit=1', 'comercial');
@@ -201,6 +218,7 @@ async function aplicarEdicao(ctx, o, row, itens, avisos) {
     desconto_vista_pct: row.desconto_vista_pct, frete_tipo: row.frete_tipo, frete_valor: row.frete_valor, observacoes: row.observacoes,
     avisos, itens, total_itens: row.total_itens, total_final: row.total_final,
     cliente_celular: row.cliente_celular, cliente_email: row.cliente_email,
+    lembrete_visto_em: null, lembrete_vence_em: null,
     validade_em: row.validade_em, status: reaceite ? 'visualizado' : o.status, aceito_em: null, aceito_nome: null, atualizado_em: agora
   };
   await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, patch);
@@ -459,12 +477,12 @@ async function criarVendaZen(o, orc, itens) {
 // ---------- listar (reconcilia com o ZEN) ----------
 // O que o ZEN diz manda: venda removida/cancelada la encerra o orcamento aqui; venda movida para o
 // perfil "Venda padrao" (aprovada direto no ZEN) vira "aprovado"; itens/valores ajustados la voltam para ca.
-const CAMPOS_LISTA = 'id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,cliente_celular,cliente_email,avisos,pagamento_tipo,parcelas,desconto_vista_pct,uf,segmento,classe,observacoes,itens';
-async function listar(ctx, user) {
+const CAMPOS_LISTA = 'id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,cliente_celular,cliente_email,cliente_contato,cliente_cidade,avisos,pagamento_tipo,parcelas,desconto_vista_pct,uf,segmento,classe,observacoes,itens';
+async function listar(ctx, user, leve) {
   const rows = await sbGet(ctx, '/orcamentos?user_id=eq.' + user.id + '&ativo=eq.true&order=criado_em.desc&limit=150&select=' + CAMPOS_LISTA, 'comercial');
   let aviso_sync = null;
-  try { await zenRetomarSemCliente(ctx, rows); } catch (_) {}
-  try { await sincronizarZen(ctx, rows); } catch (e) { aviso_sync = 'Nao foi possivel conferir o ZEN agora: ' + String(e.message).slice(0, 120); }
+  if (!leve) { try { await zenRetomarSemCliente(ctx, rows); } catch (_) {} }
+  try { if (!leve) await sincronizarZen(ctx, rows); } catch (e) { aviso_sync = 'Nao foi possivel conferir o ZEN agora: ' + String(e.message).slice(0, 120); }
   const agora = Date.now();
   return {
     ok: true, aviso_sync,
@@ -762,4 +780,95 @@ async function zenAtualizarVenda(sid, o, orc, itens) {
   nova.properties = Object.assign({}, nova.properties, { comments: m.sale.properties.comments });
   nova.freightType = m.sale.freightType;
   await zenCall('PUT', '/sale/sale', nova);
+}
+
+// ---------- lembretes de acompanhamento (e-mail diario ao representante) ----------
+async function lembretes(ctx) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) return { ok: true, enviados: 0, motivo: 'RESEND_API_KEY nao configurada' };
+  const agora = Date.now(), DIA = 86400000;
+  const rows = await sbGet(ctx, '/orcamentos?ativo=eq.true&arquivado=eq.false&status=in.(enviado,visualizado)&validade_em=gt.' + encodeURIComponent(new Date(agora).toISOString())
+    + '&select=id,codigo,vendedor_email,vendedor_nome,cliente_nome,total_final,status,criado_em,ultima_visualizacao_em,validade_em,lembrete_visto_em,lembrete_vence_em&limit=1000', 'comercial');
+  const porVend = {};
+  for (const r of rows) {
+    if (!r.vendedor_email) continue;
+    const motivos = [], marcas = {};
+    const parado = Date.parse(r.status === 'visualizado' ? r.ultima_visualizacao_em : r.criado_em);
+    if (!r.lembrete_visto_em && parado && agora - parado >= 2 * DIA) {
+      const d = Math.floor((agora - parado) / DIA);
+      motivos.push(r.status === 'visualizado' ? 'visto pelo cliente há ' + d + ' dias, sem aceite' : 'enviado há ' + d + ' dias e o cliente ainda não abriu o link');
+      marcas.lembrete_visto_em = new Date(agora).toISOString();
+    }
+    const ate = Date.parse(r.validade_em) - agora;
+    if (!r.lembrete_vence_em && ate <= 2 * DIA) {
+      const d = Math.max(1, Math.ceil(ate / DIA));
+      motivos.push('vence em ' + d + (d > 1 ? ' dias' : ' dia') + ' (' + new Date(r.validade_em).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }) + ')');
+      marcas.lembrete_vence_em = new Date(agora).toISOString();
+    }
+    if (motivos.length) (porVend[r.vendedor_email] = porVend[r.vendedor_email] || []).push({ r, motivos, marcas });
+  }
+  let enviados = 0;
+  for (const [email, lista] of Object.entries(porVend)) {
+    const nome = lista[0].r.vendedor_nome;
+    const linhas = lista.map(x => '<tr><td style="padding:8px 6px;border-bottom:1px solid #e2e8f0"><b>' + esc(x.r.codigo) + '</b> · ' + esc(x.r.cliente_nome) + '<br><span style="color:#9a3412;font-size:13px">' + esc(x.motivos.join(' · ')) + '</span></td><td style="padding:8px 6px;border-bottom:1px solid #e2e8f0;text-align:right;white-space:nowrap">' + brl(x.r.total_final) + '</td></tr>').join('');
+    const corpo = '<p>Olá' + (nome ? ', <strong>' + esc(nome) + '</strong>' : '') + '!</p><p>Estes orçamentos pedem o seu acompanhamento:</p><table style="width:100%;border-collapse:collapse;font-size:14px">' + linhas + '</table>'
+      + '<div style="text-align:center;margin:24px 0"><a href="' + APP_TABELA + '" style="display:inline-block;padding:12px 28px;background:#1d327b;color:#fff;text-decoration:none;border-radius:8px;font-family:Arial,sans-serif;font-size:14px;font-weight:600">Abrir meus orçamentos</a></div>';
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({
+        from: 'Boxer Orçamentos <noreply@boxersoldas.com.br>', to: [email],
+        subject: lista.length === 1 ? 'Acompanhe o orçamento ' + lista[0].r.codigo + ' — ' + lista[0].r.cliente_nome : lista.length + ' orçamentos pedem acompanhamento',
+        html: '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#f0f4f8;font-family:Arial,sans-serif"><div style="max-width:560px;margin:0 auto;padding:24px"><div style="background:#fff;border:1px solid #d0d8e8;border-radius:12px;padding:28px">' + corpo + '</div></div></body></html>'
+      })
+    });
+    if (r.ok) {
+      enviados++;
+      for (const x of lista) await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + x.r.id, x.marcas);
+    }
+  }
+  return { ok: true, representantes: Object.keys(porVend).length, enviados };
+}
+
+// ---------- painel de gestao ----------
+async function painel(ctx, user, b) {
+  if (!['admin', 'gestor', 'manager'].includes(String(user.role || '').toLowerCase())) throw erro(403, 'Painel disponivel apenas para gestores');
+  const dias = [30, 90, 365].includes(Number(b.dias)) ? Number(b.dias) : 30;
+  const desde = new Date(Date.now() - dias * 86400000).toISOString();
+  const rows = await sbGet(ctx, '/orcamentos?ativo=eq.true&criado_em=gte.' + encodeURIComponent(desde)
+    + '&select=user_id,vendedor_nome,vendedor_empresa,status,total_final,criado_em,aceito_em,visualizacoes,itens,pagamento_tipo,desconto_vista_pct&order=criado_em.desc&limit=1000', 'comercial');
+  const novo = () => ({ enviados: 0, vistos: 0, aceitos: 0, aprovados: 0, cancelados: 0, valor_enviado: 0, valor_aprovado: 0, ref: 0, prat: 0, horas_aceite: 0, n_aceite: 0 });
+  const tot = novo(), reps = {}, prods = {};
+  for (const r of rows) {
+    const k = r.user_id, rep = reps[k] = reps[k] || Object.assign(novo(), { nome: r.vendedor_nome, empresa: r.vendedor_empresa || '' });
+    for (const a of [tot, rep]) {
+      a.enviados++;
+      if (r.status === 'cancelado') { a.cancelados++; continue; }
+      a.valor_enviado += Number(r.total_final) || 0;
+      if (r.visualizacoes > 0) a.vistos++;
+      const aceito = r.aceito_em || ['aceito_cliente', 'aprovado'].includes(r.status);
+      if (aceito) a.aceitos++;
+      if (r.status === 'aprovado') { a.aprovados++; a.valor_aprovado += Number(r.total_final) || 0; }
+      if (r.aceito_em) { a.horas_aceite += (Date.parse(r.aceito_em) - Date.parse(r.criado_em)) / 3600000; a.n_aceite++; }
+    }
+    if (r.status === 'cancelado') continue;
+    const f = r.pagamento_tipo === 'avista' ? 1 - (Number(r.desconto_vista_pct) || 0) / 100 : 1;
+    for (const i of (r.itens || [])) {
+      if (!i.unit_tabela) continue;
+      const ref = Number(i.unit_tabela) * f * i.qtd, prat = Number(i.subtotal) || Number(i.unit) * i.qtd;
+      for (const a of [tot, rep]) { a.ref += ref; a.prat += prat; }
+      const p = prods[i.codigo] = prods[i.codigo] || { codigo: i.codigo, modelo: i.modelo || i.codigo, ref: 0, prat: 0, qtd: 0 };
+      p.ref += ref; p.prat += prat; p.qtd += i.qtd;
+    }
+  }
+  const fim = a => ({
+    enviados: a.enviados, vistos: a.vistos, aceitos: a.aceitos, aprovados: a.aprovados, cancelados: a.cancelados,
+    valor_enviado: r2(a.valor_enviado), valor_aprovado: r2(a.valor_aprovado),
+    ajuste_pct: a.ref > 0 ? r2((a.prat - a.ref) / a.ref * 100) : null,
+    horas_ate_aceite: a.n_aceite ? r2(a.horas_aceite / a.n_aceite) : null
+  });
+  return {
+    ok: true, dias, truncado: rows.length >= 1000, totais: fim(tot),
+    representantes: Object.values(reps).map(a => Object.assign({ nome: a.nome, empresa: a.empresa }, fim(a))).sort((x, y) => y.valor_enviado - x.valor_enviado),
+    produtos: Object.values(prods).filter(p => p.ref > 0 && Math.abs(p.prat - p.ref) / p.ref > 0.0005).map(p => ({ codigo: p.codigo, modelo: p.modelo, qtd: p.qtd, ajuste_pct: r2((p.prat - p.ref) / p.ref * 100), diferenca: r2(p.prat - p.ref) })).sort((x, y) => Math.abs(y.diferenca) - Math.abs(x.diferenca)).slice(0, 10)
+  };
 }

@@ -25,16 +25,28 @@
 const { zenGet, zenBuscarDfeNfeProcOut, zenBaixarArquivo, zenBuscarVendasPorInvoiceIds, zenBuscarDfeInfoPorInvoiceIds } = require('./_zen');
 
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
-// 15s de LEITURA -- deixa margem de sobra para resolucao (chave_acesso/
+// 8s de LEITURA -- deixa margem de sobra para resolucao (chave_acesso/
 // nota_fiscal_id) e gravacao em lote antes do limite real da function
 // (maxDuration 60s, vercel.json). Era 45s, maior que o limite de ENTAO (30s)
 // -- bug antigo que travou o cron "Sync financeiro ZenERP" por pelo menos
-// duas semanas (2026-10-17 a 2026-10-30, visto em producao). O mecanismo foi
-// desenhado para isso: GitHub Actions encadeia ate 120 rodadas via
-// `proximo_desde`, entao um orcamento pequeno por chamada e seguro, nao
-// serve de nada deixar grande.
-const ORCAMENTO_MS = 15000;
+// duas semanas (2026-10-17 a 2026-10-30, visto em producao). Alem disso, o
+// orcamento de LEITURA sozinho nao basta: com o Zen respondendo rapido, 15s
+// de leitura ainda enchiam o buffer com milhares de registros, e a
+// resolucao depois (1 chamada ao Zen por lote de 40 ids) NAO tinha limite
+// proprio -- precisava de tempo proporcional ao buffer, nao ao orcamento de
+// leitura. Por isso tambem existe MAX_RESOLVER abaixo. O mecanismo foi
+// desenhado para chamadas pequenas e repetidas: GitHub Actions encadeia ate
+// 120 rodadas via `proximo_desde`, entao nao ha ganho em arriscar perto do
+// limite.
+const ORCAMENTO_MS = 8000;
 const PASSO_ZEN = 200;
+// Teto de quantos registros recebem chave_acesso/nota_fiscal_id por chamada,
+// INDEPENDENTE de quantos foram lidos -- cada um custa 1 chamada ao Zen a
+// cada 40 ids (resolverPedidoIdsPorInvoice/zenBuscarDfeInfoPorInvoiceIds), e
+// isso escala com o buffer, nao com ORCAMENTO_MS. O resto do buffer ainda e
+// GRAVADO normalmente (so sem o enriquecimento nesta rodada); NF pega isso
+// depois via backfill_pedido_nf, titulo relê tudo de novo amanha.
+const MAX_RESOLVER = 400;
 
 // Regra de negocio (Andre, 2026-09-08): nao sincronizar nada do Zen anterior a
 // 01/03/2025. Para historia anterior, cliente abre chamado com o suporte.
@@ -418,7 +430,7 @@ async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
   // fica so no backfill manual (?backfill_pedido_titulo=1), que roda sob
   // demanda com seu proprio orcamento.
   try {
-    const invoiceIds = pendentes.map((p) => p.invoiceId);
+    const invoiceIds = pendentes.map((p) => p.invoiceId).slice(0, MAX_RESOLVER);
     const mapaNf = await resolverNotaFiscalIdsPorInvoice(invoiceIds, hubH);
     for (const p of pendentes) {
       if (p.invoiceId && mapaNf[p.invoiceId]) p.row.nota_fiscal_id = mapaNf[p.invoiceId];
@@ -579,7 +591,14 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
   // quando o buffer ficou grande (2026-10-30, cron "Sync financeiro ZenERP"
   // -> 504). Fica so no backfill manual (?backfill_pedido_nf=1).
   try {
-    const invoiceIds = buffer.map((b) => b.erp_nf_id);
+    // MAX_RESOLVER: zenBuscarDfeInfoPorInvoiceIds chama o Zen 1x a cada 40
+    // ids -- com cursor atrasado (ex: depois de 2 semanas de cron quebrado),
+    // o buffer pode ter milhares de NFs novas, e isso sozinho estourava o
+    // timeout mesmo com ORCAMENTO_MS de leitura pequeno (a leitura e rapida,
+    // a resolucao depois e que escala com o tamanho do buffer). O resto do
+    // buffer ainda e GRAVADO normalmente, so sem chave_acesso nesta rodada --
+    // backfill_pedido_nf pega depois.
+    const invoiceIds = buffer.map((b) => b.erp_nf_id).slice(0, MAX_RESOLVER);
     const mapaDfe = await zenBuscarDfeInfoPorInvoiceIds(invoiceIds);
     for (const b of buffer) {
       b.chave_acesso = (mapaDfe[b.erp_nf_id]?.chNFe || '').slice(0, 50) || null;

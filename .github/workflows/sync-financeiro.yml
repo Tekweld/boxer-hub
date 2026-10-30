@@ -71,6 +71,14 @@ jobs:
           desde_nf="$DESDE"
           total_gravados=0
           rodada=0
+          # O Zen tem latencia instavel -- uma chamada individual pode
+          # estourar o timeout de 10s do nosso lado (api/_zen.js) sem ser bug
+          # nenhum, so rede lenta na hora (visto ao vivo em producao,
+          # 2026-10-30). Tolera algumas rodadas seguidas sem avanco antes de
+          # desistir de verdade -- um cursor preso por 5 rodadas e bug, um
+          # preso por 1 e so a rede.
+          sem_avanco_tit=0
+          sem_avanco_nf=0
 
           while [ "$rodada" -lt 120 ]; do
             rodada=$((rodada + 1))
@@ -111,15 +119,28 @@ jobs:
             fi
 
             # So aborta por "nao avancou" o alvo que realmente nao concluiu E
-            # nao mudou de cursor -- o outro pode estar legitimamente parado
-            # (ja concluido) sem isso ser erro.
+            # nao mudou de cursor POR VARIAS rodadas seguidas -- o outro pode
+            # estar legitimamente parado (ja concluido) sem isso ser erro, e
+            # uma rodada isolada sem avanco e so o Zen lento naquela hora.
             if [ "$tit_concluido" = "0" ] && [ "$prox_tit" = "$desde_titulos" ]; then
-              echo "::error::cursor de titulos nao avancou (ficou em $desde_titulos) -- abortando"
-              exit 1
+              sem_avanco_tit=$((sem_avanco_tit + 1))
+              if [ "$sem_avanco_tit" -ge 5 ]; then
+                echo "::error::cursor de titulos nao avancou por 5 rodadas seguidas (ficou em $desde_titulos) -- abortando"
+                exit 1
+              fi
+              echo "aviso: titulos sem avancar (tentativa $sem_avanco_tit/5) -- provavel lentidao do Zen, tentando de novo"
+            else
+              sem_avanco_tit=0
             fi
             if [ "$nf_concluido" = "0" ] && [ "$prox_nf" = "$desde_nf" ]; then
-              echo "::error::cursor de nf nao avancou (ficou em $desde_nf) -- abortando"
-              exit 1
+              sem_avanco_nf=$((sem_avanco_nf + 1))
+              if [ "$sem_avanco_nf" -ge 5 ]; then
+                echo "::error::cursor de nf nao avancou por 5 rodadas seguidas (ficou em $desde_nf) -- abortando"
+                exit 1
+              fi
+              echo "aviso: nf sem avancar (tentativa $sem_avanco_nf/5) -- provavel lentidao do Zen, tentando de novo"
+            else
+              sem_avanco_nf=0
             fi
 
             [ "$tit_concluido" = "0" ] && desde_titulos="$prox_tit"

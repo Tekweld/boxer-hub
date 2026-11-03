@@ -75,6 +75,7 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
 .stock-low{color:#f59e0b}.stock-low .dot{background:#f59e0b}
 .stock-bo{color:#718096}.stock-bo .dot{background:#718096}
 .stock-no{color:#dc2626}.stock-no .dot{background:#dc2626}
+.stock-prev{color:#1d4ed8}.stock-prev .dot{background:#1d4ed8}
 .produto-actions{padding:6px 8px 8px;display:flex;gap:4px;align-items:center}
 .produto-qty-wrap{display:flex;align-items:center;gap:3px}
 .produto-qty-label{font-size:9px;color:#718096;font-weight:500}
@@ -106,6 +107,7 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
 .pdp-stock-badge.s-low{color:#f59e0b;background:#fffbeb;border:1px solid #fde68a}
 .pdp-stock-badge.s-bo{color:#718096;background:#f7fafc;border:1px solid #e2e8f0}
 .pdp-stock-badge.s-no{color:#dc2626;background:#fef2f2;border:1px solid #fecaca}
+.pdp-stock-badge.s-prev{color:#1d4ed8;background:#eff6ff;border:1px solid #bfdbfe}
 .pdp-stock-dot{width:7px;height:7px;border-radius:50%;background:currentColor}
 .pdp-meta-row{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:12px;color:#718096;margin-bottom:12px;padding:8px 0;border-top:1px solid #f0f4f8;border-bottom:1px solid #f0f4f8}
 .pdp-meta-row span{display:flex;align-items:center;gap:4px}
@@ -485,6 +487,47 @@ function fmtPrevisao(d) {
   return dt.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
 }
 
+// Guarda os produtos crus carregados por ultimo, indexados por id -- precisa
+// disso pra recalcular o selo de estoque na hora que a quantidade muda, sem
+// refazer a consulta inteira do catalogo.
+let _produtosPorId = {};
+
+function stockTagWrap(produtoId, st) {
+  if (!st) return `<div id="stockTag-${produtoId}"></div>`;
+  return `<div id="stockTag-${produtoId}" class="produto-stock-tag ${st.cls}"><span class="dot"></span>${st.text}${st.prev ? ' <span class="prev-hint">· prev. ' + st.prev + '</span>' : ''}</div>`;
+}
+
+function aplicarSeloEstoque(produtoId, st) {
+  const tag = document.getElementById('stockTag-' + produtoId);
+  if (!tag) return;
+  if (!st) { tag.className = ''; tag.innerHTML = ''; return; }
+  tag.className = 'produto-stock-tag ' + st.cls;
+  tag.innerHTML = `<span class="dot"></span>${st.text}${st.prev ? ' <span class="prev-hint">· prev. ' + st.prev + '</span>' : ''}`;
+}
+
+// Mesma logica de 3 estados que pedidos.html ja usa no carrinho
+// (fetchDisponibilidadePrevistaSku, hub.js): se a quantidade pedida cabe no
+// estoque conhecido, mostra o selo estatico de sempre; se excede, busca na
+// previsao de chegada (FUP) e mostra "Disponivel em X" ou "Sem previsao" --
+// em vez de continuar dizendo "Em estoque" para uma quantidade que ele nao
+// cobre (achado pelo Andre: item 3005031 aparecia "Em estoque" mesmo pedindo
+// mais do que realmente ha e vai haver).
+async function atualizarSeloEstoque(produtoId) {
+  const p = _produtosPorId[produtoId];
+  const tag = document.getElementById('stockTag-' + produtoId);
+  const qtyEl = document.getElementById('qty-' + produtoId);
+  if (!p || !tag || !qtyEl) return;
+  const qty = parseInt(qtyEl.value) || 1;
+
+  const prev = await fetchDisponibilidadePrevistaSku(p.sku, qty, p.estoque_disponivel);
+  if (!prev) { aplicarSeloEstoque(produtoId, stockInfo(p)); return; }
+  aplicarSeloEstoque(produtoId, prev.iso
+    ? { cls: 'stock-prev', text: 'Disponivel em ' + fmtPrevisao(prev.iso) }
+    : { cls: 'stock-no', text: 'Sem previsao de chegada' });
+}
+
+const atualizarSeloEstoqueDebounced = debounce(atualizarSeloEstoque, 350);
+
 function stockInfo(p) {
   const prev = p.previsao_chegada && p.status_estoque !== 'disponivel' ? fmtPrevisao(p.previsao_chegada) : '';
   // 'sem_info': o conector ZEN ainda nao popula estoque. Omitir o selo e mais
@@ -538,6 +581,9 @@ async function loadProdutos() {
       return;
     }
 
+    _produtosPorId = {};
+    prods.forEach(p => { _produtosPorId[p.produto_id] = p; });
+
     grid.innerHTML = prods.map(p => {
       // A view ja entrega foto_paths ordenado por prioridade de fonte
       // (PDM primeiro) e sem URLs nao-renderizaveis.
@@ -556,12 +602,12 @@ async function loadProdutos() {
           <div class="produto-nome">${esc(p.nome)}</div>
           <div class="produto-cat">${esc(p.categoria_nome || '')}${volt ? ' <span class="produto-volt">⚡ ' + volt + '</span>' : ''}</div>
           ${pr ? `<div class="produto-preco">${precoRiscadoHtml(pr)}${fmtMoeda(+pr.preco_base)}<span class="produto-preco-ipi">c/ impostos${+pr.ipi_percentual > 0 ? ' | IPI ' + pr.ipi_percentual + '%' : ''}${+pr.icms_percentual > 0 ? ' | ICMS ' + pr.icms_percentual + '%' : ''}</span></div>` : ''}
-          ${st ? `<div class="produto-stock-tag ${st.cls}"><span class="dot"></span>${st.text}${st.prev ? ' <span class="prev-hint">· prev. ' + st.prev + '</span>' : ''}</div>` : ''}
+          ${stockTagWrap(p.produto_id, st)}
         </div>
         <div class="produto-actions" onclick="event.stopPropagation()">
           <div class="produto-qty-wrap">
             <span class="produto-qty-label">Qtd</span>
-            <input type="number" class="produto-qty" id="qty-${p.produto_id}" value="${cartQty || 1}" min="1" max="999">
+            <input type="number" class="produto-qty" id="qty-${p.produto_id}" value="${cartQty || 1}" min="1" max="999" oninput="atualizarSeloEstoqueDebounced('${p.produto_id}')">
           </div>
           <button class="produto-add-btn" onclick="quickAdd('${p.produto_id}','${esc(p.sku)}','${esc(p.nome)}')">Adicionar</button>
         </div>
@@ -691,7 +737,7 @@ async function openPDP(produtoId) {
         <div class="pdp-details">
           <div class="pdp-sku">${esc(prod.sku)}</div>
           <div class="pdp-nome">${esc(prod.nome)}</div>
-          ${st ? `<div class="pdp-stock-badge ${st.scls}"><span class="pdp-stock-dot"></span>${st.text}${st.prev ? ' · Previsao: ' + st.prev : ''}</div>` : ''}
+          ${st ? `<div id="pdpStockBadge" class="pdp-stock-badge ${st.scls}"><span class="pdp-stock-dot"></span>${st.text}${st.prev ? ' · Previsao: ' + st.prev : ''}</div>` : ''}
           ${metaParts.length ? '<div class="pdp-meta-row">' + metaParts.join('') + '</div>' : ''}
           ${prod.o_que_acompanha?.length ? `<div class="pdp-info-card"><div class="pdp-info-title">Conteudo da embalagem</div><ul>${prod.o_que_acompanha.map(i => '<li>' + esc(i) + '</li>').join('')}</ul></div>` : ''}
           ${prod.descricao ? `<div class="pdp-info-card"><div class="pdp-info-title">Descricao</div><p>${esc(prod.descricao)}</p></div>` : ''}
@@ -710,14 +756,34 @@ async function openPDP(produtoId) {
       <div class="pdp-footer-spacer"></div>
       <div class="pdp-footer-qty">
         <label>Qtd</label>
-        <input type="number" id="pdp-qty" data-pid="${produtoId}" data-sku="${esc(prod.sku)}" data-nome="${esc(prod.nome)}" value="${cartQty || 1}" min="1" max="999">
+        <input type="number" id="pdp-qty" data-pid="${produtoId}" data-sku="${esc(prod.sku)}" data-nome="${esc(prod.nome)}" value="${cartQty || 1}" min="1" max="999" oninput="atualizarSeloEstoquePdpDebounced()">
       </div>
       <button class="pdp-footer-add" onclick="pdpAddToCart()">Adicionar ao pedido</button>`;
+    _pdpProdutoAtual = prod;
   } catch (e) {
     toast('Erro ao abrir produto', 'error');
     closePDP();
   }
 }
+
+let _pdpProdutoAtual = null;
+
+async function atualizarSeloEstoquePdp() {
+  const p = _pdpProdutoAtual;
+  const badge = document.getElementById('pdpStockBadge');
+  const qtyEl = document.getElementById('pdp-qty');
+  if (!p || !badge || !qtyEl) return;
+  const qty = parseInt(qtyEl.value) || 1;
+
+  const prev = await fetchDisponibilidadePrevistaSku(p.sku, qty, p.estoque_disponivel);
+  const aplicar = st => { badge.className = 'pdp-stock-badge ' + st.scls; badge.innerHTML = `<span class="pdp-stock-dot"></span>${st.text}${st.prev ? ' · Previsao: ' + st.prev : ''}`; };
+  if (!prev) { aplicar(stockInfo(p)); return; }
+  aplicar(prev.iso
+    ? { scls: 's-prev', text: 'Disponivel em ' + fmtPrevisao(prev.iso) }
+    : { scls: 's-no', text: 'Sem previsao de chegada' });
+}
+
+const atualizarSeloEstoquePdpDebounced = debounce(atualizarSeloEstoquePdp, 350);
 
 function closePDP() {
   document.getElementById('pdpPage').style.display = 'none';

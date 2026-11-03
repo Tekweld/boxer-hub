@@ -75,6 +75,14 @@ tbody tr:hover{background:#f0f7ff}
 textarea{font-family:Outfit;font-size:13px;padding:8px 12px;border:1px solid #c3cfe2;border-radius:6px;outline:none;width:100%;resize:vertical;min-height:64px}
 textarea:focus{border-color:#25bbee}
 .btn-sm{padding:4px 10px;font-size:12px}
+.form-row{margin-bottom:14px}
+.form-row label{display:block;font-size:12px;font-weight:500;color:#4a5568;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+.form-row input,.form-row select{width:100%;font-family:Outfit;font-size:13px;padding:8px 12px;border:1px solid #c3cfe2;border-radius:6px;outline:none}
+.form-row input:focus,.form-row select:focus{border-color:#25bbee}
+.form-row-inline{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.form-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0;flex-wrap:wrap}
+.cart-pedido-sec{margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0}
+.cart-preco-hint{font-size:11px;color:#718096;margin-bottom:10px}
 
 .status-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
 .status-rascunho{background:#e2e8f0;color:#4a5568}
@@ -238,6 +246,70 @@ function dispDoItem(item) {
 // (b) cada submissao que falhava na politica largava mais um rascunho orfao
 // (havia 8 presos no banco). Guardando qual rascunho esta em edicao, o envio
 // REUSA essa linha em vez de criar outra.
+// === DETALHES DO PEDIDO (pagamento/OC/observacoes) ===
+// Pedido do Andre em teste ao vivo (2026-11-03): esses campos viviam so
+// dentro do modal de revisao, exigindo clicar "Revisar pedido" pra aparecer.
+// Agora moram na propria tela do carrinho; persistidos em sessionStorage
+// porque renderCarrinho() recria o HTML inteiro a cada mudanca de
+// quantidade/preco (senao o texto digitado sumiria no proximo re-render).
+function detalhesKey() { return 'hub_pedido_detalhes_' + getUserId() + '_' + (getClienteAtivo() || 'self'); }
+function getDetalhesPedido() { try { return JSON.parse(sessionStorage.getItem(detalhesKey()) || '{}'); } catch { return {}; } }
+function salvarDetalhesPedido(patch) {
+  sessionStorage.setItem(detalhesKey(), JSON.stringify(Object.assign(getDetalhesPedido(), patch)));
+}
+
+// Cartao: 1 a 10x sem juros. Boleto/duplicata: ate 3x (28/56/84 dias).
+// PIX e transferencia: a vista. Espelha hub_politica_parametros -- quem decide
+// de verdade continua sendo hub_fn_validar_politica no envio.
+function atualizarParcelasCarrinho() {
+  const forma = document.getElementById('cartPagamento')?.value;
+  const sel = document.getElementById('cartParcelas');
+  if (!sel) return;
+  const max = forma === 'cartao_credito' ? 10 : forma === 'boleto' ? 3 : 1;
+  const salvas = Math.min(getDetalhesPedido().parcelas || 1, max);
+  sel.innerHTML = Array.from({ length: max }, (_, i) =>
+    `<option value="${i + 1}" ${salvas === i + 1 ? 'selected' : ''}>${i + 1}x${max > 1 ? ' sem juros' : ' (a vista)'}</option>`).join('');
+  sel.disabled = max === 1;
+  if (max === 1) salvarDetalhesPedido({ parcelas: 1 });
+}
+
+// Preco editavel direto no item do carrinho -- mesmo padrao do
+// tabela-teste.html (orcEditarPreco/orcRestaurarPreco), so que agora visivel
+// na tela principal (antes vivia escondido dentro da revisao do orcamento,
+// achado pelo Andre em teste ao vivo). So quem pode enviar orcamento ve isso
+// (podeEnviarOrcamento) -- o pedido real do proprio dealer sempre usa o
+// preco de verdade calculado pelo servidor, nunca o editado aqui.
+function editarPrecoCarrinho(idx) {
+  const el = document.getElementById('cartPreco_' + idx);
+  if (!el) return;
+  const cart = getCart();
+  const item = cart[idx];
+  if (!item) return;
+  const atual = item.precoManual != null ? item.precoManual : parseFloat(el.dataset.base) || 0;
+  el.outerHTML = `<input id="cartPreco_${idx}" class="cart-preco-in" inputmode="decimal" value="${String(atual.toFixed(2)).replace('.', ',')}"
+    style="width:90px;text-align:right;padding:4px 6px;font-size:13px;border:1px solid #c3cfe2;border-radius:6px"
+    onkeydown="if(event.key==='Enter')this.blur();if(event.key==='Escape'){this.dataset.x=1;this.blur();}"
+    onblur="confirmarPrecoCarrinho(${idx}, this)">`;
+  const input = document.getElementById('cartPreco_' + idx);
+  input.focus(); input.select();
+}
+
+function confirmarPrecoCarrinho(idx, el) {
+  if (el.dataset.x) { renderCarrinho(); return; } // Esc: descarta, so re-renderiza
+  const n = parseFloat(el.value.replace(/\./g, '').replace(',', '.'));
+  const base = parseFloat(el.dataset.base) || 0;
+  const cart = getCart();
+  const item = cart[idx];
+  if (!item) return;
+  if (!(n > 0) || Math.abs(n - base) < 0.005) delete item.precoManual; else item.precoManual = n;
+  saveCart(cart);
+}
+
+function restaurarPrecoCarrinho(idx) {
+  const cart = getCart();
+  if (cart[idx]) { delete cart[idx].precoManual; saveCart(cart); }
+}
+
 function pedidoEdicaoKey() { return 'hub_pedido_edicao_' + getUserId() + '_' + (getClienteAtivo() || 'self'); }
 function getPedidoEmEdicao() { return sessionStorage.getItem(pedidoEdicaoKey()) || null; }
 function setPedidoEmEdicao(id) { sessionStorage.setItem(pedidoEdicaoKey(), id); }
@@ -314,8 +386,15 @@ async function renderCarrinho() {
   } catch {}
 
   const precos = await carregarPrecosCarrinho(cart);
-  const precoDe = item => +(precos[item.produto_id]?.preco_final ?? item.preco_base);
+  // precoBaseDe e o que o servidor calculou (preco_final da politica comercial
+  // da revenda); precoDe aplica por cima o ajuste manual do item, quando
+  // existe -- igual tabela-teste.html, mas agora direto na tela do carrinho
+  // (antes vivia escondido dentro da revisao, achado pelo Andre em teste).
+  const precoBaseDe = item => +(precos[item.produto_id]?.preco_final ?? item.preco_base ?? 0);
+  const precoDe = item => item.precoManual != null ? item.precoManual : precoBaseDe(item);
   const faixa = Object.values(precos)[0];
+  const podeEditarPreco = podeEnviarOrcamento();
+  const detalhes = getDetalhesPedido();
 
   const totalVal = cart.reduce((s, i) => s + (precoDe(i) * i.quantidade), 0);
   const semEstoque = itensSemEstoque(cart, stockMap);
@@ -342,6 +421,7 @@ async function renderCarrinho() {
   } catch {}
 
   wrap.innerHTML = `
+    ${podeEditarPreco ? '<div class="cart-preco-hint">Clique no preço de um item para ajustar manualmente — vale só para o orçamento enviado ao cliente; o pedido confirmado sempre usa o preço real calculado pelo sistema.</div>' : ''}
     <div>
       ${cart.map((item, idx) => {
         const st = stockMap[item.produto_id];
@@ -357,19 +437,27 @@ async function renderCarrinho() {
         const badgeEstoque = prevTexto
           ? '<div class="cart-item-stock s-prev"><span class="dot"></span>' + prevTexto + '</div>'
           : (stInfo.text ? '<div class="cart-item-stock ' + stInfo.cls + '"><span class="dot"></span>' + stInfo.text + '</div>' : '');
+        const unit = precoDe(item);
+        const basePreco = precoBaseDe(item);
+        const tabela = +(precos[item.produto_id]?.preco_tabela || 0);
+        const riscadoHtml = tabela > 0 && Math.abs(tabela - unit) > 0.01
+          ? `<s style="color:#a0aec0;font-size:11px;margin-right:4px">${fmtMoeda(tabela)}</s>` : '';
+        const precoHtml = podeEditarPreco
+          ? `<span id="cartPreco_${idx}" data-base="${basePreco}" onclick="editarPrecoCarrinho(${idx})" style="cursor:pointer;border-bottom:1px dotted #a0aec0" title="Clique para ajustar o preço deste item">${fmtMoeda(unit)}</span>${item.precoManual != null ? ` · <a href="javascript:void(0)" onclick="restaurarPrecoCarrinho(${idx})" style="color:#718096;font-size:11px">restaurar</a>` : ''}`
+          : fmtMoeda(unit);
         return `
         <div class="cart-item">
           <div class="cart-item-info">
             <div class="cart-item-sku">${esc(item.sku)}</div>
             <div class="cart-item-nome">${esc(item.nome || item.sku)}</div>
-            <div class="cart-item-preco">${fmtMoeda(precoDe(item))} un</div>
+            <div class="cart-item-preco">${riscadoHtml}${precoHtml} un</div>
             ${badgeEstoque}
           </div>
           <div class="cart-item-qty">
             <label>Qtd</label>
             <input type="number" value="${item.quantidade}" min="1" max="999" onchange="updateCartQty(${idx}, this.value)">
           </div>
-          <div class="cart-item-subtotal">${fmtMoeda(precoDe(item) * item.quantidade)}</div>
+          <div class="cart-item-subtotal">${fmtMoeda(unit * item.quantidade)}</div>
           <button class="cart-item-remove" onclick="removeCartItem(${idx})" title="Remover">&times;</button>
         </div>`;
       }).join('')}
@@ -384,7 +472,39 @@ async function renderCarrinho() {
     ${renderCreditoCarrinho(creditoInfo, totalVal)}
     ${renderFaixaProxima(faixaProxima)}
     ${renderSobEncomenda(semEstoque)}
-    ${renderBloqueios()}`;
+    ${renderBloqueios()}
+
+    <div class="cart-pedido-sec">
+      <h4 style="font-size:12px;font-weight:600;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Pagamento</h4>
+      <div class="form-row-inline">
+        <div class="form-row">
+          <label>Forma de pagamento</label>
+          <select id="cartPagamento" onchange="salvarDetalhesPedido({forma_pagamento:this.value});atualizarParcelasCarrinho()">
+            <option value="boleto" ${!detalhes.forma_pagamento || detalhes.forma_pagamento === 'boleto' ? 'selected' : ''}>Boleto / Duplicata a prazo</option>
+            <option value="cartao_credito" ${detalhes.forma_pagamento === 'cartao_credito' ? 'selected' : ''}>Cartão de crédito</option>
+            <option value="pix" ${detalhes.forma_pagamento === 'pix' ? 'selected' : ''}>PIX / à vista</option>
+            <option value="transferencia" ${detalhes.forma_pagamento === 'transferencia' ? 'selected' : ''}>Transferência</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Parcelas</label>
+          <select id="cartParcelas" onchange="salvarDetalhesPedido({parcelas:+this.value})"></select>
+        </div>
+      </div>
+    </div>
+    <div class="cart-pedido-sec">
+      <h4 style="font-size:12px;font-weight:600;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Seus dados</h4>
+      <div class="form-row">
+        <label>Número da sua ordem de compra (opcional)</label>
+        <input id="cartOC" type="text" maxlength="60" value="${esc(detalhes.ordem_compra || '')}" oninput="salvarDetalhesPedido({ordem_compra:this.value})" placeholder="Ex: OC-2026-114">
+      </div>
+      <div class="form-row">
+        <label>Observações (opcional)</label>
+        <textarea id="cartObs" maxlength="1000" oninput="salvarDetalhesPedido({observacoes:this.value})" placeholder="Instrucoes de entrega, transportadora preferida, etc.">${esc(detalhes.observacoes || '')}</textarea>
+      </div>
+    </div>`;
+
+  atualizarParcelasCarrinho();
 
   // Rodape fixo: os botoes de acao ficam visiveis desde o primeiro item
   // adicionado, sem precisar rolar ate o fim do carrinho -- pedido do Andre
@@ -615,19 +735,7 @@ async function _enviarPedidoInterno() {
          '&order=padrao.desc,tipo.asc&limit=1').then(r => r[0] || null)
     ]);
 
-    // Itens com preco de tabela + final para a lista editavel do orcamento
-    // (so quem pode enviar orcamento ve isso -- o pedido real sempre usa o
-    // preco de verdade do servidor, nunca o que foi editado aqui).
-    const itensRevisao = cart.map(i => {
-      const p = precos[i.produto_id];
-      return {
-        sku: i.sku, nome: i.nome, qtd: i.quantidade,
-        preco_tabela: +(p?.preco_tabela ?? 0),
-        preco_final: +(p?.preco_final ?? i.preco_base ?? 0)
-      };
-    });
-
-    abrirRevisao(pedido.id, politica, cliente, endereco, itensRevisao);
+    abrirRevisao(pedido.id, politica, cliente, endereco);
   } catch (e) {
     toast('Erro: ' + erroLegivel(e), 'error');
   } finally {
@@ -643,7 +751,11 @@ async function _enviarPedidoInterno() {
 
 let _revisao = null;
 
-function abrirRevisao(pedidoId, politica, cliente, endereco, itensRevisao) {
+// Rotulo legivel da forma de pagamento escolhida na tela do carrinho -- so
+// para recapitular aqui, o campo em si mora em getDetalhesPedido() agora.
+const PAGAMENTO_LABEL = { boleto: 'Boleto / Duplicata a prazo', cartao_credito: 'Cartão de crédito', pix: 'PIX / à vista', transferencia: 'Transferência' };
+
+function abrirRevisao(pedidoId, politica, cliente, endereco) {
   const subtotal = +(politica.subtotal || 0);
   const frete = politica.frete && politica.frete !== 'null' ? politica.frete : null;
   const valorFrete = +(frete?.valor || 0);
@@ -652,8 +764,9 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, itensRevisao) {
   const disponivel = +(cliente.limite_disponivel || 0);
   const limite = +(cliente.limite_credito || 0);
   const saldo = disponivel - total;
+  const detalhes = getDetalhesPedido();
 
-  _revisao = { pedidoId, subtotal, valorFrete, total, frete, cliente, itens: itensRevisao || [], precoManual: {} };
+  _revisao = { pedidoId, subtotal, valorFrete, total, frete, cliente };
 
   const violacoes = politica.violacoes || [];
   const bloqueado = violacoes.length > 0;
@@ -716,34 +829,11 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, itensRevisao) {
     </div>` : ''}
 
     <div class="rev-sec">
-      <h4>Pagamento</h4>
-      <div class="form-row-inline">
-        <div class="form-row">
-          <label>Forma de pagamento</label>
-          <select id="revPagamento" onchange="atualizarParcelas()">
-            <option value="boleto">Boleto / Duplicata a prazo</option>
-            <option value="cartao_credito">Cartao de credito</option>
-            <option value="pix">PIX / a vista</option>
-            <option value="transferencia">Transferencia</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label>Parcelas</label>
-          <select id="revParcelas"></select>
-        </div>
-      </div>
-    </div>
-
-    <div class="rev-sec">
-      <h4>Seus dados</h4>
-      <div class="form-row">
-        <label>Numero da sua ordem de compra (opcional)</label>
-        <input id="revOC" type="text" maxlength="60" placeholder="Ex: OC-2026-114">
-      </div>
-      <div class="form-row">
-        <label>Observacoes (opcional)</label>
-        <textarea id="revObs" maxlength="1000" placeholder="Instrucoes de entrega, transportadora preferida, etc."></textarea>
-      </div>
+      <h4>Confirmação</h4>
+      <div class="rev-linha"><span>Pagamento</span><span class="v">${esc(PAGAMENTO_LABEL[detalhes.forma_pagamento] || PAGAMENTO_LABEL.boleto)}${detalhes.parcelas > 1 ? ' em ' + detalhes.parcelas + 'x' : ''}</span></div>
+      ${detalhes.ordem_compra ? `<div class="rev-linha"><span>OC</span><span class="v">${esc(detalhes.ordem_compra)}</span></div>` : ''}
+      ${detalhes.observacoes ? `<div class="rev-linha" style="align-items:flex-start"><span>Observações</span><span class="v" style="font-weight:400;text-align:right;max-width:65%">${esc(detalhes.observacoes)}</span></div>` : ''}
+      <div style="font-size:11px;color:#718096;margin-top:6px">Para ajustar isso, <a href="javascript:void(0)" onclick="closeModal()" style="color:#25bbee">volte ao carrinho</a>.</div>
     </div>
 
     ${podeEnviarOrcamento() ? `<div class="rev-sec">
@@ -751,8 +841,7 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, itensRevisao) {
       <div style="font-size:12px;color:#718096;margin-bottom:10px">
         Em vez de confirmar agora, envie um link pro cliente aprovar. Não reserva crédito nem estoque ainda.
       </div>
-      <div id="revOrcItens"></div>
-      <div class="form-row" style="margin-top:12px">
+      <div class="form-row">
         <label>Nome de quem recebe</label>
         <input id="orcDestNome" type="text" maxlength="120" placeholder="Nome do contato">
       </div>
@@ -775,63 +864,6 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, itensRevisao) {
               ${bloqueado ? 'disabled title="Resolva os bloqueios acima"' : ''}>Confirmar e Enviar para ZEN</button>
     </div>
   `);
-
-  atualizarParcelas();
-  if (podeEnviarOrcamento()) renderRevisaoItens();
-}
-
-// Lista de itens do orcamento, com preco de tabela riscado e preco final
-// clicavel para ajuste manual -- mesmo padrao do tabela-teste.html
-// (orcEditarPreco/orcRestaurarPreco), que o Andre pediu para espelhar aqui.
-// So existe dentro da secao de orcamento: o pedido real NUNCA usa preco
-// editado na tela, so o que o servidor calcula em hub_fn_submeter_pedido.
-function renderRevisaoItens() {
-  const wrap = document.getElementById('revOrcItens');
-  if (!wrap || !_revisao) return;
-  const linhas = _revisao.itens.map(it => {
-    const manual = _revisao.precoManual[it.sku];
-    const unit = manual != null ? manual : it.preco_final;
-    const riscado = it.preco_tabela > 0 && Math.abs(it.preco_tabela - unit) > 0.01
-      ? `<div style="font-size:11px;color:#a0aec0"><s>${fmtMoeda(it.preco_tabela)}</s>${manual != null ? ' · <a href="javascript:void(0)" onclick="restaurarPrecoRevisao(\'' + esc(it.sku) + '\')" style="color:#718096">restaurar</a>' : ''}</div>`
-      : '';
-    return `<div class="rev-linha" style="align-items:flex-start">
-      <span>${esc(it.qtd)}x ${esc(it.nome || it.sku)}<div style="font-size:11px;color:#a0aec0">Cód. ${esc(it.sku)}</div></span>
-      <span class="v" style="text-align:right">
-        <span id="revPreco_${esc(it.sku)}" onclick="editarPrecoRevisao('${esc(it.sku)}')" style="cursor:pointer;border-bottom:1px dotted #a0aec0" title="Clique para ajustar o preço deste item">${fmtMoeda(unit)}</span>
-        ${riscado}
-        <div style="font-size:11px;color:#718096">= ${fmtMoeda(unit * it.qtd)}</div>
-      </span>
-    </div>`;
-  }).join('');
-  wrap.innerHTML = linhas;
-}
-
-function editarPrecoRevisao(sku) {
-  const el = document.getElementById('revPreco_' + sku);
-  if (!el) return;
-  const it = _revisao.itens.find(i => i.sku === sku);
-  const atual = _revisao.precoManual[sku] != null ? _revisao.precoManual[sku] : it.preco_final;
-  el.outerHTML = `<input id="revPreco_${sku}" class="rev-preco-in" inputmode="decimal" value="${String(atual.toFixed(2)).replace('.', ',')}"
-    style="width:100px;text-align:right;padding:4px 6px;font-size:13px;border:1px solid #c3cfe2;border-radius:6px"
-    onkeydown="if(event.key==='Enter')this.blur();if(event.key==='Escape'){this.dataset.x=1;this.blur();}"
-    onblur="confirmarPrecoRevisao('${sku}', this)">`;
-  const input = document.getElementById('revPreco_' + sku);
-  input.focus(); input.select();
-}
-
-function confirmarPrecoRevisao(sku, el) {
-  if (!el.dataset.x) {
-    const n = parseFloat(el.value.replace(/\./g, '').replace(',', '.'));
-    const it = _revisao.itens.find(i => i.sku === sku);
-    if (!(n > 0) || Math.abs(n - it.preco_final) < 0.005) delete _revisao.precoManual[sku];
-    else _revisao.precoManual[sku] = n;
-  }
-  renderRevisaoItens();
-}
-
-function restaurarPrecoRevisao(sku) {
-  delete _revisao.precoManual[sku];
-  renderRevisaoItens();
 }
 
 // "Enviar Orcamento" so existe pra quem esta montando pedido para OUTRA
@@ -887,13 +919,13 @@ async function enviarOrcamento() {
       uf = uf || ref.uf; segmento = segmento || ref.segmento; classe = classe || ref.classe;
     }
 
+    const detalhes = getDetalhesPedido();
     const payload = {
       acao: 'criar', tabela: 1,
       uf, segmento, classe: Number(classe),
       itens: cart.map(i => {
         const item = Object.assign({ codigo: i.sku, qtd: i.quantidade }, dispDoItem(i));
-        const manual = _revisao.precoManual[i.sku];
-        if (manual != null) item.preco = manual;
+        if (i.precoManual != null) item.preco = i.precoManual;
         return item;
       }),
       cliente: {
@@ -902,10 +934,10 @@ async function enviarOrcamento() {
       },
       vendedor: { telefone: '' },
       pagamento: {
-        tipo: document.getElementById('revPagamento').value === 'pix' ? 'avista' : 'boleto',
-        parcelas: Number(document.getElementById('revParcelas').value) || 1
+        tipo: detalhes.forma_pagamento === 'pix' ? 'avista' : 'boleto',
+        parcelas: Number(detalhes.parcelas) || 1
       },
-      observacoes: document.getElementById('revObs').value.trim() || null
+      observacoes: (detalhes.observacoes || '').trim() || null
     };
 
     const r = await fetch('/api/push-pedido?target=orcamento', {
@@ -988,19 +1020,6 @@ function renderOpcoesFrete(frete, valorFrete) {
   </div>`;
 }
 
-// Cartao: 1 a 10x sem juros. Boleto/duplicata: ate 3x (28/56/84 dias).
-// PIX e transferencia: a vista. Espelha hub_politica_parametros -- quem decide
-// continua sendo hub_fn_validar_politica no envio.
-function atualizarParcelas() {
-  const forma = document.getElementById('revPagamento')?.value;
-  const sel = document.getElementById('revParcelas');
-  if (!sel) return;
-  const max = forma === 'cartao_credito' ? 10 : forma === 'boleto' ? 3 : 1;
-  sel.innerHTML = Array.from({ length: max }, (_, i) =>
-    `<option value="${i + 1}">${i + 1}x${max > 1 ? ' sem juros' : ' (a vista)'}</option>`).join('');
-  sel.disabled = max === 1;
-}
-
 async function confirmarEnvio() {
   if (!_revisao) return;
   const btn = document.getElementById('btnConfirmarEnvio');
@@ -1018,11 +1037,12 @@ async function confirmarEnvio() {
                  : _revisao.frete.retirada_disponivel ? 'retirada' : null;
     }
 
+    const detalhes = getDetalhesPedido();
     await sb('/hub_pedidos?id=eq.' + _revisao.pedidoId, 'PATCH', {
-      ordem_compra: document.getElementById('revOC').value.trim() || null,
-      observacoes: document.getElementById('revObs').value.trim() || null,
-      forma_pagamento: document.getElementById('revPagamento').value,
-      parcelas: +document.getElementById('revParcelas').value || 1,
+      ordem_compra: (detalhes.ordem_compra || '').trim() || null,
+      observacoes: (detalhes.observacoes || '').trim() || null,
+      forma_pagamento: detalhes.forma_pagamento || 'boleto',
+      parcelas: +detalhes.parcelas || 1,
       frete_modalidade: modalidade
     });
 
@@ -1127,6 +1147,7 @@ function removeCartItem(idx) {
 
 function clearCart() {
   sessionStorage.removeItem(cartKey());
+  sessionStorage.removeItem(detalhesKey());
   // Esvaziar o carrinho encerra a edicao: o proximo envio e um pedido novo.
   // O rascunho antigo continua no historico, para retomar ou descartar de la.
   clearPedidoEmEdicao();

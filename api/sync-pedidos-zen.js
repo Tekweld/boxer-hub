@@ -672,6 +672,28 @@ module.exports = async function handler(req, res) {
   // properties.comments sensivel (ver removerComentariosSensiveis). O
   // debug_sale normal tiraria exatamente o campo que precisamos ver aqui
   // (sale.properties.comments e onde vendedor/pagamento/observacoes vao).
+  // Temporario -- limpeza dos testes de orcamento com a Luitex (venda real)
+  // feitos nesta sessao, que avancaram para PREPARED/Venda padrao e por isso
+  // zenCancelarVenda (_orcamento.js) recusa cancelar sozinho. Remover depois
+  // de usado.
+  if (req.query?.debug_cancelar_venda) {
+    const sid = String(req.query.debug_cancelar_venda);
+    try {
+      const headers = await zenAuth();
+      const vendas = await zenGet('/sale/sale', { q: 'id==' + sid, max: 1, limite: 1 });
+      const v = vendas[0];
+      if (!v) return res.status(200).json({ ok: false, erro: 'venda nao encontrada' });
+      if (v.status === 'CANCELED') return res.status(200).json({ ok: true, ja_cancelada: true });
+      const r = await fetch(ZEN_BASE + '/sale/saleOpCancel/' + sid, {
+        method: 'POST', headers, body: JSON.stringify({ reason: 'Teste de orcamento (Hub) cancelado apos validacao', code: 'OTHER' })
+      });
+      const txt = await r.text();
+      return res.status(200).json({ ok: r.ok, status_http: r.status, resposta: txt.slice(0, 300) });
+    } catch (e) {
+      return res.status(200).json({ ok: false, erro: e.message.slice(0, 300) });
+    }
+  }
+
   if (req.query?.debug_sale_comments) {
     const sid = String(req.query.debug_sale_comments);
     try {

@@ -280,10 +280,13 @@ function getUserId() {
   return SESSION?.user?.id || '';
 }
 
-// O carrinho e por usuario E por revenda: um representante que troca de
-// revenda no meio do caminho nao pode levar o carrinho da anterior junto.
+// O carrinho e por usuario E por revenda (ou prospect): um representante que
+// troca de revenda/CNPJ novo no meio do caminho nao pode levar o carrinho da
+// anterior junto. Prospect usa o proprio cnpj como chave -- senao colidiria
+// com a chave 'self' de "nenhuma revenda selecionada".
 function cartKey() {
-  return 'hub_cart_' + getUserId() + '_' + (getClienteAtivo() || 'self');
+  const prospect = getProspectAtivo();
+  return 'hub_cart_' + getUserId() + '_' + (getClienteAtivo() || (prospect ? 'prospect_' + prospect.cnpj : 'self'));
 }
 
 // === ATUAR EM NOME DE UMA REVENDA ===
@@ -315,6 +318,7 @@ function getClienteAtivoNome() {
 }
 
 function setClienteAtivo(id, nome) {
+  sessionStorage.removeItem(prospectAtivoKey());
   sessionStorage.setItem(clienteAtivoKey(), JSON.stringify({ id, nome }));
   window.location.reload();
 }
@@ -324,15 +328,44 @@ function limparClienteAtivo() {
   window.location.reload();
 }
 
+// === ORCAMENTO PARA CNPJ NOVO (ainda nao e cliente do Hub) ===
+// Pedido do Andre, 2026-11-03: "isso e fundamental" -- hoje so da pra montar
+// pedido/orcamento para uma revenda que ja existe em hub_clientes. O backend
+// de orcamento (api/_orcamento.js) ja aceita qualquer CNPJ (busca dados
+// publicos na Receita via BrasilAPI quando nao acha no cadastro, e guarda o
+// orcamento mesmo sem venda no ZEN ainda -- zen_status='sem_cliente_zen',
+// linkado sozinho quando o cadastro aparecer). So faltava a porta de entrada
+// no Hub. Mutuamente exclusivo com getClienteAtivo(): escolher um limpa o
+// outro -- nunca os dois "ativos" ao mesmo tempo.
+function prospectAtivoKey() { return 'hub_prospect_ativo_' + getUserId(); }
+function getProspectAtivo() {
+  if (getUserTipo() === 'cliente') return null;
+  try { return JSON.parse(sessionStorage.getItem(prospectAtivoKey()) || 'null'); } catch { return null; }
+}
+function setProspectAtivo(dados) {
+  sessionStorage.removeItem(clienteAtivoKey());
+  sessionStorage.setItem(prospectAtivoKey(), JSON.stringify(dados));
+  window.location.reload();
+}
+function limparProspectAtivo() {
+  sessionStorage.removeItem(prospectAtivoKey());
+  window.location.reload();
+}
+
 async function abrirSeletorCliente() {
+  const tipo = getUserTipo();
   openModal(`
     <h3 style="font-size:18px;margin-bottom:6px;color:#1d327b">Atuar em nome de uma revenda</h3>
     <p style="font-size:13px;color:#718096;margin-bottom:14px">Preco e pedido passam a seguir as regras da revenda escolhida.</p>
     <input id="buscaCliente" placeholder="Buscar por nome ou CNPJ..." autocomplete="off"
            style="width:100%;padding:10px 12px;border:1px solid #c3cfe2;border-radius:8px;font-family:Outfit;font-size:14px;outline:none">
     <div id="listaClientes" style="margin-top:12px;max-height:50vh;overflow-y:auto"></div>
+    ${tipo !== 'cliente' ? `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e2e8f0">
+      <a href="javascript:void(0)" onclick="abrirSeletorProspect()" style="font-size:13px;color:#25bbee;text-decoration:none">+ CNPJ novo — ainda não é cliente</a>
+    </div>` : ''}
     <div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0">
       ${getClienteAtivo() ? '<button class="btn btn-outline" onclick="limparClienteAtivo()">Sair da revenda</button>' : ''}
+      ${getProspectAtivo() ? '<button class="btn btn-outline" onclick="limparProspectAtivo()">Sair do CNPJ novo</button>' : ''}
       <button class="btn btn-outline" onclick="closeModal()">Fechar</button>
     </div>
   `);
@@ -341,6 +374,96 @@ async function abrirSeletorCliente() {
   input.addEventListener('input', debounce(() => buscarClientes(input.value), 300));
   input.focus();
   buscarClientes('');
+}
+
+// CNPJ que ainda nao esta em hub_clientes -- busca dados publicos (Receita)
+// pelo mesmo backend que ja faz isso pra orcamento (acao 'cliente' de
+// api/_orcamento.js), so pra confirmar razao social/UF antes de montar o
+// orcamento. Nao cria nada no Hub nem no ZEN: so guarda {cnpj, nome, uf} na
+// sessao, que catalogo.html/pedidos.html usam pra simular preco e enviar
+// orcamento.
+function abrirSeletorProspect() {
+  openModal(`
+    <h3 style="font-size:18px;margin-bottom:6px;color:#1d327b">Orçamento para CNPJ novo</h3>
+    <p style="font-size:13px;color:#718096;margin-bottom:14px">Ainda não é cliente cadastrado no Hub/ZEN. Dá pra montar e enviar o orçamento mesmo assim — o pedido de verdade só sai depois que o cadastro existir.</p>
+    <div class="form-row">
+      <label>CNPJ</label>
+      <input id="prospectCnpj" type="text" maxlength="18" placeholder="00.000.000/0000-00" oninput="this.value=maskCnpjInput(this.value)">
+    </div>
+    <div id="prospectResultado"></div>
+    <div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0">
+      <button class="btn btn-outline" onclick="abrirSeletorCliente()">Voltar</button>
+      <button class="btn btn-primary" id="btnBuscarProspect" onclick="buscarProspect()">Buscar CNPJ</button>
+    </div>
+  `);
+  document.getElementById('prospectCnpj').focus();
+}
+
+// hub.js e carregado por paginas que nao definem esc() (admin, financeiro,
+// cadastro, pesquisas) -- usar o esc() local delas quebraria nessas telas.
+function escHub(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function maskCnpjInput(v) {
+  const d = String(v || '').replace(/\D/g, '').slice(0, 14);
+  return d.replace(/^(\d{2})(\d{0,3})(\d{0,3})(\d{0,4})(\d{0,2}).*/, (m, a, b, c, dd, e) =>
+    a + (b ? '.' + b : '') + (c ? '.' + c : '') + (dd ? '/' + dd : '') + (e ? '-' + e : ''));
+}
+
+async function buscarProspect() {
+  const cnpj = (document.getElementById('prospectCnpj').value || '').replace(/\D/g, '');
+  const wrap = document.getElementById('prospectResultado');
+  if (cnpj.length !== 14) { wrap.innerHTML = '<p style="color:#991b1b;font-size:13px;margin-top:10px">Informe um CNPJ completo (14 dígitos).</p>'; return; }
+  const btn = document.getElementById('btnBuscarProspect');
+  btn.disabled = true; btn.textContent = 'Buscando...';
+  wrap.innerHTML = '<p style="font-size:13px;color:#718096;margin-top:10px">Consultando...</p>';
+  try {
+    const r = await fetch('/api/push-pedido?target=orcamento', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (SESSION?.access_token || '') },
+      body: JSON.stringify({ acao: 'cliente', cnpj })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Erro ao consultar CNPJ');
+
+    if (j.encontrado) {
+      // Ja existe no cadastro do Hub/ZEN -- nao e prospect de verdade, manda
+      // atuar pela revenda normal em vez de criar um "CNPJ novo" duplicado.
+      wrap.innerHTML = `<div style="margin-top:10px;padding:10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:13px;color:#1d327b">
+        <strong>${escHub(j.razao_social)}</strong> já é cliente cadastrado${j.no_zen ? '' : ' (ainda sem sincronizar com o ZEN)'}.
+        Use "Buscar por nome ou CNPJ" na tela anterior para atuar por essa revenda.
+      </div>`;
+      return;
+    }
+
+    const pub = j.publico;
+    if (!pub || !pub.razao_social) {
+      wrap.innerHTML = `<div style="margin-top:10px;padding:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:13px;color:#991b1b">
+        Não encontramos dados públicos para esse CNPJ. Confira o número ou continue informando os dados na mão.
+      </div>
+      <div class="form-row" style="margin-top:10px"><label>Razão social</label><input id="prospectNome" type="text" maxlength="200"></div>
+      <div class="form-row"><label>UF</label><input id="prospectUf" type="text" maxlength="2" style="text-transform:uppercase"></div>
+      <button class="btn btn-primary btn-sm" onclick="confirmarProspect('${cnpj}')">Continuar com esses dados</button>`;
+      return;
+    }
+
+    wrap.innerHTML = `<div style="margin-top:10px;padding:10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px">
+      <div style="font-size:14px;font-weight:600;color:#1a202c">${escHub(pub.razao_social)}</div>
+      <div style="font-size:12px;color:#718096">${escHub(pub.nome_fantasia || '')}${pub.cidade ? (pub.nome_fantasia ? ' · ' : '') + escHub(pub.cidade) : ''}${pub.uf ? '/' + escHub(pub.uf) : ''}</div>
+      ${pub.situacao ? `<div style="font-size:11px;color:${/ativa/i.test(pub.situacao) ? '#166534' : '#991b1b'};margin-top:2px">Situação: ${escHub(pub.situacao)}</div>` : ''}
+    </div>
+    <div style="margin-top:12px"><button class="btn btn-primary" onclick="confirmarProspect('${cnpj}', '${escHub(pub.razao_social).replace(/'/g, "\\'")}', '${escHub(pub.uf || '')}')">Montar orçamento para esta empresa</button></div>`;
+  } catch (e) {
+    wrap.innerHTML = '<p style="color:#991b1b;font-size:13px;margin-top:10px">' + escHub(e.message) + '</p>';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Buscar CNPJ';
+  }
+}
+
+function confirmarProspect(cnpj, nomeSugerido, ufSugerida) {
+  const nome = nomeSugerido || document.getElementById('prospectNome')?.value.trim() || ('CNPJ ' + fmtCnpj(cnpj));
+  const uf = (ufSugerida || document.getElementById('prospectUf')?.value || '').trim().toUpperCase().slice(0, 2);
+  if (!nome) { toast('Informe a razão social', 'error'); return; }
+  setProspectAtivo({ cnpj, nome, uf });
 }
 
 async function buscarClientes(termo) {
@@ -478,6 +601,10 @@ function renderTopbar(titulo) {
             ? `<span class="atuando-chip" onclick="abrirSeletorCliente()" title="Trocar de revenda">
                  Atuando por <strong>${(getClienteAtivoNome() || 'revenda').replace(/</g,'&lt;')}</strong>
                </span>`
+            : getProspectAtivo()
+            ? `<span class="atuando-chip atuando-prospect" onclick="abrirSeletorCliente()" title="CNPJ ainda nao e cliente">
+                 Orçamento p/ CNPJ novo: <strong>${escHub(getProspectAtivo().nome).replace(/</g,'&lt;')}</strong>
+               </span>`
             : `<span class="atuando-chip atuando-vazio" onclick="abrirSeletorCliente()">Selecionar revenda</span>`
         ) : ''}
         <span class="notif-badge" id="notifBadge" style="display:none" title="Notificacoes pendentes"></span>
@@ -500,6 +627,8 @@ function renderTopbar(titulo) {
       .atuando-chip strong{color:#fff}
       .atuando-chip:hover{background:rgba(255,255,255,.2)}
       .atuando-vazio{border-style:dashed;border-color:rgba(255,255,255,.45);color:#93b4d4}
+      .atuando-prospect{border-color:#f59e0b;background:rgba(245,158,11,.15);color:#fde68a}
+      .atuando-prospect strong{color:#fff}
       @media(max-width:768px){.atuando-chip{max-width:150px;font-size:11px;padding:4px 9px}}
       .hub-menu-btn{display:none;background:none;border:1px solid rgba(255,255,255,.3);color:#fff;font-size:20px;padding:4px 10px;border-radius:6px;cursor:pointer;font-family:Outfit;line-height:1}
       .hub-mobile-user{display:none}

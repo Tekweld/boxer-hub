@@ -252,7 +252,11 @@ function dispDoItem(item) {
 // Agora moram na propria tela do carrinho; persistidos em sessionStorage
 // porque renderCarrinho() recria o HTML inteiro a cada mudanca de
 // quantidade/preco (senao o texto digitado sumiria no proximo re-render).
-function detalhesKey() { return 'hub_pedido_detalhes_' + getUserId() + '_' + (getClienteAtivo() || 'self'); }
+function contextoAtivoSufixo() {
+  const prospect = getProspectAtivo();
+  return getClienteAtivo() || (prospect ? 'prospect_' + prospect.cnpj : 'self');
+}
+function detalhesKey() { return 'hub_pedido_detalhes_' + getUserId() + '_' + contextoAtivoSufixo(); }
 function getDetalhesPedido() { try { return JSON.parse(sessionStorage.getItem(detalhesKey()) || '{}'); } catch { return {}; } }
 function salvarDetalhesPedido(patch) {
   sessionStorage.setItem(detalhesKey(), JSON.stringify(Object.assign(getDetalhesPedido(), patch)));
@@ -326,9 +330,43 @@ let ultimasViolacoes = [];
 // naquela faixa — mesma ordem que o servidor usa em hub_fn_submeter_pedido.
 // Medir na tabela, e nao no preco ja descontado, evita a circularidade de o
 // desconto baixar o valor e o valor rebaixar a faixa.
+// Le o ajuste de politica comercial feito em catalogo.html (UF/Segmento/
+// Classe), que e salvo com o id da revenda OU o cnpj do prospect -- so
+// devolve se bater com quem esta ativo agora.
+function lerOverridePolitica() {
+  try {
+    const salvo = JSON.parse(localStorage.getItem('hub_override_politica') || 'null');
+    if (!salvo) return null;
+    const clienteId = getClienteAtivo();
+    const prospect = getProspectAtivo();
+    if (clienteId && salvo.clienteId === clienteId) return salvo;
+    if (prospect && salvo.prospectCnpj === prospect.cnpj) return salvo;
+    return null;
+  } catch { return null; }
+}
+
 async function carregarPrecosCarrinho(cart) {
   const clienteId = getClienteAtivo();
-  if (!clienteId || !cart.length) return {};
+  const prospect = getProspectAtivo();
+  if (!cart.length || (!clienteId && !prospect)) return {};
+
+  // CNPJ novo (prospect) nao tem politica comercial cadastrada -- o preco so
+  // existe se o representante escolheu UF/Segmento/Classe no catalogo
+  // (restaurarAjustePolitica ja semeia um padrao na primeira vez).
+  if (prospect && !clienteId) {
+    const override = lerOverridePolitica();
+    if (!override) return {};
+    try {
+      const linhas = await sbRpc('hub_fn_precos_parametro', { p_uf: override.uf, p_segmento: override.segmento, p_classe: override.classe });
+      const out = {};
+      linhas.forEach(l => { out[l.produto_id] = l; });
+      return out;
+    } catch (e) {
+      console.error('[preco] falha ao recalcular carrinho (prospect):', e);
+      return {};
+    }
+  }
+
   try {
     const base = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: 0 });
     const porId = {};
@@ -654,6 +692,16 @@ async function _enviarPedidoInterno() {
   // Dealer pede para si; representante e funcionario pedem em nome da revenda
   // que escolheram na topbar. Quem valida o direito e a RLS/hub_pode_acessar_cliente.
   const clienteId = getClienteAtivo();
+
+  // CNPJ novo (prospect): nao existe cliente_id nenhum pra criar rascunho em
+  // hub_pedidos (a coluna e not-null) -- nao faz sentido tentar, ja que so
+  // "Enviar Link do Orcamento" existe pra esse caso (ver podeEnviarOrcamento).
+  // Caminho totalmente a parte, sem passar por hub_fn_validar_politica.
+  if (!clienteId && getProspectAtivo()) {
+    await abrirRevisaoProspect(cart);
+    return;
+  }
+
   if (!clienteId) {
     if (getUserTipo() !== 'cliente') {
       toast('Selecione a revenda antes de enviar o pedido', 'error');
@@ -754,6 +802,70 @@ let _revisao = null;
 // Rotulo legivel da forma de pagamento escolhida na tela do carrinho -- so
 // para recapitular aqui, o campo em si mora em getDetalhesPedido() agora.
 const PAGAMENTO_LABEL = { boleto: 'Boleto / Duplicata a prazo', cartao_credito: 'Cartão de crédito', pix: 'PIX / à vista', transferencia: 'Transferência' };
+
+// Revisao do orcamento para CNPJ novo (prospect) -- caminho bem mais curto
+// que abrirRevisao: nao ha rascunho em hub_pedidos, nao ha endereco/credito/
+// frete reais (o cliente ainda nao existe), e "Confirmar e Enviar para ZEN"
+// nunca aparece, so "Enviar Link do Orcamento". _revisao.cliente e montado
+// na mao a partir do prospect pra enviarOrcamento() funcionar sem mudanca.
+async function abrirRevisaoProspect(cart) {
+  const btn = document.getElementById('btnEnviarPedido');
+  if (btn) { btn.disabled = true; btn.textContent = 'Preparando...'; }
+  try {
+    const prospect = getProspectAtivo();
+    const precos = await carregarPrecosCarrinho(cart);
+    if (!Object.keys(precos).length) {
+      toast('Escolha UF/Segmento/Classe no catálogo antes de revisar (CNPJ novo não tem política comercial cadastrada)', 'error');
+      return;
+    }
+    const total = cart.reduce((s, i) => s + (+(precos[i.produto_id]?.preco_final ?? 0) * i.quantidade), 0);
+    const detalhes = getDetalhesPedido();
+
+    _revisao = {
+      pedidoId: null, subtotal: total, valorFrete: 0, total, frete: null,
+      cliente: { cnpj: prospect.cnpj, razao_social: prospect.nome, nome_fantasia: '', uf: prospect.uf, email_principal: '', telefone: '' }
+    };
+
+    openModal(`
+      <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
+        <h3 style="font-size:18px;color:#1d327b">Revisar orçamento — CNPJ novo</h3>
+        <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
+      </div>
+      <div style="font-size:12px;color:#92400e;background:#fff7ed;border:1px solid #fed7aa;padding:10px 12px;border-radius:8px;margin-bottom:16px">
+        <strong>${esc(prospect.nome)}</strong> ainda não é cliente cadastrado no ZEN. Endereço, crédito e frete serão definidos no cadastro — por enquanto só dá pra enviar o link do orçamento, não confirmar um pedido real.
+      </div>
+      <div class="rev-sec">
+        <h4>Resumo</h4>
+        <div class="rev-linha"><span>${cart.length} item(ns)</span><span class="v">${fmtMoeda(total)}</span></div>
+        <div class="rev-total"><span>Total</span><span class="v">${fmtMoeda(total)}</span></div>
+      </div>
+      <div class="rev-sec">
+        <h4>Confirmação</h4>
+        <div class="rev-linha"><span>Pagamento</span><span class="v">${esc(PAGAMENTO_LABEL[detalhes.forma_pagamento] || PAGAMENTO_LABEL.boleto)}${detalhes.parcelas > 1 ? ' em ' + detalhes.parcelas + 'x' : ''}</span></div>
+        ${detalhes.ordem_compra ? `<div class="rev-linha"><span>OC</span><span class="v">${esc(detalhes.ordem_compra)}</span></div>` : ''}
+        <div style="font-size:11px;color:#718096;margin-top:6px">Para ajustar isso, <a href="javascript:void(0)" onclick="closeModal()" style="color:#25bbee">volte ao carrinho</a>.</div>
+      </div>
+      <div class="rev-sec">
+        <h4>Enviar para aprovação (orçamento)</h4>
+        <div class="form-row">
+          <label>Nome de quem recebe</label>
+          <input id="orcDestNome" type="text" maxlength="120" placeholder="Nome do contato">
+        </div>
+        <div class="form-row-inline">
+          <div class="form-row"><label>E-mail</label><input id="orcDestEmail" type="email" placeholder="contato@empresa.com.br"></div>
+          <div class="form-row"><label>Celular / WhatsApp</label><input id="orcDestCelular" type="text" placeholder="(11) 99999-9999"></div>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-outline" onclick="closeModal()">Voltar ao carrinho</button>
+        <button class="btn" style="background:#25bbee;color:#fff;border-color:#25bbee" id="btnEnviarOrcamento" onclick="enviarOrcamento()">Enviar Link do Orçamento</button>
+      </div>
+    `);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Revisar pedido'; }
+  }
+}
+function esc(s) { return esc(s); }
 
 function abrirRevisao(pedidoId, politica, cliente, endereco) {
   const subtotal = +(politica.subtotal || 0);
@@ -871,7 +983,7 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
 // ja esta comprando de verdade, nao faz sentido propor orcamento pra si
 // mesmo. Ver plano "Orcamento com link + aceite digital dentro do Hub".
 function podeEnviarOrcamento() {
-  return getUserTipo() !== 'cliente' && !!getClienteAtivo();
+  return getUserTipo() !== 'cliente' && (!!getClienteAtivo() || !!getProspectAtivo());
 }
 
 // Envia o carrinho como orcamento (perfil "Orcamento" no Zen, PREPARING, sem
@@ -896,13 +1008,9 @@ async function enviarOrcamento() {
     const cliente = _revisao.cliente;
     const cart = getCart();
 
-    let override = null;
-    try {
-      const salvo = JSON.parse(localStorage.getItem('hub_override_politica') || 'null');
-      if (salvo && salvo.clienteId === clienteId) override = salvo;
-    } catch (_) {}
+    const override = lerOverridePolitica();
     let uf = override?.uf, segmento = override?.segmento, classe = override?.classe;
-    if (!uf || !segmento || !classe) {
+    if ((!uf || !segmento || !classe) && clienteId) {
       // p_valor_pedido=0 sempre devolve a classe MAIS CARA (1) -- "preco
       // publicado" antes de qualquer desconto por volume (ver comentario em
       // hub_fn_precos_cliente). Pra achar a classe de verdade do carrinho,
@@ -918,6 +1026,9 @@ async function enviarOrcamento() {
       if (!ref) { toast('Nao foi possivel calcular a politica comercial desta revenda', 'error'); return; }
       uf = uf || ref.uf; segmento = segmento || ref.segmento; classe = classe || ref.classe;
     }
+    // CNPJ novo (prospect): nao tem hub_fn_precos_cliente pra cair de volta --
+    // uf/segmento/classe tem que vir do ajuste feito em catalogo.html.
+    if (!uf || !segmento || !classe) { toast('Escolha UF/Segmento/Classe no catálogo antes de enviar o orçamento', 'error'); return; }
 
     const detalhes = getDetalhesPedido();
     const payload = {
@@ -951,8 +1062,8 @@ async function enviarOrcamento() {
     // O orcamento vive em comercial.orcamentos, nao em hub_pedidos -- o
     // rascunho criado antes da revisao (so para calcular preco/credito) fica
     // sem uso; apaga pra nao acumular rascunho orfao a cada orcamento
-    // enviado.
-    try { await sb('/hub_pedidos?id=eq.' + _revisao.pedidoId, 'DELETE'); } catch (_) {}
+    // enviado. CNPJ novo (prospect) nunca cria esse rascunho (pedidoId null).
+    if (_revisao.pedidoId) { try { await sb('/hub_pedidos?id=eq.' + _revisao.pedidoId, 'DELETE'); } catch (_) {} }
     clearPedidoEmEdicao();
     clearCart();
     _revisao = null;
@@ -1220,10 +1331,14 @@ async function loadPedidos() {
       })),
       ...(status ? [] : orcamentos.map(o => {
         const [label, classe] = ORC_STATUS_LABEL[o.status] || [o.status, ''];
+        // CNPJ novo ainda nao cadastrado no ZEN -- destaca na lista pra nao
+        // depender de abrir cada orcamento pra perceber (pedido do Andre).
+        const avisoCadastro = o.zen_status === 'sem_cliente_zen'
+          ? ' <span class="orc-st-badge laranja" title="Verificar cadastro assim que o cliente existir no ZEN">aguardando cadastro</span>' : '';
         return {
           tipo: 'orcamento', id: o.id, numero: o.codigo, cliente: o.cliente_nome,
           erpId: o.zen_sale_id || null, oc: null,
-          statusHtml: `<span class="orc-st-badge${classe ? ' ' + classe : ''}">${esc(label)}</span>`,
+          statusHtml: `<span class="orc-st-badge${classe ? ' ' + classe : ''}">${esc(label)}</span>${avisoCadastro}`,
           valor: o.total_final, data: o.criado_em
         };
       }))
@@ -1311,7 +1426,11 @@ function abrirOrcamentoDetalhe(id) {
     </div>
     <div style="font-size:13px;color:#4a5568;margin-bottom:6px">${o.visualizacoes > 0 ? 'Cliente abriu o link ' + o.visualizacoes + 'x' + (o.ultima_visualizacao_em ? ' (ultima vez ' + fmtData(o.ultima_visualizacao_em) + ')' : '') : 'Cliente ainda nao abriu o link'}</div>
     ${o.aceito_em ? `<div style="font-size:13px;color:#166534;margin-bottom:6px">Aceito por ${esc(o.aceito_nome || o.cliente_nome)} em ${fmtData(o.aceito_em)}</div>` : ''}
-    ${o.zen_erro ? `<div style="font-size:12px;color:#9a3412;background:#fff4e5;padding:8px;border-radius:6px;margin-bottom:10px">${esc(o.zen_erro)}</div>` : ''}
+    ${o.zen_erro && o.zen_status !== 'sem_cliente_zen' ? `<div style="font-size:12px;color:#9a3412;background:#fff4e5;padding:8px;border-radius:6px;margin-bottom:10px">${esc(o.zen_erro)}</div>` : ''}
+    ${o.zen_status === 'sem_cliente_zen' ? `<div style="font-size:12px;color:#92400e;background:#fff7ed;border:1px solid #fed7aa;padding:10px 12px;border-radius:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <span>Cliente ainda não cadastrado no ZEN — assim que o cadastro existir, o pedido real entra sozinho.</span>
+      <button class="btn btn-warn btn-sm" id="btnVerificarCadastro_${o.id}" onclick="verificarCadastroOrcamento('${o.id}')">Verificar cadastro agora</button>
+    </div>` : ''}
     <div style="display:flex;gap:6px;margin:14px 0">
       <input readonly value="${esc(o.link)}" style="flex:1;font-size:12px;padding:8px" onclick="this.select()">
       <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${o.link}');toast('Link copiado')">Copiar</button>
@@ -1327,6 +1446,30 @@ function abrirOrcamentoDetalhe(id) {
       <button class="btn btn-outline" onclick="closeModal()">Fechar</button>
     </div>
   `);
+}
+
+// "Fundamental" pro Andre (2026-11-03): orcamento de CNPJ novo fica
+// zen_status='sem_cliente_zen' ate o cadastro aparecer (ver
+// api/_orcamento.js). O retry automatico so roda em janela limitada; isso
+// aqui deixa o representante confirmar na hora, assim que sabe que o
+// cadastro saiu, em vez de esperar.
+async function verificarCadastroOrcamento(id) {
+  const btn = document.getElementById('btnVerificarCadastro_' + id);
+  if (btn) { btn.disabled = true; btn.textContent = 'Verificando...'; }
+  try {
+    const r = await chamarOrcamentoApi('verificar_cadastro', { id });
+    if (r.encontrado === false) {
+      toast('Cliente ainda não aparece no cadastro do ZEN. Tente de novo depois que o cadastro terminar.', 'error');
+      return;
+    }
+    toast('Cliente encontrado — venda criada no ZEN!');
+    closeModal();
+    loadPedidos();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Verificar cadastro agora'; }
+  }
 }
 
 async function aprovarOrcamento(id) {

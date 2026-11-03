@@ -239,13 +239,14 @@ const CLASSES_TABELA1 = [1, 2, 3];
 const UFS_BR = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 
 function podeAjustarPolitica() {
-  return getUserTipo() !== 'cliente' && !!getClienteAtivo();
+  return getUserTipo() !== 'cliente' && (!!getClienteAtivo() || !!getProspectAtivo());
 }
 
 async function loadPrecos() {
   const clienteId = getClienteAtivo();
+  const prospect = getProspectAtivo();
   try {
-    if (clienteId && overridePolitica) {
+    if ((clienteId || prospect) && overridePolitica) {
       const linhas = await sbRpc('hub_fn_precos_parametro', {
         p_uf: overridePolitica.uf, p_segmento: overridePolitica.segmento, p_classe: overridePolitica.classe
       });
@@ -334,13 +335,14 @@ function renderAjustePolitica() {
   box.id = 'ajustePoliticaBox';
   box.style.cssText = 'max-width:1400px;margin:12px auto 0;padding:10px 14px;background:#eef3ff;border:1px solid #c3d3f5;border-radius:8px;font-size:13px;color:#1d327b;display:flex;align-items:center;gap:10px;flex-wrap:wrap';
   const simulando = precoContexto.tipo === 'simulado';
+  const prospect = getProspectAtivo();
   // Ordem Estado -> Segmento -> Classe (igual tabela-teste) e botoes em vez de
   // select: clicar ja recalcula na hora, sem precisar de um botao "Aplicar"
   // separado -- um clique a menos por ajuste.
   const chip = (grupo, valor, label, ativo) =>
     `<span class="cat-chip${ativo ? ' active' : ''}" style="padding:5px 12px;font-size:12px" onclick="mudarAjustePolitica('${grupo}', '${valor}')">${label}</span>`;
   box.innerHTML = `
-    <strong>${simulando ? 'Simulando política comercial:' : 'Política comercial desta revenda:'}</strong>
+    <strong>${prospect ? 'Política comercial do orçamento (CNPJ novo, escolha manual):' : simulando ? 'Simulando política comercial:' : 'Política comercial desta revenda:'}</strong>
     <span style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
       <span style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.3px;margin-right:2px">UF</span>
       ${UFS_BR.map(u => chip('uf', u, u, precoContexto.uf === u)).join('')}
@@ -353,7 +355,7 @@ function renderAjustePolitica() {
       <span style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.3px;margin-right:2px">Classe</span>
       ${CLASSES_TABELA1.map(c => chip('classe', c, 'Classe ' + c, Number(precoContexto.classe) === c)).join('')}
     </span>
-    ${simulando ? '<button class="btn btn-outline btn-sm" onclick="limparAjustePolitica()">Usar o real da revenda</button>' : ''}
+    ${simulando && !prospect ? '<button class="btn btn-outline btn-sm" onclick="limparAjustePolitica()">Usar o real da revenda</button>' : ''}
   `;
   const nav = document.querySelector('.hub-nav');
   if (nav && nav.parentNode) nav.parentNode.insertBefore(box, nav.nextSibling);
@@ -362,14 +364,24 @@ function renderAjustePolitica() {
 async function mudarAjustePolitica(grupo, valor) {
   const base = overridePolitica || { uf: precoContexto.uf, segmento: precoContexto.segmento, classe: Number(precoContexto.classe) };
   overridePolitica = Object.assign({}, base, { [grupo]: grupo === 'classe' ? Number(valor) : valor });
-  // Persistido (com o id da revenda) para pedidos.html usar no "Enviar
-  // Orcamento" -- sem isso a simulacao se perderia ao navegar do catalogo
-  // pro carrinho/revisao. Amarrado ao cliente ativo para nao vazar pra outra
-  // revenda se o representante trocar de "atuando por" sem limpar antes.
-  try { localStorage.setItem('hub_override_politica', JSON.stringify({ clienteId: getClienteAtivo(), ...overridePolitica })); } catch (_) {}
+  salvarOverridePolitica();
   allPrecos = {};
   await loadPrecos();
   await loadProdutos();
+}
+
+// Persistido (com o id da revenda OU o cnpj do prospect) para pedidos.html
+// usar no "Enviar Orcamento" -- sem isso a simulacao se perderia ao navegar
+// do catalogo pro carrinho/revisao. Amarrado a quem esta ativo agora para
+// nao vazar pra outra revenda/prospect se trocar sem limpar antes.
+function salvarOverridePolitica() {
+  const prospect = getProspectAtivo();
+  try {
+    localStorage.setItem('hub_override_politica', JSON.stringify(Object.assign(
+      { clienteId: getClienteAtivo(), prospectCnpj: prospect ? prospect.cnpj : null },
+      overridePolitica
+    )));
+  } catch (_) {}
 }
 
 async function limparAjustePolitica() {
@@ -382,16 +394,26 @@ async function limparAjustePolitica() {
 }
 
 // Restaura a simulacao ao reabrir o catalogo (ex: foi pro carrinho e voltou)
-// -- so se ainda for a mesma revenda; troca de "atuando por" descarta.
+// -- so se ainda for a mesma revenda/prospect; troca descarta. Pra um CNPJ
+// novo (prospect), nao ha politica comercial cadastrada nenhuma -- semeia um
+// padrao (Fisica/Classe 3, UF da Receita se achou) na primeira vez, senao a
+// tela ficaria sem preco nenhum ate o representante clicar num chip.
 function restaurarAjustePolitica() {
+  const prospect = getProspectAtivo();
   try {
     const salvo = JSON.parse(localStorage.getItem('hub_override_politica') || 'null');
-    if (salvo && salvo.clienteId === getClienteAtivo()) {
+    const bateCliente = salvo && salvo.clienteId && salvo.clienteId === getClienteAtivo();
+    const batePropspect = salvo && salvo.prospectCnpj && prospect && salvo.prospectCnpj === prospect.cnpj;
+    if (bateCliente || batePropspect) {
       overridePolitica = { uf: salvo.uf, segmento: salvo.segmento, classe: salvo.classe };
-    } else if (salvo) {
-      localStorage.removeItem('hub_override_politica');
+      return;
     }
+    if (salvo) localStorage.removeItem('hub_override_politica');
   } catch (_) {}
+  if (prospect && !getClienteAtivo()) {
+    overridePolitica = { uf: UFS_BR.includes(prospect.uf) ? prospect.uf : 'SP', segmento: 'Física', classe: 3 };
+    salvarOverridePolitica();
+  }
 }
 
 // === CATEGORIAS ===

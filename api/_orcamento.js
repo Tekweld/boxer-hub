@@ -71,6 +71,7 @@ module.exports = async function orcamento(req, res) {
       case 'cancelar': return res.status(200).json(await cancelar(ctx, user, body.id));
       case 'arquivar': return res.status(200).json(await arquivar(ctx, user, body.id, body.arquivar !== false));
       case 'enviar_email': return res.status(200).json(await enviarEmailCliente(ctx, user, body.id));
+      case 'verificar_cadastro': return res.status(200).json(await verificarCadastro(ctx, user, body.id));
       default: return res.status(400).json({ error: 'acao invalida' });
     }
   } catch (e) {
@@ -524,16 +525,43 @@ async function listar(ctx, user, leve) {
 async function zenRetomarSemCliente(ctx, rows) {
   const alvo = rows.filter(r => r.zen_status === 'sem_cliente_zen' && !r.zen_sale_id && ['enviado', 'visualizado', 'aceito_cliente'].includes(r.status)).slice(0, 5);
   for (const r of alvo) {
-    const hc = (await sbGet(ctx, '/hub_clientes?cnpj=eq.' + r.cliente_cnpj + '&select=erp_cliente_id&limit=1', 'comercial'))[0];
-    if (!hc || !hc.erp_cliente_id) continue;
     try {
-      const full = (await sbGet(ctx, '/orcamentos?id=eq.' + r.id + '&select=*', 'comercial'))[0];
-      const row = Object.assign({}, full, { zen_person_id: Number(hc.erp_cliente_id) });
-      const sale = await criarVendaZen(row, full, full.itens);
-      const patch = { zen_person_id: row.zen_person_id, zen_sale_id: sale.id, zen_status: sale.parcial ? 'parcial' : 'web_orcamento', zen_etapa: sale.parcial ? null : 'Orçamento · WEB orçamento', zen_erro: sale.parcial || null };
-      await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + r.id, patch);
-      Object.assign(r, patch);
+      const resultado = await tentarVincularClienteZen(ctx, r.id, r.cliente_cnpj);
+      if (resultado) Object.assign(r, resultado);
     } catch (e) { /* tenta de novo na proxima listagem */ }
+  }
+}
+
+// Mesma logica de zenRetomarSemCliente, mas para UM orcamento so e chamavel
+// sob demanda (acao verificar_cadastro) -- o representante clica "Verificar
+// cadastro agora" assim que sabe que o cliente novo foi cadastrado no ZEN,
+// em vez de esperar o retry automatico (que so roda em listar() e so numa
+// janela de status aceito/visto/enviado). Devolve null se o cliente ainda
+// nao aparece em hub_clientes com erp_cliente_id.
+async function tentarVincularClienteZen(ctx, orcamentoId, cnpj) {
+  const hc = (await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=erp_cliente_id&limit=1', 'comercial'))[0];
+  if (!hc || !hc.erp_cliente_id) return null;
+  const full = (await sbGet(ctx, '/orcamentos?id=eq.' + orcamentoId + '&select=*', 'comercial'))[0];
+  if (!full) return null;
+  const row = Object.assign({}, full, { zen_person_id: Number(hc.erp_cliente_id) });
+  const sale = await criarVendaZen(row, full, full.itens);
+  const patch = { zen_person_id: row.zen_person_id, zen_sale_id: sale.id, zen_status: sale.parcial ? 'parcial' : 'web_orcamento', zen_etapa: sale.parcial ? null : 'Orçamento · WEB orçamento', zen_erro: sale.parcial || null };
+  await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + orcamentoId, patch);
+  return patch;
+}
+
+async function verificarCadastro(ctx, user, id) {
+  if (!id) throw erro(400, 'id obrigatorio');
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id + '&select=id,cliente_cnpj,zen_status,zen_sale_id', 'comercial'))[0];
+  if (!o) throw erro(404, 'Orcamento nao encontrado');
+  if (o.zen_sale_id) return { ok: true, ja_vinculado: true };
+  if (o.zen_status !== 'sem_cliente_zen') throw erro(409, 'Este orcamento nao esta aguardando cadastro de cliente');
+  try {
+    const patch = await tentarVincularClienteZen(ctx, o.id, o.cliente_cnpj);
+    if (!patch) return { ok: true, encontrado: false };
+    return { ok: true, encontrado: true, zen_sale_id: patch.zen_sale_id };
+  } catch (e) {
+    throw erro(502, 'Cliente encontrado, mas falhou ao criar a venda no ZEN: ' + e.message.slice(0, 160));
   }
 }
 async function sincronizarZen(ctx, rows) {

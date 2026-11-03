@@ -430,7 +430,13 @@ async function renderCarrinho() {
   // (antes vivia escondido dentro da revisao, achado pelo Andre em teste).
   const precoBaseDe = item => +(precos[item.produto_id]?.preco_final ?? item.preco_base ?? 0);
   const precoDe = item => item.precoManual != null ? item.precoManual : precoBaseDe(item);
-  const faixa = Object.values(precos)[0];
+  // hub_fn_precos_cliente devolve segmento/uf/classe na propria linha;
+  // hub_fn_precos_parametro (usado pra prospect/simulacao) nao devolve --
+  // nesse caso o override escolhido em catalogo.html (mesmo uf/segmento/
+  // classe que gerou o preco) e que vale pra nota abaixo do total.
+  const faixaBase = Object.values(precos)[0];
+  const override = lerOverridePolitica();
+  const faixa = faixaBase?.segmento ? faixaBase : (override ? { segmento: override.segmento, uf: override.uf, classe: override.classe } : null);
   const podeEditarPreco = podeEnviarOrcamento();
   const detalhes = getDetalhesPedido();
 

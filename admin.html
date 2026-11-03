@@ -280,11 +280,10 @@ select,input,textarea{font-family:Outfit,sans-serif}
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px;flex-wrap:wrap">
       <select id="solFiltroArea" onchange="loadSolicitacoesAdmin()" style="min-width:180px">
         <option value="">Todas as areas</option>
-        <option value="vendas_adm">ADM de Vendas</option>
+        <option value="vendas_adm">Comercial / ADM de Vendas</option>
         <option value="financeiro">Financeiro</option>
-        <option value="cadastro">Cadastro</option>
+        <option value="operacoes">Operacoes</option>
         <option value="ti">TI</option>
-        <option value="comercial">Comercial</option>
       </select>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#4a5568;cursor:pointer">
         <input type="checkbox" id="solMostrarResolvidas" onchange="loadSolicitacoesAdmin()"> Mostrar concluidas
@@ -566,6 +565,7 @@ function renderCamposNovoUsuario() {
       <div class="form-row">
         <label>Buscar representante (ja sincronizado do ZEN)</label>
         <input id="uRepBusca" placeholder="Nome ou email..." oninput="buscarRepresentanteUsuario()">
+        <div style="font-size:11px;color:#718096;margin-top:3px">Busca traz qualquer representante do ZEN, interno ou externo -- nomes podem coincidir. Confirme o email antes de selecionar.</div>
       </div>
       <div id="uRepResultados" style="margin-bottom:16px"></div>
       <div id="uRepSel" class="hidden" style="padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;margin-bottom:16px">
@@ -589,8 +589,6 @@ function renderCamposNovoUsuario() {
         <label>Role</label>
         <select id="uRole">
           <option value="analyst">Analyst</option>
-          <option value="manager">Manager</option>
-          <option value="financial">Financial</option>
           ${tipo === 'admin' ? '<option value="admin" selected>Admin</option>' : ''}
         </select>
       </div>
@@ -598,11 +596,10 @@ function renderCamposNovoUsuario() {
         <label>Area${tipo === 'funcionario' ? '' : ' (opcional)'}</label>
         <select id="uArea">
           <option value="">${tipo === 'admin' ? 'Nenhuma (enxerga tudo)' : 'Selecione...'}</option>
-          <option value="vendas_adm">ADM de Vendas</option>
+          <option value="vendas_adm">Comercial / ADM de Vendas</option>
           <option value="financeiro">Financeiro</option>
-          <option value="cadastro">Cadastro</option>
+          <option value="operacoes">Operacoes</option>
           <option value="ti">TI</option>
-          <option value="comercial">Comercial</option>
         </select>
         <div style="font-size:11px;color:#718096;margin-top:3px">Define pra qual fila do canal de resolucao os chamados dele caem.</div>
       </div>

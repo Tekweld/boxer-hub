@@ -884,11 +884,10 @@ const CATEGORIAS_SOLICITACAO = [
 // Area que assume a resolucao -- hub_trg_solicitacao_preencher ja define um
 // valor automatico por categoria ao abrir; o time pode reclassificar depois.
 const AREAS_SOLICITACAO = [
-  { valor: 'vendas_adm', label: 'ADM de Vendas' },
+  { valor: 'vendas_adm', label: 'Comercial / ADM de Vendas' },
   { valor: 'financeiro', label: 'Financeiro' },
-  { valor: 'cadastro', label: 'Cadastro' },
-  { valor: 'ti', label: 'TI' },
-  { valor: 'comercial', label: 'Comercial' }
+  { valor: 'operacoes', label: 'Operacoes' },
+  { valor: 'ti', label: 'TI' }
 ];
 function labelArea(area) {
   const achada = AREAS_SOLICITACAO.find(a => a.valor === area);

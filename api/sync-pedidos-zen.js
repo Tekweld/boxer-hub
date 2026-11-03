@@ -684,6 +684,10 @@ module.exports = async function handler(req, res) {
       const v = vendas[0];
       if (!v) return res.status(200).json({ ok: false, erro: 'venda nao encontrada' });
       if (v.status === 'CANCELED') return res.status(200).json({ ok: true, ja_cancelada: true });
+      if (v.status === 'PREPARING') {
+        const rp = await fetch(ZEN_BASE + '/sale/saleOpPrepare/' + sid, { method: 'POST', headers });
+        if (!rp.ok) return res.status(200).json({ ok: false, erro: 'saleOpPrepare falhou: ' + (await rp.text()).slice(0, 300) });
+      }
       const r = await fetch(ZEN_BASE + '/sale/saleOpCancel/' + sid, {
         method: 'POST', headers, body: JSON.stringify({ reason: 'Teste de orcamento (Hub) cancelado apos validacao', code: 'OTHER' })
       });

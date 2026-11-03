@@ -165,7 +165,12 @@ async function fetchDisponibilidadePrevistaSku(sku, quantidade, estoqueAtual) {
   const deficit = quantidade - estoque;
   if (deficit <= 0) return null;
 
-  const records = disp.disponibilidade.porCodigo[sku];
+  // normaliza igual ao /api/disponibilidade: achado em 2026-11-03 -- o modo
+  // tabela (previsaoTabela em disponibilidade.js) ja normalizava trim+upper
+  // ao montar porCodigo, mas o modo Hub (handler default, usado aqui) nao
+  // normalizava nem na gravacao nem na leitura -- SKU com espaco/caixa
+  // diferente no FUP batia em silencio e caia pra "sem previsao".
+  const records = disp.disponibilidade.porCodigo[String(sku).trim().toUpperCase()];
   if (!Array.isArray(records) || !records.length) return { iso: null };
 
   return { iso: calcularDisponibilidadePrevista(records, deficit) };
@@ -326,6 +331,31 @@ function setClienteAtivo(id, nome) {
 function limparClienteAtivo() {
   sessionStorage.removeItem(clienteAtivoKey());
   window.location.reload();
+}
+
+// === GRUPO EMPRESARIAL (ZEN PersonGroup, hub_clientes.grupo_erp_id) ===
+// Achado pelo Andre, 2026-11-03: boa parte do relacionamento com o cliente
+// acontece pelo GRUPO (ex.: Diafer = 8 CNPJs/filiais no ZEN, cada um com seu
+// erp_cliente_id, mas titulos/NFs concentrados so em um deles). Financeiro,
+// Pedidos e Indicadores filtravam so pelo cliente_id da filial selecionada --
+// agindo por qualquer filial de um grupo, as outras filiais ficavam invisiveis.
+// Expande para os ids de todas as filiais do mesmo grupo (mesmo grupo_erp_id).
+// Seguro por construcao: a 2a consulta roda com o JWT de quem esta logado, e a
+// RLS de hub_clientes (hub_clientes_select_rep/select_dealer/select_interno)
+// ja restringe sozinha quem cada tipo de usuario pode enxergar -- um dealer ou
+// representante sem acesso a uma filial-irma simplesmente nao a ve aqui, sem
+// precisar duplicar a regra no frontend.
+async function getClienteGrupoIds(clienteId) {
+  if (!clienteId) return [];
+  try {
+    const [c] = await sb('/hub_clientes?id=eq.' + clienteId + '&select=id,grupo_erp_id');
+    if (!c) return [clienteId];
+    if (!c.grupo_erp_id) return [clienteId];
+    const grupo = await sb('/hub_clientes?grupo_erp_id=eq.' + c.grupo_erp_id + '&ativo=eq.true&select=id');
+    return grupo.length ? grupo.map(g => g.id) : [clienteId];
+  } catch (e) {
+    return [clienteId];
+  }
 }
 
 // === ORCAMENTO PARA CNPJ NOVO (ainda nao e cliente do Hub) ===

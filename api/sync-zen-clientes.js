@@ -481,14 +481,22 @@ module.exports = async function handler(req, res) {
     // Dois grupos separados (ver nota acima) -- cada um homogeneo nas chaves.
     let gravados = 0;
     const erros = [];
+    const carteiraPares = []; // {representante_id, cliente_id} pra gravar em hub_carteira logo abaixo
     for (const [rotulo, grupo] of [['com_representante', comRep], ['sem_representante', semRep]]) {
       for (let i = 0; i < grupo.length; i += 200) {
         const lote = grupo.slice(i, i + 200);
         const r = await fetch(HUB_URL + '/rest/v1/hub_clientes?on_conflict=erp_cliente_id', {
           method: 'POST', headers: hubH('POST'), body: JSON.stringify(lote)
         });
-        if (r.ok) { gravados += lote.length; }
-        else {
+        if (r.ok) {
+          gravados += lote.length;
+          if (rotulo === 'com_representante') {
+            const criados = await r.json();
+            for (const c of criados) {
+              if (c.id && c.representante_id) carteiraPares.push({ representante_id: c.representante_id, cliente_id: c.id });
+            }
+          }
+        } else {
           const txt = await r.text();
           console.error(`[ZEN] lote ${rotulo}:${i} falhou (${r.status}):`, txt.slice(0, 300));
           erros.push({ grupo: rotulo, lote: i, status: r.status, detalhe: txt.slice(0, 300) });
@@ -496,7 +504,24 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    console.log('[ZEN] gravados:', gravados, 'de', bodies.length, '| representantes:', representantesGravados);
+    // 3.5 — Espelha em hub_carteira (achado em 2026-11-03: hub_pode_acessar_cliente
+    // e toda a RLS de representante dependem de hub_carteira, NAO de
+    // hub_clientes.representante_id -- sem isto a tabela ficava sempre vazia e
+    // qualquer representante real via zero pedido/titulo/NF). Unique constraint
+    // (representante_id, cliente_id) torna o upsert idempotente.
+    let carteiraGravados = 0;
+    for (let i = 0; i < carteiraPares.length; i += 500) {
+      const lote = carteiraPares.slice(i, i + 500);
+      const r = await fetch(HUB_URL + '/rest/v1/hub_carteira?on_conflict=representante_id,cliente_id', {
+        method: 'POST',
+        headers: { ...hubH('POST'), Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify(lote)
+      });
+      if (r.ok) carteiraGravados += lote.length;
+      else console.error('[ZEN] lote hub_carteira falhou:', (await r.text()).slice(0, 300));
+    }
+
+    console.log('[ZEN] gravados:', gravados, 'de', bodies.length, '| representantes:', representantesGravados, '| carteira:', carteiraGravados);
 
     // 4 — Inicializar limite de credito para quem nunca recebeu (clientes
     // ativados por convite, nao por onboarding, nunca passam por api/ativar.js
@@ -513,7 +538,7 @@ module.exports = async function handler(req, res) {
     // etapa nunca era alcancada em base cheia (so no teste com 4 clientes).
 
     return res.status(200).json({
-      ok: erros.length === 0, ...resumo, gravados, credito,
+      ok: erros.length === 0, ...resumo, gravados, credito, carteira: carteiraGravados,
       erros: erros.length ? erros : undefined
     });
 

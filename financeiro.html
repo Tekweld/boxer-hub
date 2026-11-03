@@ -159,14 +159,21 @@ async function renderResumoFinanceiro(linhas, clienteId) {
 
   // Limite/Disponivel so fazem sentido por revenda -- somar o limite de
   // milhares de clientes nao e um numero que ajuda ninguem a decidir nada.
+  // Mas DENTRO do mesmo grupo empresarial (ex.: Diafer, 8 CNPJs), o credito e
+  // real por filial no ZEN -- somamos as filiais do grupo pra mostrar o
+  // quadro completo, nao so o da filial que esta selecionada no momento.
   let limiteCards = '';
   if (clienteId) {
     try {
-      const [c] = await sb('/hub_clientes?id=eq.' + clienteId + '&select=limite_credito,limite_disponivel');
-      if (c) {
+      const idsGrupo = await getClienteGrupoIds(clienteId);
+      const filtroId = idsGrupo.length > 1 ? 'id=in.(' + idsGrupo.join(',') + ')' : 'id=eq.' + clienteId;
+      const clientesGrupo = await sb('/hub_clientes?' + filtroId + '&select=limite_credito,limite_disponivel');
+      if (clientesGrupo.length) {
+        const limiteTotal = clientesGrupo.reduce((s, c) => s + (Number(c.limite_credito) || 0), 0);
+        const limiteDisp = clientesGrupo.reduce((s, c) => s + (Number(c.limite_disponivel) || 0), 0);
         limiteCards = `
-          <div class="kpi-card"><div class="kpi-label">Limite Total</div><div class="kpi-value">${fmtMoeda(c.limite_credito)}</div></div>
-          <div class="kpi-card"><div class="kpi-label">Disponivel</div><div class="kpi-value">${fmtMoeda(c.limite_disponivel)}</div></div>`;
+          <div class="kpi-card"><div class="kpi-label">Limite Total${idsGrupo.length > 1 ? ' (grupo)' : ''}</div><div class="kpi-value">${fmtMoeda(limiteTotal)}</div></div>
+          <div class="kpi-card"><div class="kpi-label">Disponivel${idsGrupo.length > 1 ? ' (grupo)' : ''}</div><div class="kpi-value">${fmtMoeda(limiteDisp)}</div></div>`;
       }
     } catch {}
   }
@@ -200,7 +207,13 @@ async function loadFinanceiro() {
   try {
     let urlNf = '/hub_notas_fiscais?ativo=eq.true&order=data_emissao.desc&select=*,hub_clientes(razao_social),hub_pedidos(numero)';
     let urlTit = '/hub_titulos?ativo=eq.true&nota_fiscal_id=not.is.null&select=*,hub_pedidos(numero)';
-    if (clienteId) { urlNf += '&cliente_id=eq.' + clienteId; urlTit += '&cliente_id=eq.' + clienteId; }
+    if (clienteId) {
+      // Grupo empresarial (ex.: Diafer = 8 CNPJs/filiais no ZEN) -- titulos/NFs
+      // costumam se concentrar so numa filial, mas o olhar e pelo grupo todo.
+      const idsGrupo = await getClienteGrupoIds(clienteId);
+      const filtro = idsGrupo.length > 1 ? '&cliente_id=in.(' + idsGrupo.join(',') + ')' : '&cliente_id=eq.' + clienteId;
+      urlNf += filtro; urlTit += filtro;
+    }
     const [nfs, titulos] = await Promise.all([sb(urlNf), sb(urlTit)]);
 
     const tituloPorNf = {};
@@ -280,14 +293,21 @@ async function loadCreditoResumo() {
     return;
   }
   try {
-    const [r] = await sb('/hub_v_financeiro_cliente?cliente_id=eq.' + clienteId + '&select=*&limit=1');
-    if (!r) { wrap.innerHTML = ''; return; }
-    const comprometido = Math.max(0, (r.limite_credito || 0) - (r.limite_disponivel || 0));
+    const idsGrupo = await getClienteGrupoIds(clienteId);
+    const filtro = idsGrupo.length > 1 ? 'cliente_id=in.(' + idsGrupo.join(',') + ')' : 'cliente_id=eq.' + clienteId;
+    const linhas = await sb('/hub_v_financeiro_cliente?' + filtro + '&select=*');
+    if (!linhas.length) { wrap.innerHTML = ''; return; }
+    const limiteTotal = linhas.reduce((s, r) => s + (Number(r.limite_credito) || 0), 0);
+    const limiteDisp = linhas.reduce((s, r) => s + (Number(r.limite_disponivel) || 0), 0);
+    const comprometido = Math.max(0, limiteTotal - limiteDisp);
+    const diasAtraso = linhas.map(r => r.dias_medio_atraso_vencidos || 0);
+    const piorAtraso = diasAtraso.length ? Math.max(...diasAtraso) : 0;
+    const sufixo = idsGrupo.length > 1 ? ' (grupo)' : '';
     wrap.innerHTML = `<div class="kpi-row">
-      <div class="kpi-card"><div class="kpi-label">Limite Atual</div><div class="kpi-value">${fmtMoeda(r.limite_credito)}</div></div>
-      <div class="kpi-card"><div class="kpi-label">Comprometido</div><div class="kpi-value">${fmtMoeda(comprometido)}</div></div>
-      <div class="kpi-card"><div class="kpi-label">Disponivel</div><div class="kpi-value">${fmtMoeda(r.limite_disponivel)}</div></div>
-      <div class="kpi-card"><div class="kpi-label">Dias Medio de Atraso</div><div class="kpi-value ${r.dias_medio_atraso_vencidos > 0 ? 'warning' : ''}">${r.dias_medio_atraso_vencidos || 0} dias</div></div>
+      <div class="kpi-card"><div class="kpi-label">Limite Atual${sufixo}</div><div class="kpi-value">${fmtMoeda(limiteTotal)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Comprometido${sufixo}</div><div class="kpi-value">${fmtMoeda(comprometido)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Disponivel${sufixo}</div><div class="kpi-value">${fmtMoeda(limiteDisp)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Dias Medio de Atraso</div><div class="kpi-value ${piorAtraso > 0 ? 'warning' : ''}">${piorAtraso} dias</div></div>
     </div>`;
   } catch { wrap.innerHTML = ''; }
 }
@@ -298,7 +318,10 @@ async function loadCredito() {
   await loadCreditoResumo();
   try {
     let url = '/hub_solicitacoes_credito?ativo=eq.true&order=criado_em.desc&select=*,hub_clientes(razao_social)';
-    if (clienteId) url += '&cliente_id=eq.' + clienteId;
+    if (clienteId) {
+      const idsGrupo = await getClienteGrupoIds(clienteId);
+      url += idsGrupo.length > 1 ? '&cliente_id=in.(' + idsGrupo.join(',') + ')' : '&cliente_id=eq.' + clienteId;
+    }
     const solic = await sb(url);
     if (!solic.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhuma solicitacao</h3></div>'; return; }
     wrap.innerHTML = `<div style="overflow-x:auto"><table>

@@ -417,11 +417,16 @@ module.exports = async function handler(req, res) {
       fupSelect(fupToken, 'sales2_data', 'enderecos_map,status_map,last_update_enderecos,last_update_status')
     ]);
 
+    // Normaliza trim+upper igual ao modo ?target=tabela (previsaoTabela acima) --
+    // achado em 2026-11-03: aqui nao normalizava, e hub.js le essa chave tambem
+    // normalizada agora. Sem isso, SKU com espaco/caixa diferente no FUP batia
+    // em silencio e o selo caia pra "Sem previsao" mesmo havendo remessa real.
     const porCodigo = {};
     (dashboard?.all_data || []).forEach(item => {
       if (!item?.codigo) return;
-      porCodigo[item.codigo] = porCodigo[item.codigo] || [];
-      porCodigo[item.codigo].push(item);
+      const k = String(item.codigo).trim().toUpperCase();
+      porCodigo[k] = porCodigo[k] || [];
+      porCodigo[k].push(item);
     });
 
     return res.status(200).json({

@@ -68,18 +68,47 @@ module.exports = async function handler(req, res) {
     if (!clienteId) return res.status(400).json({ error: 'cliente_id nao resolvido' });
 
     const cliente = (await hubGet(
-      '/hub_clientes?id=eq.' + clienteId + '&select=id,razao_social,nome_fantasia,cnpj,limite_credito,limite_disponivel'
+      '/hub_clientes?id=eq.' + clienteId + '&select=id,razao_social,nome_fantasia,cnpj,limite_credito,limite_disponivel,grupo_erp_id'
     ))?.[0];
     if (!cliente) return res.status(404).json({ error: 'Revenda nao encontrada' });
 
+    // Grupo empresarial (ZEN PersonGroup, ex.: Diafer = 8 CNPJs/filiais) --
+    // achado pelo Andre, 2026-11-03: pedido/NF/titulo costuma se concentrar
+    // so numa filial, mas o olhar e pelo grupo todo. Este endpoint roda com
+    // service_role (sem RLS), entao a expansao precisa repetir aqui a MESMA
+    // regra de acesso ja aplicada acima pra resolver clienteId -- nunca
+    // expandir pra filial que o chamador nao teria permissao de ver sozinho:
+    //   staff (admin/manager/analyst/financial) -> grupo inteiro (ja enxerga tudo)
+    //   representante -> grupo inteiro INTERSECTADO com a propria carteira
+    //   dealer -> so a propria filial (sem expansao)
+    let idsGrupo = [clienteId];
+    if (cliente.grupo_erp_id && perfil.tipo !== 'cliente') {
+      const filiais = await hubGet('/hub_clientes?grupo_erp_id=eq.' + cliente.grupo_erp_id + '&ativo=eq.true&select=id,cnpj');
+      if (perfil.tipo === 'representante') {
+        const carteira = await hubGet(
+          '/hub_carteira?representante_id=eq.' + perfil.representante_id + '&ativo=eq.true&select=cliente_id'
+        );
+        const permitidos = new Set(carteira.map(c => c.cliente_id));
+        idsGrupo = filiais.filter(f => permitidos.has(f.id)).map(f => f.id);
+        if (!idsGrupo.includes(clienteId)) idsGrupo.push(clienteId);
+      } else {
+        idsGrupo = filiais.map(f => f.id);
+      }
+    }
+    const cnpjsGrupo = idsGrupo.length > 1
+      ? (await hubGet('/hub_clientes?id=in.(' + idsGrupo.join(',') + ')&select=cnpj')).map(c => c.cnpj)
+      : [cliente.cnpj];
+    const filtroClienteId = idsGrupo.length > 1 ? 'in.(' + idsGrupo.join(',') + ')' : 'eq.' + clienteId;
+    const filtroCnpj = cnpjsGrupo.length > 1 ? 'in.(' + cnpjsGrupo.join(',') + ')' : 'eq.' + cliente.cnpj;
+
     const [orcamentos, pedidos, notas, titulos] = await Promise.all([
-      hubGet('/orcamentos?cliente_cnpj=eq.' + cliente.cnpj + '&ativo=eq.true' +
+      hubGet('/orcamentos?cliente_cnpj=' + filtroCnpj + '&ativo=eq.true' +
         '&select=id,codigo,status,total_final,criado_em,aprovado_em&order=criado_em.desc&limit=200'),
-      hubGet('/hub_pedidos?cliente_id=eq.' + clienteId + '&ativo=eq.true' +
+      hubGet('/hub_pedidos?cliente_id=' + filtroClienteId + '&ativo=eq.true' +
         '&select=id,numero,status,valor_total,criado_em,erp_pedido_id&order=criado_em.desc&limit=200'),
-      hubGet('/hub_notas_fiscais?cliente_id=eq.' + clienteId + '&ativo=eq.true' +
+      hubGet('/hub_notas_fiscais?cliente_id=' + filtroClienteId + '&ativo=eq.true' +
         '&select=id,numero_nf,valor_total,data_emissao&order=data_emissao.desc&limit=500'),
-      hubGet('/hub_titulos?cliente_id=eq.' + clienteId + '&ativo=eq.true&select=status,valor_aberto,dias_atraso')
+      hubGet('/hub_titulos?cliente_id=' + filtroClienteId + '&ativo=eq.true&select=status,valor_aberto,dias_atraso')
     ]);
 
     const pedidoIds = pedidos.slice(0, 100).map(p => p.id);

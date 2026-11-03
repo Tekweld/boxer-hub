@@ -1298,8 +1298,15 @@ async function carregarOrcamentosParaLista(clienteId) {
     const j = await r.json();
     let lista = (j.orcamentos || []).filter(o => !o.arquivado);
     if (clienteId) {
-      const [c] = await sb('/hub_clientes?id=eq.' + clienteId + '&select=cnpj');
-      if (c) lista = lista.filter(o => o.cliente_cnpj === c.cnpj);
+      // Grupo empresarial: orcamento e feito para um CNPJ especifico, mas o
+      // olhar e pelo grupo (ex.: Diafer, 8 filiais) -- mesmo criterio de
+      // getClienteGrupoIds, so que aqui filtrando por CNPJ (orcamento guarda
+      // cliente_cnpj, nao cliente_id).
+      const idsGrupo = await getClienteGrupoIds(clienteId);
+      const filtro = idsGrupo.length > 1 ? 'id=in.(' + idsGrupo.join(',') + ')' : 'id=eq.' + clienteId;
+      const cnpjsGrupo = await sb('/hub_clientes?' + filtro + '&select=cnpj');
+      const cnpjSet = new Set(cnpjsGrupo.map(c => c.cnpj));
+      if (cnpjSet.size) lista = lista.filter(o => cnpjSet.has(o.cliente_cnpj));
     }
     return lista;
   } catch (_) { return []; }
@@ -1312,13 +1319,18 @@ async function loadPedidos() {
   const wrap = document.getElementById('pedidosList');
   const status = document.getElementById('filtroStatus').value;
 
-  let url = '/hub_pedidos?select=id,numero,status,origem,valor_total,criado_em,erp_workflow_status,erp_pedido_id,ordem_compra,hub_clientes(razao_social)&order=criado_em.desc&ativo=eq.true';
+  let url = '/hub_pedidos?select=id,numero,status,origem,valor_total,criado_em,erp_workflow_status,erp_pedido_id,ordem_compra,hub_clientes(razao_social,nome_fantasia)&order=criado_em.desc&ativo=eq.true';
   if (status) url += '&status=eq.' + status;
   // Com revenda selecionada (ou dealer logado, que ja e sempre a sua),
   // a lista mostra so os pedidos dela -- antes mostrava tudo que a RLS
   // deixava ver, mesmo com uma revenda especifica em foco no topo.
   const clienteId = getClienteAtivo();
-  if (clienteId) url += '&cliente_id=eq.' + clienteId;
+  if (clienteId) {
+    // Grupo empresarial (ex.: Diafer, 8 CNPJs/filiais): pedido nasce numa
+    // filial especifica, mas o olhar e pelo grupo inteiro.
+    const idsGrupo = await getClienteGrupoIds(clienteId);
+    url += idsGrupo.length > 1 ? '&cliente_id=in.(' + idsGrupo.join(',') + ')' : '&cliente_id=eq.' + clienteId;
+  }
 
   try {
     const [pedidos, orcamentos] = await Promise.all([sb(url), carregarOrcamentosParaLista(clienteId)]);
@@ -1330,7 +1342,7 @@ async function loadPedidos() {
     // aba a parte so pra orcamento.
     _linhasPedidosCache = [
       ...pedidos.map(p => ({
-        tipo: 'pedido', id: p.id, numero: p.numero || 'Rascunho', cliente: p.hub_clientes?.razao_social || '—',
+        tipo: 'pedido', id: p.id, numero: p.numero || 'Rascunho', cliente: p.hub_clientes?.nome_fantasia || p.hub_clientes?.razao_social || '—',
         erpId: p.erp_pedido_id || null, oc: p.ordem_compra || null,
         statusHtml: `<span class="status-badge status-${p.status}">${esc(etapaVisivel(p))}</span>`,
         valor: p.valor_total, data: p.criado_em

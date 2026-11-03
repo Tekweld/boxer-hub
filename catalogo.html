@@ -345,7 +345,9 @@ function renderAjustePolitica() {
     <strong>${prospect ? 'Política comercial do orçamento (CNPJ novo, escolha manual):' : simulando ? 'Simulando política comercial:' : 'Política comercial desta revenda:'}</strong>
     <span style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
       <span style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.3px;margin-right:2px">UF</span>
-      ${UFS_BR.map(u => chip('uf', u, u, precoContexto.uf === u)).join('')}
+      <select onchange="mudarAjustePolitica('uf', this.value)" style="padding:4px 8px;font-size:12px;border-radius:6px;border:1px solid #c3d3f5">
+        ${UFS_BR.map(u => `<option value="${u}"${precoContexto.uf === u ? ' selected' : ''}>${u}</option>`).join('')}
+      </select>
     </span>
     <span style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
       <span style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.3px;margin-right:2px">Segmento</span>
@@ -581,18 +583,12 @@ async function loadProdutos() {
 
   if (busca) {
     url += '&or=(nome.ilike.*' + encodeURIComponent(busca) + '*,sku.ilike.*' + encodeURIComponent(busca) + '*)';
-  } else {
-    // Vitrine mostra so o que da pra comprar agora: produto sem estoque some da
-    // navegacao (home, grupo e categoria) e volta sozinho quando o estoque entra,
-    // porque a view calcula status_estoque na hora a partir do sync.
-    // Na BUSCA nao filtramos -- quem procura pelo nome tem que achar, e ve o selo
-    // "Indisponivel" com a previsao de chegada.
-    //
-    // Filtra por status_estoque (nao por estoque_disponivel>0) de proposito: se o
-    // sync quebrar e zerar todo mundo, a view marca tudo como 'sem_info', e
-    // incluir 'sem_info' aqui evita que uma falha de sync esvazie o catalogo.
-    url += '&status_estoque=in.(disponivel,baixo,sem_info)';
   }
+  // Produto sem estoque fica na vitrine (nao so na busca): o selo informa
+  // "Sob encomenda" com previsao de chegada, ou "Indisponivel" sem previsao
+  // quando nao ha (stockInfo/fmtPrevisao). Achado pelo Andre, 2026-11-03:
+  // navegando por categoria/grupo sumia item sem estoque (ex.: DURAMAX285),
+  // so aparecia buscando pelo nome -- revendedor nao sabia que existia.
 
   try {
     const prods = await sb(url);

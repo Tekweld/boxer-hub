@@ -439,7 +439,8 @@ function renderTopbar(titulo) {
   const tipo = getUserTipo();
   const navItems = [
     { href: 'catalogo.html', label: 'Catalogo', icon: '&#9783;' },
-    { href: 'pedidos.html', label: 'Pedidos', icon: '&#9776;' }
+    { href: 'pedidos.html', label: 'Pedidos', icon: '&#9776;' },
+    { href: 'indicadores.html', label: 'Indicadores', icon: '&#128202;' }
   ];
   if (tipo === 'cliente' || tipo === 'representante') {
     navItems.push({ href: 'financeiro.html', label: 'Financeiro', icon: '&#36;' });

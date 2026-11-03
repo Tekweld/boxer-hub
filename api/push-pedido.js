@@ -24,6 +24,8 @@ const ZEN_SALE_PROFILE_ID = 1001; // DEFAULT -- workflow VENDA
 module.exports = async function handler(req, res) {
   // orcamentos da tabela de Revendas: mesma function por causa do limite da Vercel
   if (req.query && req.query.target === 'orcamento') return require('./_orcamento')(req, res);
+  // Indicadores por revenda (aba nova, pedido do Andre 2026-11-03): mesmo motivo
+  if (req.query && req.query.target === 'indicadores') return require('./_indicadores')(req, res);
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;

@@ -111,7 +111,12 @@ textarea:focus{border-color:#25bbee}
 .cart-total-label{font-size:14px;color:#4a5568;font-weight:500}
 .cart-total-valor{font-size:22px;font-weight:700;color:#1d327b}
 .cart-total-nota{font-size:10px;color:#718096;display:block}
-.cart-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+.cart-actions{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:2px solid #e2e8f0;box-shadow:0 -4px 16px rgba(0,0,0,.06);padding:12px 24px;display:flex;align-items:center;gap:14px;z-index:40}
+.cart-actions-total{flex:1;min-width:0}
+.cart-actions-total b{font-size:18px;color:#1d327b;display:block;line-height:1.2}
+.cart-actions-total span{font-size:11px;color:#718096}
+.cart-actions-botoes{display:flex;gap:8px;flex-wrap:wrap}
+#carrinhoWrap{padding-bottom:76px}
 .cart-tab-badge{background:#e30613;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:8px;margin-left:5px}
 .cart-item-stock{font-size:10px;font-weight:600;display:flex;align-items:center;gap:3px;margin-top:2px}
 .cart-item-stock .dot{width:5px;height:5px;border-radius:50%;display:inline-block}
@@ -170,6 +175,10 @@ function showTab(n, el) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('tab-' + n).classList.remove('hidden');
   el.classList.add('active');
+  // O rodape fixo do carrinho (#cartActionsBar) nao pertence a nenhuma aba --
+  // some quando sai de "Novo Pedido" para nao sobrepor "Meus Pedidos".
+  const bar = document.getElementById('cartActionsBar');
+  if (bar) bar.style.display = n === 'novo' ? '' : 'none';
 }
 
 (async () => {
@@ -280,6 +289,7 @@ async function renderCarrinho() {
 
   if (!cart.length) {
     wrap.innerHTML = '<div class="empty-state"><h3>Carrinho vazio</h3><p>Adicione produtos pelo <a href="catalogo.html" style="color:#1d327b">catalogo</a>.</p></div>';
+    document.getElementById('cartActionsBar')?.remove();
     return;
   }
 
@@ -372,8 +382,24 @@ async function renderCarrinho() {
     ${renderCreditoCarrinho(creditoInfo, totalVal)}
     ${renderFaixaProxima(faixaProxima)}
     ${renderSobEncomenda(semEstoque)}
-    ${renderBloqueios()}
-    <div class="cart-actions">
+    ${renderBloqueios()}`;
+
+  // Rodape fixo: os botoes de acao ficam visiveis desde o primeiro item
+  // adicionado, sem precisar rolar ate o fim do carrinho -- pedido do Andre
+  // apos testar com um carrinho grande.
+  let acoes = document.getElementById('cartActionsBar');
+  if (!acoes) {
+    acoes = document.createElement('div');
+    acoes.id = 'cartActionsBar';
+    acoes.className = 'cart-actions';
+    wrap.parentNode.appendChild(acoes);
+  }
+  acoes.innerHTML = `
+    <div class="cart-actions-total">
+      <b>${fmtMoeda(totalVal)}</b>
+      <span>${cart.length} produto${cart.length !== 1 ? 's' : ''} · ${totalQty} unidade${totalQty !== 1 ? 's' : ''}</span>
+    </div>
+    <div class="cart-actions-botoes">
       <button class="btn btn-danger btn-sm" onclick="clearCart()">Limpar carrinho</button>
       <button class="btn btn-primary" id="btnEnviarPedido" onclick="enviarPedido()">Revisar pedido</button>
     </div>`;
@@ -587,7 +613,19 @@ async function _enviarPedidoInterno() {
          '&order=padrao.desc,tipo.asc&limit=1').then(r => r[0] || null)
     ]);
 
-    abrirRevisao(pedido.id, politica, cliente, endereco);
+    // Itens com preco de tabela + final para a lista editavel do orcamento
+    // (so quem pode enviar orcamento ve isso -- o pedido real sempre usa o
+    // preco de verdade do servidor, nunca o que foi editado aqui).
+    const itensRevisao = cart.map(i => {
+      const p = precos[i.produto_id];
+      return {
+        sku: i.sku, nome: i.nome, qtd: i.quantidade,
+        preco_tabela: +(p?.preco_tabela ?? 0),
+        preco_final: +(p?.preco_final ?? i.preco_base ?? 0)
+      };
+    });
+
+    abrirRevisao(pedido.id, politica, cliente, endereco, itensRevisao);
   } catch (e) {
     toast('Erro: ' + erroLegivel(e), 'error');
   } finally {
@@ -603,7 +641,7 @@ async function _enviarPedidoInterno() {
 
 let _revisao = null;
 
-function abrirRevisao(pedidoId, politica, cliente, endereco) {
+function abrirRevisao(pedidoId, politica, cliente, endereco, itensRevisao) {
   const subtotal = +(politica.subtotal || 0);
   const frete = politica.frete && politica.frete !== 'null' ? politica.frete : null;
   const valorFrete = +(frete?.valor || 0);
@@ -613,7 +651,7 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
   const limite = +(cliente.limite_credito || 0);
   const saldo = disponivel - total;
 
-  _revisao = { pedidoId, subtotal, valorFrete, total, frete, cliente };
+  _revisao = { pedidoId, subtotal, valorFrete, total, frete, cliente, itens: itensRevisao || [], precoManual: {} };
 
   const violacoes = politica.violacoes || [];
   const bloqueado = violacoes.length > 0;
@@ -711,7 +749,8 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
       <div style="font-size:12px;color:#718096;margin-bottom:10px">
         Em vez de confirmar agora, envie um link pro cliente aprovar. Não reserva crédito nem estoque ainda.
       </div>
-      <div class="form-row">
+      <div id="revOrcItens"></div>
+      <div class="form-row" style="margin-top:12px">
         <label>Nome de quem recebe</label>
         <input id="orcDestNome" type="text" maxlength="120" placeholder="Nome do contato">
       </div>
@@ -729,13 +768,68 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
 
     <div class="form-actions">
       <button class="btn btn-outline" onclick="closeModal()">Voltar ao carrinho</button>
-      ${podeEnviarOrcamento() ? `<button class="btn btn-outline" id="btnEnviarOrcamento" onclick="enviarOrcamento()">Enviar Orçamento</button>` : ''}
+      ${podeEnviarOrcamento() ? `<button class="btn" style="background:#25bbee;color:#fff;border-color:#25bbee" id="btnEnviarOrcamento" onclick="enviarOrcamento()">Enviar Link do Orçamento</button>` : ''}
       <button class="btn btn-primary" id="btnConfirmarEnvio" onclick="confirmarEnvio()"
-              ${bloqueado ? 'disabled title="Resolva os bloqueios acima"' : ''}>Confirmar e enviar</button>
+              ${bloqueado ? 'disabled title="Resolva os bloqueios acima"' : ''}>Confirmar e Enviar para ZEN</button>
     </div>
   `);
 
   atualizarParcelas();
+  if (podeEnviarOrcamento()) renderRevisaoItens();
+}
+
+// Lista de itens do orcamento, com preco de tabela riscado e preco final
+// clicavel para ajuste manual -- mesmo padrao do tabela-teste.html
+// (orcEditarPreco/orcRestaurarPreco), que o Andre pediu para espelhar aqui.
+// So existe dentro da secao de orcamento: o pedido real NUNCA usa preco
+// editado na tela, so o que o servidor calcula em hub_fn_submeter_pedido.
+function renderRevisaoItens() {
+  const wrap = document.getElementById('revOrcItens');
+  if (!wrap || !_revisao) return;
+  const linhas = _revisao.itens.map(it => {
+    const manual = _revisao.precoManual[it.sku];
+    const unit = manual != null ? manual : it.preco_final;
+    const riscado = it.preco_tabela > 0 && Math.abs(it.preco_tabela - unit) > 0.01
+      ? `<div style="font-size:11px;color:#a0aec0"><s>${fmtMoeda(it.preco_tabela)}</s>${manual != null ? ' · <a href="javascript:void(0)" onclick="restaurarPrecoRevisao(\'' + esc(it.sku) + '\')" style="color:#718096">restaurar</a>' : ''}</div>`
+      : '';
+    return `<div class="rev-linha" style="align-items:flex-start">
+      <span>${esc(it.qtd)}x ${esc(it.nome || it.sku)}<div style="font-size:11px;color:#a0aec0">Cód. ${esc(it.sku)}</div></span>
+      <span class="v" style="text-align:right">
+        <span id="revPreco_${esc(it.sku)}" onclick="editarPrecoRevisao('${esc(it.sku)}')" style="cursor:pointer;border-bottom:1px dotted #a0aec0" title="Clique para ajustar o preço deste item">${fmtMoeda(unit)}</span>
+        ${riscado}
+        <div style="font-size:11px;color:#718096">= ${fmtMoeda(unit * it.qtd)}</div>
+      </span>
+    </div>`;
+  }).join('');
+  wrap.innerHTML = linhas;
+}
+
+function editarPrecoRevisao(sku) {
+  const el = document.getElementById('revPreco_' + sku);
+  if (!el) return;
+  const it = _revisao.itens.find(i => i.sku === sku);
+  const atual = _revisao.precoManual[sku] != null ? _revisao.precoManual[sku] : it.preco_final;
+  el.outerHTML = `<input id="revPreco_${sku}" class="rev-preco-in" inputmode="decimal" value="${String(atual.toFixed(2)).replace('.', ',')}"
+    style="width:100px;text-align:right;padding:4px 6px;font-size:13px;border:1px solid #c3cfe2;border-radius:6px"
+    onkeydown="if(event.key==='Enter')this.blur();if(event.key==='Escape'){this.dataset.x=1;this.blur();}"
+    onblur="confirmarPrecoRevisao('${sku}', this)">`;
+  const input = document.getElementById('revPreco_' + sku);
+  input.focus(); input.select();
+}
+
+function confirmarPrecoRevisao(sku, el) {
+  if (!el.dataset.x) {
+    const n = parseFloat(el.value.replace(/\./g, '').replace(',', '.'));
+    const it = _revisao.itens.find(i => i.sku === sku);
+    if (!(n > 0) || Math.abs(n - it.preco_final) < 0.005) delete _revisao.precoManual[sku];
+    else _revisao.precoManual[sku] = n;
+  }
+  renderRevisaoItens();
+}
+
+function restaurarPrecoRevisao(sku) {
+  delete _revisao.precoManual[sku];
+  renderRevisaoItens();
 }
 
 // "Enviar Orcamento" so existe pra quem esta montando pedido para OUTRA
@@ -794,7 +888,12 @@ async function enviarOrcamento() {
     const payload = {
       acao: 'criar', tabela: 1,
       uf, segmento, classe: Number(classe),
-      itens: cart.map(i => Object.assign({ codigo: i.sku, qtd: i.quantidade }, dispDoItem(i))),
+      itens: cart.map(i => {
+        const item = Object.assign({ codigo: i.sku, qtd: i.quantidade }, dispDoItem(i));
+        const manual = _revisao.precoManual[i.sku];
+        if (manual != null) item.preco = manual;
+        return item;
+      }),
       cliente: {
         cnpj: cliente.cnpj, nome: cliente.razao_social, fantasia: cliente.nome_fantasia || '',
         email, celular, contato: nome || null, cidade: null, uf: cliente.uf
@@ -843,11 +942,27 @@ function mostrarOrcamentoCriado(j) {
         <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${j.link}');toast('Link copiado')">Copiar</button>
       </div>
       <a class="btn btn-primary" href="${wa}" target="_blank" rel="noopener" style="margin-right:6px">Enviar por WhatsApp</a>
+      <button class="btn btn-outline" id="btnEmailOrc_${j.id}" onclick="enviarEmailOrcamento('${j.id}', this)">Enviar por E-mail</button>
       ${j.zen && !j.zen.ok ? `<div style="margin-top:12px;padding:8px;background:#fff4e5;color:#9a5b00;border-radius:6px;font-size:12px;text-align:left">${esc(j.zen.erro || '')}</div>` : ''}
       ${(j.avisos || []).length ? `<div style="margin-top:10px;text-align:left;font-size:12px;color:#92400e">${j.avisos.map(a => '<div>⚠ ' + esc(a) + '</div>').join('')}</div>` : ''}
       <div style="margin-top:18px"><button class="btn btn-outline" onclick="closeModal();document.querySelectorAll('.tab')[0].click();loadPedidos()">Fechar</button></div>
     </div>
   `);
+}
+
+// Mesmo backend do WhatsApp (link direto), so que por e-mail via Resend --
+// usa o cliente_email ja cadastrado no orcamento, sem pedir de novo na tela.
+async function enviarEmailOrcamento(id, btn) {
+  const textoOriginal = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Enviando...';
+  try {
+    const r = await chamarOrcamentoApi('enviar_email', { id });
+    toast('E-mail enviado para ' + r.enviado_para);
+  } catch (e) {
+    toast('Erro ao enviar e-mail: ' + erroLegivel(e), 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = textoOriginal;
+  }
 }
 
 // Quando ha alternativa real (pedido abaixo do minimo de frete gratis, ou UF
@@ -1153,7 +1268,7 @@ function abrirOrcamentoDetalhe(id) {
       </div>
       <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px">
       <div style="padding:10px;background:#f7fafc;border-radius:8px">
         <div style="font-size:11px;color:#718096;text-transform:uppercase">Status</div>
         <span class="orc-st-badge${classe ? ' ' + classe : ''}">${esc(label)}</span>
@@ -1161,6 +1276,10 @@ function abrirOrcamentoDetalhe(id) {
       <div style="padding:10px;background:#f7fafc;border-radius:8px">
         <div style="font-size:11px;color:#718096;text-transform:uppercase">Valor</div>
         <div style="font-size:16px;font-weight:700;color:#1d327b">${fmtMoeda(o.total_final)}</div>
+      </div>
+      <div style="padding:10px;background:#f7fafc;border-radius:8px">
+        <div style="font-size:11px;color:#718096;text-transform:uppercase">Criado em</div>
+        <div style="font-size:13px;font-weight:500">${fmtData(o.criado_em)}</div>
       </div>
       <div style="padding:10px;background:#f7fafc;border-radius:8px">
         <div style="font-size:11px;color:#718096;text-transform:uppercase">Validade</div>
@@ -1173,6 +1292,10 @@ function abrirOrcamentoDetalhe(id) {
     <div style="display:flex;gap:6px;margin:14px 0">
       <input readonly value="${esc(o.link)}" style="flex:1;font-size:12px;padding:8px" onclick="this.select()">
       <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${o.link}');toast('Link copiado')">Copiar</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <a class="btn btn-outline btn-sm" href="${esc(o.link)}&pdf=1" target="_blank" rel="noopener">Gerar PDF</a>
+      <button class="btn btn-outline btn-sm" id="btnEmailOrcDet_${o.id}" onclick="enviarEmailOrcamento('${o.id}', this)">Enviar por E-mail</button>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0">
       ${aberto ? `<button class="btn btn-outline" onclick="cancelarOrcamento('${o.id}')">Cancelar orçamento</button>` : ''}

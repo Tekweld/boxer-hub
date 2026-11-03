@@ -32,12 +32,30 @@ tfoot td{padding:8px;font-weight:700;color:#1d327b;border-top:2px solid #1d327b}
 .cond-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
 .cond-item b{display:block;font-size:13px;color:#1a202c;margin-bottom:2px}
 .cond-item span{font-size:12px;color:#718096}
-.cta{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:2px solid #e2e8f0;padding:12px 16px;display:flex;align-items:center;gap:10px;z-index:50}
+.cta{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:2px solid #e2e8f0;padding:12px 16px;display:flex;align-items:center;gap:10px;z-index:50;flex-wrap:wrap}
 .cta-total{font-size:17px;font-weight:700;color:#1d327b;flex:1}
-.btn{padding:10px 18px;border-radius:8px;border:1px solid;font-family:Outfit;font-size:13px;font-weight:600;cursor:pointer}
+.btn{padding:10px 18px;border-radius:8px;border:1px solid;font-family:Outfit;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
 .btn-primary{background:#e30613;color:#fff;border-color:#e30613}
 .btn-outline{background:#fff;color:#1d327b;border-color:#c3cfe2}
 .recusar{display:block;text-align:center;color:#a0aec0;font-size:12px;text-decoration:underline;margin-top:14px;cursor:pointer}
+.prod-foto{width:40px;height:40px;border-radius:6px;background:#f7fafc;border:1px solid #e2e8f0;display:inline-flex;align-items:center;justify-content:center;overflow:hidden;flex:none;vertical-align:middle;margin-right:8px}
+.prod-foto img{max-width:100%;max-height:100%;object-fit:contain}
+.prod-cel{display:flex;align-items:center}
+@media(max-width:640px){
+  table,thead,tbody,tr,td{display:block;width:100%}
+  thead{display:none}
+  tbody tr{padding:10px 0;border-bottom:1px solid #e2e8f0;display:grid;grid-template-columns:1fr 1fr;gap:4px 10px}
+  tbody td{padding:0;border:none}
+  tbody td:first-child{grid-column:1/-1}
+  tbody td[data-l]::before{content:attr(data-l) ' ';font-size:10px;color:#718096;text-transform:uppercase;display:block}
+}
+@media print{
+  @page{size:A4;margin:10mm}
+  body{background:#fff;padding:0}
+  .cta,.recusar{display:none!important}
+  .card{border-color:#cbd5e0;break-inside:avoid}
+  .top{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
 .modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
 .modal-overlay.show{display:flex}
 .modal{background:#fff;border-radius:12px;padding:22px;width:100%;max-width:420px;margin:16px}
@@ -146,16 +164,21 @@ function render() {
         <thead><tr><th>Código</th><th>Produto</th><th>Estoque</th><th>Qtd</th><th>Unitário</th><th>Total</th></tr></thead>
         <tbody>${itens.map(i => {
           const [label, cls] = ESTOQUE[i.estoque] || ESTOQUE.sem_info;
+          const riscado = i.unit_tabela > 0 && Math.abs(i.unit_tabela - i.unit) > 0.01
+            ? `<div style="font-size:11px;color:#a0aec0;text-decoration:line-through">${fmtMoeda(i.unit_tabela)}</div>` : '';
           return `<tr>
-            <td>${esc(i.codigo)}</td>
-            <td>${esc(i.modelo || i.codigo)}</td>
-            <td><span class="est ${cls}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
-            <td>${i.qtd}</td>
-            <td>${fmtMoeda(i.unit)}</td>
-            <td>${fmtMoeda(i.subtotal)}</td>
+            <td data-l="Código">${esc(i.codigo)}</td>
+            <td data-l="Produto"><span class="prod-cel">${i.imagem_url ? '<span class="prod-foto"><img src="' + esc(i.imagem_url) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></span>' : ''}${esc(i.modelo || i.codigo)}</span></td>
+            <td data-l="Estoque"><span class="est ${cls}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
+            <td data-l="Qtd">${i.qtd}</td>
+            <td data-l="Unitário">${riscado}${fmtMoeda(i.unit)}</td>
+            <td data-l="Total">${fmtMoeda(i.subtotal)}</td>
           </tr>`;
         }).join('')}</tbody>
         <tfoot>
+          ${grupos.ok > 0.004 ? `<tr><td colspan="5">Itens disponíveis</td><td>${fmtMoeda(grupos.ok)}</td></tr>` : ''}
+          ${grupos.prev > 0.004 ? `<tr><td colspan="5">Itens com previsão de chegada</td><td>${fmtMoeda(grupos.prev)}</td></tr>` : ''}
+          ${grupos.sem > 0.004 ? `<tr><td colspan="5">Itens sem previsão</td><td>${fmtMoeda(grupos.sem)}</td></tr>` : ''}
           ${ORC.frete_valor > 0 ? `<tr><td colspan="5">Frete</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
           <tr><td colspan="5">Total geral</td><td>${fmtMoeda(ORC.total_final)}</td></tr>
         </tfoot>
@@ -189,10 +212,12 @@ function render() {
   cta.className = 'cta';
   cta.innerHTML = `
     <div class="cta-total">${fmtMoeda(ORC.total_final)}</div>
+    <button class="btn btn-outline" onclick="window.print()">Imprimir / PDF</button>
     ${ORC.vendedor_telefone ? `<a class="btn btn-outline" href="https://wa.me/55${ORC.vendedor_telefone.replace(/\D/g,'')}" target="_blank" rel="noopener">Falar com ${esc((ORC.vendedor_nome || '').split(' ')[0] || 'vendedor')}</a>` : ''}
     ${!aceito && !ORC.expirado ? `<button class="btn btn-primary" onclick="abrirAceite()">Aceitar orçamento</button>` : ''}
   `;
   document.body.appendChild(cta);
+  if (new URLSearchParams(location.search).get('pdf') === '1') setTimeout(() => window.print(), 700);
 }
 
 function abrirAceite() {

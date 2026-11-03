@@ -330,24 +330,34 @@ function renderAjustePolitica() {
   box.id = 'ajustePoliticaBox';
   box.style.cssText = 'max-width:1400px;margin:12px auto 0;padding:10px 14px;background:#eef3ff;border:1px solid #c3d3f5;border-radius:8px;font-size:13px;color:#1d327b;display:flex;align-items:center;gap:10px;flex-wrap:wrap';
   const simulando = precoContexto.tipo === 'simulado';
+  // Ordem Estado -> Segmento -> Classe (igual tabela-teste) e botoes em vez de
+  // select: clicar ja recalcula na hora, sem precisar de um botao "Aplicar"
+  // separado -- um clique a menos por ajuste.
+  const chip = (grupo, valor, label, ativo) =>
+    `<span class="cat-chip${ativo ? ' active' : ''}" style="padding:5px 12px;font-size:12px" onclick="mudarAjustePolitica('${grupo}', '${valor}')">${label}</span>`;
   box.innerHTML = `
     <strong>${simulando ? 'Simulando política comercial:' : 'Política comercial desta revenda:'}</strong>
-    <select id="apSegmento" style="padding:4px 8px;font-size:12px">${SEGMENTOS_TABELA1.map(s => `<option value="${s}" ${precoContexto.segmento === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
-    <select id="apClasse" style="padding:4px 8px;font-size:12px">${CLASSES_TABELA1.map(c => `<option value="${c}" ${Number(precoContexto.classe) === c ? 'selected' : ''}>Classe ${c}</option>`).join('')}</select>
-    <select id="apUf" style="padding:4px 8px;font-size:12px">${UFS_BR.map(u => `<option value="${u}" ${precoContexto.uf === u ? 'selected' : ''}>${u}</option>`).join('')}</select>
-    <button class="btn btn-outline btn-sm" onclick="aplicarAjustePolitica()">Aplicar</button>
+    <span style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+      <span style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.3px;margin-right:2px">UF</span>
+      ${UFS_BR.map(u => chip('uf', u, u, precoContexto.uf === u)).join('')}
+    </span>
+    <span style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+      <span style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.3px;margin-right:2px">Segmento</span>
+      ${SEGMENTOS_TABELA1.map(s => chip('segmento', s, s, precoContexto.segmento === s)).join('')}
+    </span>
+    <span style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+      <span style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.3px;margin-right:2px">Classe</span>
+      ${CLASSES_TABELA1.map(c => chip('classe', c, 'Classe ' + c, Number(precoContexto.classe) === c)).join('')}
+    </span>
     ${simulando ? '<button class="btn btn-outline btn-sm" onclick="limparAjustePolitica()">Usar o real da revenda</button>' : ''}
   `;
   const nav = document.querySelector('.hub-nav');
   if (nav && nav.parentNode) nav.parentNode.insertBefore(box, nav.nextSibling);
 }
 
-async function aplicarAjustePolitica() {
-  overridePolitica = {
-    segmento: document.getElementById('apSegmento').value,
-    classe: Number(document.getElementById('apClasse').value),
-    uf: document.getElementById('apUf').value
-  };
+async function mudarAjustePolitica(grupo, valor) {
+  const base = overridePolitica || { uf: precoContexto.uf, segmento: precoContexto.segmento, classe: Number(precoContexto.classe) };
+  overridePolitica = Object.assign({}, base, { [grupo]: grupo === 'classe' ? Number(valor) : valor });
   // Persistido (com o id da revenda) para pedidos.html usar no "Enviar
   // Orcamento" -- sem isso a simulacao se perderia ao navegar do catalogo
   // pro carrinho/revisao. Amarrado ao cliente ativo para nao vazar pra outra

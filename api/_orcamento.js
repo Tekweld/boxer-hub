@@ -70,6 +70,7 @@ module.exports = async function orcamento(req, res) {
       case 'editar': return res.status(200).json(await editar(ctx, user, body));
       case 'cancelar': return res.status(200).json(await cancelar(ctx, user, body.id));
       case 'arquivar': return res.status(200).json(await arquivar(ctx, user, body.id, body.arquivar !== false));
+      case 'enviar_email': return res.status(200).json(await enviarEmailCliente(ctx, user, body.id));
       default: return res.status(400).json({ error: 'acao invalida' });
     }
   } catch (e) {
@@ -659,6 +660,35 @@ async function arquivar(ctx, user, id, flag) {
   if (flag && ['enviado', 'visualizado', 'aceito_cliente'].includes(o.status)) throw erro(409, 'Cancele o orcamento antes de arquivar');
   await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { arquivado: !!flag, atualizado_em: new Date().toISOString() });
   return { ok: true };
+}
+
+// ---------- enviar (ou reenviar) o link do orcamento por e-mail ao cliente ----------
+// Pedido do Andre (2026-11-03): mesmo botao que ja existe para WhatsApp, so
+// que por e-mail -- usa o Resend que ja esta configurado para avisarAceite/
+// lembretes, mesmo remetente.
+async function enviarEmailCliente(ctx, user, id) {
+  if (!id) throw erro(400, 'id obrigatorio');
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id +
+    '&select=id,codigo,token,cliente_nome,cliente_email,total_final,validade_em,vendedor_nome,vendedor_empresa,vendedor_telefone', 'comercial'))[0];
+  if (!o) throw erro(404, 'Orcamento nao encontrado');
+  if (!o.cliente_email) throw erro(400, 'Este orcamento nao tem e-mail de cliente cadastrado');
+  const key = process.env.RESEND_API_KEY;
+  if (!key) throw erro(500, 'RESEND_API_KEY nao configurada');
+  const link = LINK_ORCAMENTO + o.token;
+  const corpo = `<p>Olá!</p>
+    <p>Segue o orçamento <strong>${esc(o.codigo)}</strong> da Boxer Soldas, no valor de <strong>${brl(o.total_final)}</strong>, válido até ${new Date(o.validade_em).toLocaleDateString('pt-BR')}.</p>
+    <div style="text-align:center;margin:24px 0"><a href="${link}" style="display:inline-block;padding:12px 28px;background:#1d327b;color:#fff;text-decoration:none;border-radius:8px;font-family:Arial,sans-serif;font-size:14px;font-weight:600">Ver orçamento</a></div>
+    <p style="font-size:13px;color:#718096">${esc(o.vendedor_nome || '')}${o.vendedor_empresa ? ' · ' + esc(o.vendedor_empresa) : ''}${o.vendedor_telefone ? ' · ' + esc(o.vendedor_telefone) : ''}</p>`;
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+    body: JSON.stringify({
+      from: 'Boxer Orçamentos <noreply@boxersoldas.com.br>', to: [o.cliente_email],
+      subject: 'Orçamento ' + o.codigo + ' — Boxer Soldas',
+      html: '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#f0f4f8;font-family:Arial,sans-serif"><div style="max-width:560px;margin:0 auto;padding:24px"><div style="background:#fff;border:1px solid #d0d8e8;border-radius:12px;padding:28px">' + corpo + '</div></div></body></html>'
+    })
+  });
+  if (!r.ok) throw erro(502, 'Falha ao enviar e-mail: ' + (await r.text()).slice(0, 200));
+  return { ok: true, enviado_para: o.cliente_email };
 }
 
 // ---------- aviso ao representante (publico, so por token) ----------

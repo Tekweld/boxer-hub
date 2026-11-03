@@ -613,6 +613,15 @@ async function loadProdutos() {
         </div>
       </div>`;
     }).join('');
+
+    // O selo acima (stockTagWrap) e estatico -- so reflete status_estoque,
+    // sem olhar a quantidade. Isso deixava o card mostrando "Em estoque"
+    // mesmo quando o campo Qtd ja tinha (por carrinho salvo, ou copiado de
+    // outra tela) um numero maior do que o estoque real cobre -- so corrigia
+    // depois que a pessoa editava o campo de novo (oninput). Chamando aqui,
+    // logo apos renderizar, cobre tambem a carga inicial da pagina. Achado
+    // pelo Andre em teste, 2026-11-03.
+    prods.forEach(p => atualizarSeloEstoque(p.produto_id));
   } catch (e) {
     grid.innerHTML = '<div class="empty-state"><h3>Erro ao carregar catalogo</h3><p>' + esc(e.message) + '</p></div>';
   }
@@ -760,6 +769,11 @@ async function openPDP(produtoId) {
       </div>
       <button class="pdp-footer-add" onclick="pdpAddToCart()">Adicionar ao pedido</button>`;
     _pdpProdutoAtual = prod;
+    // Mesmo motivo do catalogo: o selo inicial (stockInfo) nao olha a
+    // quantidade -- sem chamar isso aqui, a PDP so corrigia depois que a
+    // pessoa editava o campo Qtd de novo, mesmo abrindo ja com uma
+    // quantidade alta (vinda do carrinho). Achado pelo Andre, 2026-11-03.
+    atualizarSeloEstoquePdp();
   } catch (e) {
     toast('Erro ao abrir produto', 'error');
     closePDP();

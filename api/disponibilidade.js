@@ -257,6 +257,33 @@ async function acessoTabela(req, res) {
       return res.status(200).json({ ok: true, painel: perfil });
     }
 
+    // ---- admin: envia o link para a pessoa (Admin/Editor) criar ou redefinir a senha do painel ----
+    if (acao === 'senha_painel') {
+      const auth = req.headers.authorization || '';
+      if (!/^Bearer /i.test(auth)) return res.status(401).json({ error: 'login necessario' });
+      const ANON2 = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJtZXB4Y25yc29mb2Zvc3d1YnV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MTczNzMsImV4cCI6MjA5NTI5MzM3M30.S55ouFczRYlUYNFf5PotYKXBPT5idypTSmbzR-x2Pk0';
+      const eAdmin = await fetch(HUB_URL + '/rest/v1/rpc/eh_perfil_admin', { method: 'POST', headers: { apikey: ANON2, Authorization: auth, 'Content-Type': 'application/json' }, body: '{}' }).then(r => r.json()).catch(() => false);
+      if (eAdmin !== true) return res.status(403).json({ error: 'apenas admin (com sessao de senha)' });
+      if (!RE_BOXER.test(email)) return res.status(400).json({ error: 'painel admin so para e-mails @boxersoldas.com.br' });
+      const uid = await fetch(HUB_URL + '/rest/v1/rpc/auth_id_por_email', { method: 'POST', headers: H, body: JSON.stringify({ p: email }) }).then(r => r.json()).catch(() => null);
+      if (typeof uid !== 'string') return res.status(400).json({ error: 'pessoa ainda sem usuario: salve o perfil Admin ou Editor primeiro' });
+      const pf = await fetch(HUB_URL + '/rest/v1/perfis?id=eq.' + uid + '&select=permissao', { headers: H }).then(r => r.json()).catch(() => []);
+      if (!Array.isArray(pf) || !pf[0] || !['admin', 'editor', 'marketing'].includes(pf[0].permissao)) return res.status(400).json({ error: 'a pessoa nao tem perfil Admin ou Editor' });
+      const lk = await fetch(HUB_URL + '/auth/v1/admin/generate_link', { method: 'POST', headers: H, body: JSON.stringify({ type: 'recovery', email, redirect_to: 'https://app.boxersoldas.com.br/admin_supabase.html' }) });
+      const lkj = await lk.json().catch(() => ({}));
+      const link = lkj && lkj.action_link;
+      if (!lk.ok || !link) { console.error('generate_link recovery falhou', lk.status, JSON.stringify(lkj).slice(0, 200)); return res.status(500).json({ error: 'nao foi possivel gerar o link' }); }
+      const nomeP = String(body.nome || '').trim().slice(0, 120);
+      const ok = await resendEnviar(email, 'Defina a senha do painel admin — Tabela de Preços Boxer',
+        emailShell('<p style="font-size:15px;color:#1a202c;margin:0 0 12px">Olá' + (nomeP ? ', <strong>' + escHtml(nomeP) + '</strong>' : '') + '!</p>' +
+          '<p style="font-size:14px;color:#4a5568;margin:0 0 14px">Você recebeu acesso ao <strong>painel admin</strong> da Tabela de Preços Boxer. O painel exige e-mail e senha: clique abaixo para criar a sua.</p>' +
+          '<p style="text-align:center;margin:18px 0"><a href="' + link + '" style="background:#1d327b;color:#fff;text-decoration:none;padding:11px 24px;border-radius:8px;font-size:14px;font-weight:600">Definir minha senha</a></p>' +
+          '<p style="font-size:12px;color:#718096;margin:0">O link vale por pouco tempo e só pode ser usado uma vez. Se expirar, peça outro a um administrador. Não reconhece este pedido? Ignore este e-mail.</p>'));
+      if (!ok) return res.status(502).json({ error: 'nao foi possivel enviar o e-mail' });
+      await logEvento('link_senha_painel', email, {});
+      return res.status(200).json({ ok: true });
+    }
+
     if (acao === 'codigo') {
       const desde = new Date(Date.now() - 15 * 60 * 1000).toISOString();
       const enviados = await contar('tabela_acessos_log?select=id&email=eq.' + encodeURIComponent(email) + '&evento=eq.codigo_enviado&criado_em=gte.' + encodeURIComponent(desde));

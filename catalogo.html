@@ -66,6 +66,7 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
 .produto-volt{display:inline-block;font-size:9px;font-weight:600;color:#1d327b;background:#e8f4fd;border:1px solid #b3d9f2;padding:1px 5px;border-radius:4px;margin-top:3px}
 .produto-preco{font-size:13px;font-weight:700;color:#1d327b;margin:4px 0 0}
 .produto-preco-ipi{font-size:8px;color:#a0aec0;font-weight:400}
+.produto-preco-tabela{font-size:11px;color:#a0aec0;font-weight:500;text-decoration:line-through;margin-right:5px}
 .produto-stock-tag{font-size:8px;font-weight:600;margin:3px 0 0;display:flex;align-items:center;gap:3px}
 .produto-stock-tag .dot{width:5px;height:5px;border-radius:50%;display:inline-block}
 .stock-ok{color:#16a34a}.stock-ok .dot{background:#16a34a}
@@ -260,6 +261,18 @@ async function loadPrecos() {
   renderAvisoPreco();
 }
 
+// Preco de tabela riscado ao lado do preco final -- mesma transparencia que
+// a tabela-teste ja mostra (preco riscado = sem o multiplicador de
+// segmento/classe, preco final = o que e cobrado de verdade). So aparece
+// quando os dois existem e sao diferentes; sem isso o desconto da classe
+// comercial fica invisivel pra quem monta o pedido.
+function precoRiscadoHtml(pr) {
+  if (!pr || !pr.preco_tabela) return '';
+  const tabela = +pr.preco_tabela, final = +pr.preco_base;
+  if (!(tabela > 0) || Math.abs(tabela - final) < 0.01) return '';
+  return `<span class="produto-preco-tabela">${fmtMoeda(tabela)}</span>`;
+}
+
 // Deixa explicito de qual preco se trata -- sem isso um rep pode achar que o
 // numero da tela e o que a revenda paga.
 function renderAvisoPreco() {
@@ -436,7 +449,7 @@ async function loadProdutos() {
           <div class="produto-sku">${esc(p.sku)}</div>
           <div class="produto-nome">${esc(p.nome)}</div>
           <div class="produto-cat">${esc(p.categoria_nome || '')}${volt ? ' <span class="produto-volt">⚡ ' + volt + '</span>' : ''}</div>
-          ${pr ? `<div class="produto-preco">${fmtMoeda(+pr.preco_base)}<span class="produto-preco-ipi">c/ impostos${+pr.ipi_percentual > 0 ? ' | IPI ' + pr.ipi_percentual + '%' : ''}${+pr.icms_percentual > 0 ? ' | ICMS ' + pr.icms_percentual + '%' : ''}</span></div>` : ''}
+          ${pr ? `<div class="produto-preco">${precoRiscadoHtml(pr)}${fmtMoeda(+pr.preco_base)}<span class="produto-preco-ipi">c/ impostos${+pr.ipi_percentual > 0 ? ' | IPI ' + pr.ipi_percentual + '%' : ''}${+pr.icms_percentual > 0 ? ' | ICMS ' + pr.icms_percentual + '%' : ''}</span></div>` : ''}
           ${st ? `<div class="produto-stock-tag ${st.cls}"><span class="dot"></span>${st.text}${st.prev ? ' <span class="prev-hint">· prev. ' + st.prev + '</span>' : ''}</div>` : ''}
         </div>
         <div class="produto-actions" onclick="event.stopPropagation()">
@@ -587,7 +600,7 @@ async function openPDP(produtoId) {
       if (+pr.icms_percentual > 0) taxParts.push('ICMS ' + pr.icms_percentual + '%');
     }
     footer.innerHTML = `
-      ${pr ? `<div><div class="pdp-footer-price">${fmtMoeda(+pr.preco_base)}</div><span class="pdp-footer-ipi">c/ impostos${taxParts.length ? ' (' + taxParts.join(' | ') + ')' : ''}</span></div>` : ''}
+      ${pr ? `<div><div class="pdp-footer-price">${precoRiscadoHtml(pr)}${fmtMoeda(+pr.preco_base)}</div><span class="pdp-footer-ipi">c/ impostos${taxParts.length ? ' (' + taxParts.join(' | ') + ')' : ''}</span></div>` : ''}
       <div class="pdp-footer-spacer"></div>
       <div class="pdp-footer-qty">
         <label>Qtd</label>

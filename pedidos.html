@@ -924,13 +924,22 @@ async function openPedido(id) {
       ${renderTimeline(pedido, eventos)}
       ${itens.length ? `<div style="overflow-x:auto"><table>
         <thead><tr><th>SKU</th><th>Produto</th><th>Qtd</th><th>Preco Unit.</th><th>Subtotal</th></tr></thead>
-        <tbody>${itens.map(i => `<tr>
+        <tbody>${itens.map(i => {
+          // preco_unitario (coluna) guarda o preco de TABELA (referencia);
+          // preco_final e o que foi cobrado de verdade (ja usado no
+          // subtotal_item). Mostrar so preco_unitario aqui era enganoso --
+          // nao batia com o subtotal ao lado. Ver mesma logica em
+          // catalogo.html (precoRiscadoHtml).
+          const tabela = +i.preco_unitario || 0, final = +(i.preco_final ?? tabela);
+          const riscado = tabela > 0 && Math.abs(tabela - final) >= 0.01
+            ? `<span style="color:#a0aec0;text-decoration:line-through;font-size:11px;margin-right:5px">${fmtMoeda(tabela)}</span>` : '';
+          return `<tr>
           <td>${i.sku || i.hub_produtos?.sku || ''}</td>
           <td>${i.nome_produto || i.hub_produtos?.nome || ''}</td>
           <td>${i.quantidade}</td>
-          <td>${fmtMoeda(i.preco_unitario)}</td>
+          <td>${riscado}${fmtMoeda(final)}</td>
           <td>${fmtMoeda(i.subtotal_item)}</td>
-        </tr>`).join('')}</tbody>
+        </tr>`; }).join('')}</tbody>
       </table></div>` : '<p style="color:#718096;font-size:13px">Nenhum item</p>'}
       ${renderFinanceiroPedido(notasPedido, titulosPedido)}
       <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0">

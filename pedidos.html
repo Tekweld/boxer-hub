@@ -147,6 +147,9 @@ textarea:focus{border-color:#25bbee}
         <option value="entregue">Entregue</option>
       </select>
     </div>
+    <div style="margin-bottom:14px">
+      <input id="filtroPedidoBusca" oninput="renderPedidosFiltrados()" placeholder="Buscar por numero, OC, numero do pedido no ZEN ou cliente" style="width:100%;padding:8px 12px;border:1px solid #c3cfe2;border-radius:6px;font-family:Outfit;font-size:13px">
+    </div>
     <div id="pedidosList"></div>
   </div>
   <div class="panel-content hidden" id="tab-novo">
@@ -1047,11 +1050,14 @@ async function carregarOrcamentosParaLista(clienteId) {
   } catch (_) { return []; }
 }
 
+// Cache local das linhas -- filtro de texto so re-renderiza, sem refetch.
+let _linhasPedidosCache = [];
+
 async function loadPedidos() {
   const wrap = document.getElementById('pedidosList');
   const status = document.getElementById('filtroStatus').value;
 
-  let url = '/hub_pedidos?select=id,numero,status,origem,valor_total,criado_em,erp_workflow_status,hub_clientes(razao_social)&order=criado_em.desc&ativo=eq.true';
+  let url = '/hub_pedidos?select=id,numero,status,origem,valor_total,criado_em,erp_workflow_status,erp_pedido_id,ordem_compra,hub_clientes(razao_social)&order=criado_em.desc&ativo=eq.true';
   if (status) url += '&status=eq.' + status;
   // Com revenda selecionada (ou dealer logado, que ja e sempre a sua),
   // a lista mostra so os pedidos dela -- antes mostrava tudo que a RLS
@@ -1067,9 +1073,10 @@ async function loadPedidos() {
     // Pedido e orcamento sao entidades separadas (ver plano), mas aparecem
     // juntos aqui -- cronologico, com etiqueta de tipo -- pra nao exigir uma
     // aba a parte so pra orcamento.
-    const linhas = [
+    _linhasPedidosCache = [
       ...pedidos.map(p => ({
         tipo: 'pedido', id: p.id, numero: p.numero || 'Rascunho', cliente: p.hub_clientes?.razao_social || '—',
+        erpId: p.erp_pedido_id || null, oc: p.ordem_compra || null,
         statusHtml: `<span class="status-badge status-${p.status}">${esc(etapaVisivel(p))}</span>`,
         valor: p.valor_total, data: p.criado_em
       })),
@@ -1077,31 +1084,44 @@ async function loadPedidos() {
         const [label, classe] = ORC_STATUS_LABEL[o.status] || [o.status, ''];
         return {
           tipo: 'orcamento', id: o.id, numero: o.codigo, cliente: o.cliente_nome,
+          erpId: o.zen_sale_id || null, oc: null,
           statusHtml: `<span class="orc-st-badge${classe ? ' ' + classe : ''}">${esc(label)}</span>`,
           valor: o.total_final, data: o.criado_em
         };
       }))
     ].sort((a, b) => new Date(b.data) - new Date(a.data));
 
-    if (!linhas.length) {
-      wrap.innerHTML = '<div class="empty-state"><h3>Nenhum pedido encontrado</h3></div>';
-      return;
-    }
-    wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Numero</th><th>Cliente</th><th>Tipo</th><th>Status</th><th>Valor</th><th>Data</th><th></th></tr></thead>
-      <tbody>${linhas.map(l => `<tr>
-        <td><strong>${esc(l.numero)}</strong></td>
-        <td>${esc(l.cliente)}</td>
-        <td><span style="font-size:11px;font-weight:600;color:${l.tipo === 'orcamento' ? '#9a3412' : '#1d327b'}">${l.tipo === 'orcamento' ? 'Orçamento' : 'Pedido'}</span></td>
-        <td>${l.statusHtml}</td>
-        <td>${fmtMoeda(l.valor)}</td>
-        <td>${fmtData(l.data)}</td>
-        <td><button class="btn btn-outline btn-sm" onclick="${l.tipo === 'pedido' ? `openPedido('${l.id}')` : `abrirOrcamentoDetalhe('${l.id}')`}">Ver</button></td>
-      </tr>`).join('')}</tbody>
-    </table></div>`;
+    renderPedidosFiltrados();
   } catch (e) {
     wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar pedidos</h3><p>' + e.message + '</p></div>';
   }
+}
+
+function renderPedidosFiltrados() {
+  const wrap = document.getElementById('pedidosList');
+  const termo = (document.getElementById('filtroPedidoBusca')?.value || '').trim().toLowerCase();
+  const bate = v => String(v || '').toLowerCase().includes(termo);
+  const linhas = !termo ? _linhasPedidosCache : _linhasPedidosCache.filter(l =>
+    bate(l.numero) || bate(l.cliente) || bate(l.oc) || bate(l.erpId));
+
+  if (!linhas.length) {
+    wrap.innerHTML = '<div class="empty-state"><h3>Nenhum pedido encontrado</h3></div>';
+    return;
+  }
+  wrap.innerHTML = `<div style="overflow-x:auto"><table>
+    <thead><tr><th>Numero</th><th>Nº ZEN</th><th>OC</th><th>Cliente</th><th>Tipo</th><th>Status</th><th>Valor</th><th>Data</th><th></th></tr></thead>
+    <tbody>${linhas.map(l => `<tr>
+      <td><strong>${esc(l.numero)}</strong></td>
+      <td>${l.erpId ? esc(l.erpId) : '<span style="color:#a0aec0">—</span>'}</td>
+      <td>${l.oc ? esc(l.oc) : '<span style="color:#a0aec0">—</span>'}</td>
+      <td>${esc(l.cliente)}</td>
+      <td><span style="font-size:11px;font-weight:600;color:${l.tipo === 'orcamento' ? '#9a3412' : '#1d327b'}">${l.tipo === 'orcamento' ? 'Orçamento' : 'Pedido'}</span></td>
+      <td>${l.statusHtml}</td>
+      <td>${fmtMoeda(l.valor)}</td>
+      <td>${fmtData(l.data)}</td>
+      <td><button class="btn btn-outline btn-sm" onclick="${l.tipo === 'pedido' ? `openPedido('${l.id}')` : `abrirOrcamentoDetalhe('${l.id}')`}">Ver</button></td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
 }
 
 async function chamarOrcamentoApi(acao, extra) {
@@ -1269,7 +1289,7 @@ async function openPedido(id) {
         </div>
         <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px">
         <div style="padding:10px;background:#f7fafc;border-radius:8px">
           <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px">Status</div>
           <span class="status-badge status-${pedido.status}">${pedido.status.replace('_', ' ')}</span>
@@ -1282,8 +1302,12 @@ async function openPedido(id) {
           <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px">Data</div>
           <div style="font-size:13px;font-weight:500">${fmtData(pedido.criado_em)}</div>
         </div>
+        <div style="padding:10px;background:#f7fafc;border-radius:8px">
+          <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px">Nº no ZEN</div>
+          <div style="font-size:13px;font-weight:700;color:#1d327b">${pedido.erp_pedido_id ? esc(pedido.erp_pedido_id) : '—'}</div>
+        </div>
       </div>
-      ${pedido.ordem_compra ? `<div style="font-size:13px;color:#4a5568;margin-bottom:12px"><strong>OC:</strong> ${pedido.ordem_compra}</div>` : ''}
+      ${pedido.ordem_compra ? `<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding:8px 10px;background:#f0f7ff;border-radius:6px"><strong>OC do cliente:</strong> ${esc(pedido.ordem_compra)}</div>` : ''}
       ${renderTimeline(pedido, eventos)}
       ${itens.length ? `<div style="overflow-x:auto"><table>
         <thead><tr><th>SKU</th><th>Produto</th><th>Qtd</th><th>Preco Unit.</th><th>Subtotal</th></tr></thead>

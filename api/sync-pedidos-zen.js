@@ -667,6 +667,28 @@ module.exports = async function handler(req, res) {
   // que guarda senha e dado bancario em texto puro -- vazou na conversa.
   // Nao recriar sem projetar campos explicitamente (como debug_pay faz).
 
+  // So os campos que o orcamento (api/_orcamento.js) escreve na propria venda
+  // -- nao expande person/company, entao nao corre o risco de arrastar
+  // properties.comments sensivel (ver removerComentariosSensiveis). O
+  // debug_sale normal tiraria exatamente o campo que precisamos ver aqui
+  // (sale.properties.comments e onde vendedor/pagamento/observacoes vao).
+  if (req.query?.debug_sale_comments) {
+    const sid = String(req.query.debug_sale_comments);
+    try {
+      const vendas = await zenGet('/sale/sale', { q: 'id==' + sid, max: 1, limite: 1 });
+      const v = vendas[0] || null;
+      const pagamentos = await zenGet('/sale/salePayment', { q: 'sale.id==' + sid, max: 20, limite: 20 });
+      return res.status(200).json({
+        ok: true, debug: true, saleId: sid, encontrada: !!v,
+        properties_comments: v?.properties?.comments ?? null,
+        saleProfile: v?.saleProfile ?? null, freightType: v?.freightType ?? null, tags: v?.tags ?? null, status: v?.status ?? null,
+        pagamentos: pagamentos.map(p => ({ type: p.type, term: p.term, value: p.value }))
+      });
+    } catch (e) {
+      return res.status(200).json({ ok: false, debug: true, erro: e.message.slice(0, 300) });
+    }
+  }
+
   const debugSale = req.query?.debug_sale || req.body?.debug_sale;
   if (debugSale) {
     try {

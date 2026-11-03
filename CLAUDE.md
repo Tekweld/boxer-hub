@@ -52,11 +52,13 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 
 | Tabela | Colunas-chave | Uso |
 |---|---|---|
-| `hub_perfis` | user_id, tipo (cliente/representante/funcionario/admin), role (dealer/rep/analyst/manager/financial/admin), nome, email, cliente_id, representante_id | Perfil do usuario autenticado |
+| `hub_perfis` | user_id, tipo (cliente/representante/funcionario/admin), role (dealer/rep/analyst/manager/financial/admin), nome, email, cliente_id, representante_id, area (vendas_adm/financeiro/operacoes/ti — so funcionario, roteia o canal de resolucao) | Perfil do usuario autenticado |
 | `hub_carteira` | representante_id, cliente_id, data_vinculo | Vinculo rep-cliente (admin configura) |
 | `hub_pedidos` | numero (HUB-2026-00001), cliente_id, representante_id, status (rascunho→submetido→aprovado→faturado→enviado→entregue), origem, valor_total, ordem_compra | Pedidos |
 | `hub_pedido_itens` | pedido_id, produto_id, quantidade, preco_unitario, preco_final, subtotal_item | Itens do pedido |
 | `hub_notificacoes` | usuario_id, tipo, titulo, mensagem, referencia_tipo, referencia_id, lida | Notificacoes do sistema |
+| `hub_solicitacoes` | numero, cliente_id, representante_id, categoria (duvida/problema_entrega/financeiro/alteracao_pedido/documentacao/outro), status (aberta→em_andamento→respondida→resolvida), referencia_tipo/referencia_id (pedido/titulo/nota_fiscal/geral), area_responsavel (vendas_adm/financeiro/operacoes/ti — auto por categoria via trigger), assumido_por, assumido_por_nome, assumido_em, resolvido_em | Canal de resolucao (chamados). Quem e da area assume, responde e confirma conclusao |
+| `hub_solicitacao_mensagens` | solicitacao_id, autor_id, autor_tipo, mensagem | Mensagens da thread de uma solicitacao |
 | `hub_solicitacoes_credito` | cliente_id, solicitante_id, tipo (aumento_limite/antecipacao/prazo_especial), valor_solicitado, status (pendente→aprovado/rejeitado) | Pedidos de credito |
 | `hub_documentos_cadastrais` | cliente_id (nullable), onboarding_id, tipo (contrato_social/cartao_cnpj/etc), storage_path, status (pendente→aprovado/rejeitado) | Uploads de documentos (cliente ou onboarding) |
 | `hub_produto_anexos` | produto_id, tipo (foto/ficha_tecnica/certificado/fispq/manual/catalogo), storage_path, ordem | Fotos e docs de produtos |
@@ -101,6 +103,7 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 | `hub_v_preco_cliente` | Preco efetivo por cliente (tabela + promocao ativa) | pedidos.html, catalogo.html |
 | `hub_v_financeiro_cliente` | Resumo: titulos abertos/vencidos, totais, maior atraso | financeiro.html |
 | `hub_v_notif_pendentes` | Notificacoes nao lidas com horas_atras | topbar (hub.js) |
+| `hub_v_solicitacoes_indicadores` | Contagem/horas medias e maximas de hub_solicitacoes, agrupado por area_responsavel + assumido_por + status | Cards de indicador na aba Solicitacoes (admin.html) |
 
 ---
 

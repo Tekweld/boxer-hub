@@ -551,6 +551,7 @@ function getUserTipo() { return PERFIL?.tipo || ''; }
 function getUserNome() { return PERFIL?.nome || getUserEmail(); }
 function getUserClienteId() { return PERFIL?.cliente_id || null; }
 function getUserRepresentanteId() { return PERFIL?.representante_id || null; }
+function getUserArea() { return PERFIL?.area || null; }
 
 // === TOPBAR ===
 
@@ -560,10 +561,12 @@ function renderTopbar(titulo) {
   const currentPage = slug === 'index' ? 'index.html' : slug + (slug.includes('.') ? '' : '.html');
 
   const tipo = getUserTipo();
+  // Ordem fixa pedida pelo Andre: Catalogo, Pedidos, Financeiro, Pesquisas,
+  // Indicadores, Admin -- Indicadores por ultimo antes do Admin, nunca logo
+  // apos Pedidos.
   const navItems = [
     { href: 'catalogo.html', label: 'Catalogo', icon: '&#9783;' },
-    { href: 'pedidos.html', label: 'Pedidos', icon: '&#9776;' },
-    { href: 'indicadores.html', label: 'Indicadores', icon: '&#128202;' }
+    { href: 'pedidos.html', label: 'Pedidos', icon: '&#9776;' }
   ];
   if (tipo === 'cliente' || tipo === 'representante') {
     navItems.push({ href: 'financeiro.html', label: 'Financeiro', icon: '&#36;' });
@@ -576,6 +579,7 @@ function renderTopbar(titulo) {
     navItems.push({ href: 'financeiro.html', label: 'Financeiro', icon: '&#36;' });
   }
   navItems.push({ href: 'pesquisas.html', label: 'Pesquisas', icon: '&#9998;' });
+  navItems.push({ href: 'indicadores.html', label: 'Indicadores', icon: '&#128202;' });
   if (['admin', 'manager', 'analyst'].includes(role)) {
     navItems.push({ href: 'admin.html', label: 'Admin', icon: '&#9878;' });
   }
@@ -797,6 +801,12 @@ function autorTipoAtual() {
   return 'funcionario';
 }
 
+// Rotulo exibido difere do valor salvo em `status` (nomenclatura do Andre):
+// aberta/em_andamento ficam como estao, respondida = "aguardando cliente"
+// (Boxer ja respondeu, falta retorno), resolvida = "concluida".
+const LABELS_STATUS_SOLICITACAO = {
+  aberta: 'Aberta', em_andamento: 'Em andamento', respondida: 'Aguardando cliente', resolvida: 'Concluida'
+};
 function badgeSolicitacao(status) {
   const cores = {
     aberta:       { bg: '#fef3c7', fg: '#92400e' },
@@ -805,7 +815,7 @@ function badgeSolicitacao(status) {
     resolvida:    { bg: '#d1fae5', fg: '#065f46' }
   };
   const c = cores[status] || { bg: '#e2e8f0', fg: '#4a5568' };
-  return `<span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px;background:${c.bg};color:${c.fg}">${escSol(String(status || '').replace('_', ' '))}</span>`;
+  return `<span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px;background:${c.bg};color:${c.fg}">${escSol(LABELS_STATUS_SOLICITACAO[status] || status || '')}</span>`;
 }
 
 // referenciaTipo: 'pedido' | 'titulo' | 'nota_fiscal' | 'geral'
@@ -871,6 +881,28 @@ const CATEGORIAS_SOLICITACAO = [
   { valor: 'outro', label: 'Outro' }
 ];
 
+// Area que assume a resolucao -- hub_trg_solicitacao_preencher ja define um
+// valor automatico por categoria ao abrir; o time pode reclassificar depois.
+const AREAS_SOLICITACAO = [
+  { valor: 'vendas_adm', label: 'ADM de Vendas' },
+  { valor: 'financeiro', label: 'Financeiro' },
+  { valor: 'cadastro', label: 'Cadastro' },
+  { valor: 'ti', label: 'TI' },
+  { valor: 'comercial', label: 'Comercial' }
+];
+function labelArea(area) {
+  const achada = AREAS_SOLICITACAO.find(a => a.valor === area);
+  return achada ? achada.label : (area || 'Sem area');
+}
+// So funcionario pode assumir (cliente/representante acompanham, nao resolvem).
+// Admin/manager podem assumir qualquer area; os demais, so a propria area.
+function podeAssumirSolicitacao(areaResponsavel) {
+  if (autorTipoAtual() !== 'funcionario') return false;
+  const role = getUserRole();
+  if (role === 'admin' || role === 'manager') return true;
+  return getUserArea() === areaResponsavel;
+}
+
 function abrirNovaSolicitacao(referenciaTipo, referenciaId, clienteId, assuntoSugerido, categoriaSugerida) {
   openModal(`
     <h3 style="font-size:18px;margin-bottom:16px;color:#1d327b">Nova solicitacao</h3>
@@ -934,6 +966,13 @@ async function abrirThreadSolicitacao(id) {
     if (!sol) { toast('Solicitacao nao encontrada', 'error'); return; }
     const msgs = await sb('/hub_solicitacao_mensagens?solicitacao_id=eq.' + id + '&select=*&order=criado_em.asc');
 
+    const areaTag = `<span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;background:#f0f4f8;color:#1d327b">${escSol(labelArea(sol.area_responsavel))}</span>`;
+    const assumidoTag = sol.assumido_por_nome
+      ? `<span style="font-size:12px;color:#718096">Assumida por <strong>${escSol(sol.assumido_por_nome)}</strong></span>`
+      : (autorTipoAtual() === 'funcionario' ? `<span style="font-size:12px;color:#e30613">Ninguem assumiu ainda</span>` : '');
+    const btnAssumir = (!sol.assumido_por && podeAssumirSolicitacao(sol.area_responsavel))
+      ? `<button class="btn btn-outline btn-sm" onclick="assumirSolicitacao('${sol.id}')">Assumir</button>` : '';
+
     openModal(`
       <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px">
         <div>
@@ -942,7 +981,9 @@ async function abrirThreadSolicitacao(id) {
         </div>
         <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
       </div>
-      <div style="margin-bottom:10px">${badgeSolicitacao(sol.status)}</div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        ${badgeSolicitacao(sol.status)} ${areaTag} ${assumidoTag} ${btnAssumir}
+      </div>
       <div id="threadSolicitacao" style="max-height:40vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:4px 2px">
         ${msgs.map(m => renderMensagemSolicitacao(m)).join('') || '<div style="color:#718096;font-size:13px">Sem mensagens ainda.</div>'}
       </div>
@@ -950,12 +991,30 @@ async function abrirThreadSolicitacao(id) {
         <textarea id="respostaSolicitacao" rows="3" placeholder="Escreva sua resposta..." style="width:100%"></textarea>
       </div>
       <div class="form-actions" style="display:flex;gap:8px;justify-content:space-between;margin-top:8px;padding-top:14px;border-top:1px solid #e2e8f0">
-        ${sol.status !== 'resolvida' ? `<button class="btn btn-outline" onclick="marcarSolicitacaoResolvida('${sol.id}')">Marcar como resolvida</button>` : '<span></span>'}
+        ${sol.status !== 'resolvida' ? `<button class="btn btn-outline" onclick="marcarSolicitacaoResolvida('${sol.id}')">Marcar como concluida</button>` : '<span></span>'}
         <button class="btn btn-primary" onclick="responderSolicitacao('${sol.id}')">Enviar resposta</button>
       </div>
     `);
   } catch (e) {
     toast('Erro ao abrir solicitacao', 'error');
+  }
+}
+
+// So quem e da area (ou admin/manager) pode assumir -- e o que faz o chamado
+// sair de "aberta" (fila geral) para "em_andamento" (sob responsabilidade de
+// alguem). Vira tambem a referencia pro indicador de horas por pessoa/area.
+async function assumirSolicitacao(id) {
+  try {
+    await sb('/hub_solicitacoes?id=eq.' + id, 'PATCH', {
+      assumido_por: getUserId(),
+      assumido_por_nome: PERFIL?.nome || null,
+      assumido_em: new Date().toISOString(),
+      status: 'em_andamento'
+    });
+    toast('Solicitacao assumida');
+    abrirThreadSolicitacao(id);
+  } catch (e) {
+    toast('Erro ao assumir solicitacao', 'error');
   }
 }
 
@@ -993,7 +1052,7 @@ async function responderSolicitacao(id) {
 async function marcarSolicitacaoResolvida(id) {
   try {
     await sb('/hub_solicitacoes?id=eq.' + id, 'PATCH', { status: 'resolvida' });
-    toast('Solicitacao marcada como resolvida');
+    toast('Solicitacao marcada como concluida');
     abrirThreadSolicitacao(id);
   } catch (e) {
     toast('Erro ao atualizar solicitacao', 'error');

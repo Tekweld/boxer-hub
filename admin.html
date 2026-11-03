@@ -272,12 +272,22 @@ select,input,textarea{font-family:Outfit,sans-serif}
       <h2 class="page-title">Canal Unico — Solicitacoes</h2>
     </div>
     <div class="panel-hint">
-      Cliente ou representante abre uma solicitacao vinculada a um pedido, titulo ou nota fiscal. Responder aqui
-      vale como resposta oficial -- o cliente ve direto no Hub, sem precisar de WhatsApp ou telefone.
+      Cliente ou representante abre uma solicitacao vinculada a um pedido, titulo ou nota fiscal. Cai automaticamente
+      na area responsavel (Financeiro, ADM de Vendas, etc); alguem da area <b>assume</b>, responde e confirma a conclusao.
+      O representante da carteira continua sempre na conversa.
     </div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+    <div id="solIndicadores" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px"></div>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px;flex-wrap:wrap">
+      <select id="solFiltroArea" onchange="loadSolicitacoesAdmin()" style="min-width:180px">
+        <option value="">Todas as areas</option>
+        <option value="vendas_adm">ADM de Vendas</option>
+        <option value="financeiro">Financeiro</option>
+        <option value="cadastro">Cadastro</option>
+        <option value="ti">TI</option>
+        <option value="comercial">Comercial</option>
+      </select>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#4a5568;cursor:pointer">
-        <input type="checkbox" id="solMostrarResolvidas" onchange="loadSolicitacoesAdmin()"> Mostrar resolvidas
+        <input type="checkbox" id="solMostrarResolvidas" onchange="loadSolicitacoesAdmin()"> Mostrar concluidas
       </label>
     </div>
     <div id="solicitacoesList"></div>
@@ -311,27 +321,35 @@ function showTab(n, el) {
 async function loadSolicitacoesAdmin() {
   const wrap = document.getElementById('solicitacoesList');
   const mostrarResolvidas = document.getElementById('solMostrarResolvidas')?.checked;
+  const area = document.getElementById('solFiltroArea')?.value || '';
   wrap.innerHTML = '<div style="padding:16px;color:#718096;font-size:13px">Carregando...</div>';
+  carregarIndicadoresSolicitacoes();
   try {
     let url = '/hub_solicitacoes?ativo=eq.true&order=criado_em.desc'
-      + '&select=id,numero,assunto,categoria,status,criado_em,atualizado_em,hub_clientes(razao_social),hub_representantes(nome)';
+      + '&select=id,numero,assunto,categoria,status,area_responsavel,assumido_por_nome,criado_em,resolvido_em,hub_clientes(razao_social),hub_representantes(nome)';
     if (!mostrarResolvidas) url += '&status=neq.resolvida';
+    if (area) url += '&area_responsavel=eq.' + area;
     const lista = await sb(url);
     if (!lista.length) {
-      wrap.innerHTML = '<div class="empty-state"><h3>Nenhuma solicitacao em aberto</h3></div>';
+      wrap.innerHTML = '<div class="empty-state"><h3>Nenhuma solicitacao encontrada</h3></div>';
       return;
     }
     wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Numero</th><th>Cliente</th><th>Assunto</th><th>Categoria</th><th>Representante</th><th>Status</th><th>Aberta ha</th><th></th></tr></thead>
+      <thead><tr><th>Numero</th><th>Cliente</th><th>Assunto</th><th>Categoria</th><th>Area</th><th>Representante</th><th>Assumida por</th><th>Status</th><th>Aberta ha</th><th></th></tr></thead>
       <tbody>${lista.map(s => `<tr>
         <td><strong>${s.numero}</strong></td>
         <td>${s.hub_clientes?.razao_social || '—'}</td>
         <td>${s.assunto}</td>
         <td>${labelCategoria(s.categoria)}</td>
+        <td>${labelArea(s.area_responsavel)}</td>
         <td>${s.hub_representantes?.nome || '—'}</td>
+        <td>${s.assumido_por_nome || '<span style="color:#e30613">Ninguem</span>'}</td>
         <td>${badgeSolicitacao(s.status)}</td>
-        <td>${horasDesde(s.criado_em)}</td>
-        <td><button class="btn btn-outline btn-sm" onclick="abrirThreadSolicitacao('${s.id}')">Responder</button></td>
+        <td>${horasDesde(s.criado_em, s.resolvido_em)}</td>
+        <td style="white-space:nowrap">
+          ${(!s.assumido_por_nome && podeAssumirSolicitacao(s.area_responsavel)) ? `<button class="btn btn-outline btn-sm" onclick="assumirSolicitacao('${s.id}').then(loadSolicitacoesAdmin)">Assumir</button> ` : ''}
+          <button class="btn btn-outline btn-sm" onclick="abrirThreadSolicitacao('${s.id}')">Abrir</button>
+        </td>
       </tr>`).join('')}</tbody>
     </table></div>`;
   } catch (e) {
@@ -339,10 +357,47 @@ async function loadSolicitacoesAdmin() {
   }
 }
 
+// Resumo por area: quantas em aberto (nao concluidas) e tempo medio em horas --
+// o indicador de uso real dos times que o Andre pediu.
+async function carregarIndicadoresSolicitacoes() {
+  const wrap = document.getElementById('solIndicadores');
+  if (!wrap) return;
+  try {
+    const linhas = await sb('/hub_v_solicitacoes_indicadores?select=*');
+    const porArea = {};
+    linhas.forEach(l => {
+      const a = l.area_responsavel || 'sem_area';
+      if (!porArea[a]) porArea[a] = { abertas: 0, concluidas: 0, horasAbertasSoma: 0, horasAbertasQtd: 0 };
+      if (l.status === 'resolvida') {
+        porArea[a].concluidas += Number(l.total);
+      } else {
+        porArea[a].abertas += Number(l.total);
+        porArea[a].horasAbertasSoma += Number(l.horas_medias) * Number(l.total);
+        porArea[a].horasAbertasQtd += Number(l.total);
+      }
+    });
+    const areas = Object.keys(porArea);
+    if (!areas.length) { wrap.innerHTML = ''; return; }
+    wrap.innerHTML = areas.map(a => {
+      const d = porArea[a];
+      const media = d.horasAbertasQtd ? Math.round(d.horasAbertasSoma / d.horasAbertasQtd) : 0;
+      return `<div style="background:#fff;border:1px solid #d0d8e8;border-radius:10px;padding:12px 16px;min-width:160px">
+        <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.4px;font-weight:600">${labelArea(a)}</div>
+        <div style="font-size:20px;font-weight:700;color:#1d327b;margin-top:2px">${d.abertas} <span style="font-size:12px;font-weight:500;color:#718096">em aberto</span></div>
+        <div style="font-size:12px;color:#718096;margin-top:2px">${d.concluidas} concluidas &middot; media ${media}h em aberto</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    wrap.innerHTML = '';
+  }
+}
+
 // SLA simples: ha quanto tempo a solicitacao esta aberta, pra ficar visivel
-// de longe quem esta esperando resposta ha mais tempo.
-function horasDesde(iso) {
-  const horas = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 3600000));
+// de longe quem esta esperando resposta ha mais tempo. Se ja foi concluida,
+// congela no momento da conclusao em vez de continuar contando ate agora.
+function horasDesde(iso, resolvidoEmIso) {
+  const fim = resolvidoEmIso ? new Date(resolvidoEmIso).getTime() : Date.now();
+  const horas = Math.max(0, Math.round((fim - new Date(iso).getTime()) / 3600000));
   if (horas < 24) return horas + 'h';
   return Math.round(horas / 24) + 'd';
 }
@@ -363,12 +418,13 @@ async function loadUsuarios() {
     const users = await sb('/hub_perfis?order=nome.asc&select=*');
     if (!users.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhum usuario</h3></div>'; return; }
     wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Nome</th><th>Email</th><th>Tipo</th><th>Role</th><th>Ativo</th><th></th></tr></thead>
+      <thead><tr><th>Nome</th><th>Email</th><th>Tipo</th><th>Role</th><th>Area</th><th>Ativo</th><th></th></tr></thead>
       <tbody>${users.map(u => `<tr>
         <td><strong>${u.nome}</strong></td>
         <td>${u.email}</td>
         <td>${u.tipo}</td>
         <td><span class="role-badge role-${u.role}">${u.role}</span></td>
+        <td>${u.area ? labelArea(u.area) : '—'}</td>
         <td>${u.ativo ? 'Sim' : 'Nao'}</td>
         <td><button class="btn btn-outline btn-sm" onclick="editUsuario('${u.id}')">Editar</button></td>
       </tr>`).join('')}</tbody>
@@ -461,46 +517,187 @@ async function syncZenClientes() {
 }
 
 
+// "Novo Usuario" nao cria cadastro do zero -- cliente/representante ja tem
+// que existir sincronizado do ZEN (hub_clientes/hub_representantes exigem
+// erp_*_id). Por isso o tipo decide o que a tela pede:
+//   cliente       -> nao cria aqui, aponta pra aba Convites (ja faz a busca
+//                    por CNPJ/razao social e o cliente escolhe a propria senha)
+//   representante -> busca o hub_representantes ja sincronizado sem user_id
+//   funcionario   -> nome/email livres + Area (pra rotear o canal de resolucao)
+//   admin         -> nome/email livres, sem area (ja enxerga tudo)
 function openNovoUsuario() {
   openModal(`
     <h3 style="font-size:18px;margin-bottom:16px;color:#1d327b">Novo Usuario</h3>
+    <div class="form-row">
+      <label>Tipo</label>
+      <select id="uTipo" onchange="renderCamposNovoUsuario()">
+        <option value="representante">Representante</option>
+        <option value="funcionario">Funcionario (time interno)</option>
+        <option value="admin">Admin</option>
+        <option value="cliente">Cliente</option>
+      </select>
+    </div>
+    <div id="uCamposDinamicos"></div>
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" id="btnCriarUsuario" onclick="salvarUsuario()">Criar</button>
+    </div>
+  `);
+  renderCamposNovoUsuario();
+}
+
+function renderCamposNovoUsuario() {
+  const tipo = document.getElementById('uTipo').value;
+  const wrap = document.getElementById('uCamposDinamicos');
+  const btn = document.getElementById('btnCriarUsuario');
+
+  if (tipo === 'cliente') {
+    wrap.innerHTML = `<div class="panel-hint" style="margin:0 0 16px">
+      Cliente precisa ja existir no ZEN. Use a aba <b>Convites</b> -- ela busca por CNPJ/razao social
+      e o proprio cliente define a senha ao aceitar.
+    </div>`;
+    btn.classList.add('hidden');
+    return;
+  }
+  btn.classList.remove('hidden');
+
+  if (tipo === 'representante') {
+    wrap.innerHTML = `
+      <div class="form-row">
+        <label>Buscar representante (ja sincronizado do ZEN)</label>
+        <input id="uRepBusca" placeholder="Nome ou email..." oninput="buscarRepresentanteUsuario()">
+      </div>
+      <div id="uRepResultados" style="margin-bottom:16px"></div>
+      <div id="uRepSel" class="hidden" style="padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;margin-bottom:16px">
+        <div style="font-size:14px;font-weight:700;color:#166534" id="uRepSelNome"></div>
+        <div style="font-size:12px;color:#4a5568" id="uRepSelInfo"></div>
+        <input type="hidden" id="uRepSelId">
+      </div>
+      <input type="hidden" id="uRole" value="rep">
+    `;
+    return;
+  }
+
+  // funcionario / admin
+  wrap.innerHTML = `
     <div class="form-row-inline">
       <div class="form-row"><label>Nome</label><input id="uNome" placeholder="Nome completo"></div>
-      <div class="form-row"><label>Email</label><input id="uEmail" type="email" placeholder="email@empresa.com"></div>
+      <div class="form-row"><label>Email</label><input id="uEmail" type="email" placeholder="email@boxersoldas.com.br"></div>
     </div>
     <div class="form-row-inline">
-      <div class="form-row">
-        <label>Tipo</label>
-        <select id="uTipo">
-          <option value="cliente">Cliente</option>
-          <option value="representante">Representante</option>
-          <option value="funcionario">Funcionario</option>
-          <option value="admin">Admin</option>
-        </select>
-      </div>
       <div class="form-row">
         <label>Role</label>
         <select id="uRole">
-          <option value="dealer">Dealer</option>
-          <option value="rep">Rep</option>
           <option value="analyst">Analyst</option>
           <option value="manager">Manager</option>
           <option value="financial">Financial</option>
-          <option value="admin">Admin</option>
+          ${tipo === 'admin' ? '<option value="admin" selected>Admin</option>' : ''}
         </select>
+      </div>
+      <div class="form-row">
+        <label>Area${tipo === 'funcionario' ? '' : ' (opcional)'}</label>
+        <select id="uArea">
+          <option value="">${tipo === 'admin' ? 'Nenhuma (enxerga tudo)' : 'Selecione...'}</option>
+          <option value="vendas_adm">ADM de Vendas</option>
+          <option value="financeiro">Financeiro</option>
+          <option value="cadastro">Cadastro</option>
+          <option value="ti">TI</option>
+          <option value="comercial">Comercial</option>
+        </select>
+        <div style="font-size:11px;color:#718096;margin-top:3px">Define pra qual fila do canal de resolucao os chamados dele caem.</div>
       </div>
     </div>
     <div class="form-row"><label>Telefone</label><input id="uTel" placeholder="(11) 99999-9999"></div>
-    <div class="form-actions">
-      <button class="btn btn-outline" onclick="closeModal()">Cancelar</button>
-      <button class="btn btn-primary" onclick="salvarUsuario()">Criar</button>
-    </div>
-  `);
+  `;
+}
+
+let _repBuscaTimer = null;
+
+async function buscarRepresentanteUsuario() {
+  clearTimeout(_repBuscaTimer);
+  const q = document.getElementById('uRepBusca').value.trim();
+  const wrap = document.getElementById('uRepResultados');
+  if (q.length < 3) { wrap.innerHTML = ''; return; }
+
+  _repBuscaTimer = setTimeout(async () => {
+    try {
+      const reps = await sb('/hub_representantes?or=(nome.ilike.*' + encodeURIComponent(q) + '*,email.ilike.*' + encodeURIComponent(q) + '*)&ativo=eq.true&user_id=is.null&limit=8&select=id,nome,email,regiao,erp_representante_id');
+      if (!reps.length) {
+        wrap.innerHTML = '<div style="font-size:12px;color:#718096;padding:8px 0">Nenhum representante sem usuario encontrado</div>';
+        return;
+      }
+      wrap.innerHTML = `<div style="border:1px solid #e2e8f0;border-radius:6px;max-height:200px;overflow-y:auto">${reps.map(r => `
+        <div style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #e2e8f0;font-size:13px" onmouseover="this.style.background='#f0f7ff'" onmouseout="this.style.background=''" onclick="selecionarRepresentanteUsuario('${r.id}','${(r.nome||'').replace(/'/g,"\\'")}','${r.email||''}','${r.regiao||''}')">
+          <strong>${r.nome}</strong><br>
+          <span style="font-size:11px;color:#718096">${r.email || 'sem email'} ${r.regiao ? '| ' + r.regiao : ''}</span>
+        </div>
+      `).join('')}</div>`;
+    } catch (e) {
+      wrap.innerHTML = '<div style="font-size:12px;color:#e30613;padding:8px 0">Erro na busca</div>';
+    }
+  }, 300);
+}
+
+function selecionarRepresentanteUsuario(id, nome, email, regiao) {
+  document.getElementById('uRepSelId').value = id;
+  document.getElementById('uRepSelNome').textContent = nome;
+  document.getElementById('uRepSelInfo').textContent = (email || 'sem email') + (regiao ? ' | ' + regiao : '');
+  document.getElementById('uRepSel').classList.remove('hidden');
+  document.getElementById('uRepResultados').innerHTML = '';
+  document.getElementById('uRepBusca').value = nome;
 }
 
 async function salvarUsuario() {
-  toast('Criacao de usuario em desenvolvimento');
-  closeModal();
+  const tipo = document.getElementById('uTipo').value;
+  const btn = document.getElementById('btnCriarUsuario');
+  const payload = { tipo, role: document.getElementById('uRole')?.value };
+
+  if (tipo === 'representante') {
+    const repId = document.getElementById('uRepSelId')?.value;
+    if (!repId) { toast('Selecione um representante', 'error'); return; }
+    payload.representante_id = repId;
+  } else {
+    payload.nome = document.getElementById('uNome')?.value.trim();
+    payload.email = document.getElementById('uEmail')?.value.trim();
+    payload.telefone = document.getElementById('uTel')?.value.trim();
+    payload.area = document.getElementById('uArea')?.value || null;
+    if (!payload.nome || !payload.email) { toast('Preencha nome e email', 'error'); return; }
+    if (tipo === 'funcionario' && !payload.area) { toast('Selecione a area do funcionario', 'error'); return; }
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Criando...';
+  try {
+    const r = await fetch('/api/criar-usuario', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SESSION.access_token },
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) {
+      toast(data.error || 'Erro ao criar usuario', 'error');
+      btn.disabled = false; btn.textContent = 'Criar';
+      return;
+    }
+    openModal(`
+      <h3 style="font-size:18px;color:#16a34a;margin-bottom:16px">Usuario Criado</h3>
+      <div style="padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;margin-bottom:16px">
+        <div style="font-size:12px;color:#718096;margin-bottom:4px">Login</div>
+        <div style="font-size:13px;font-weight:500;margin-bottom:10px">${data.email}</div>
+        <div style="font-size:12px;color:#718096;margin-bottom:4px">Senha temporaria</div>
+        <div style="font-size:16px;font-weight:700;color:#e30613;font-family:monospace">${data.senha_temp}</div>
+      </div>
+      <div style="font-size:12px;color:#718096;margin-bottom:16px">
+        ${data.email_status === 'enviado' ? 'Email de boas-vindas ja enviado para ' + data.email + '.' : 'Nao foi possivel enviar o email automaticamente -- repasse a senha acima manualmente.'}
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="closeModal();loadUsuarios()">Fechar</button>
+      </div>
+    `);
+  } catch (e) {
+    toast('Erro ao criar usuario: ' + e.message, 'error');
+    btn.disabled = false; btn.textContent = 'Criar';
+  }
 }
 
 async function editUsuario(id) {

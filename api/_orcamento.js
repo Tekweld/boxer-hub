@@ -355,9 +355,19 @@ async function criar(ctx, user, b, edit) {
   if (!avista && parcelas > 1 && totalItens / parcelas < cond.dupMin) avisos.push('Parcela abaixo do minimo de ' + brl(cond.dupMin) + ' por duplicata');
 
   // cliente no ZEN (cadastro sincronizado no Hub)
-  const hc = (await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=erp_cliente_id,bloqueado&limit=1', 'comercial'))[0];
+  const hc = (await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=erp_cliente_id,bloqueado,representante_id&limit=1', 'comercial'))[0];
   const zenPerson = hc && hc.erp_cliente_id ? Number(hc.erp_cliente_id) : null;
   if (hc && hc.bloqueado) avisos.push('Cliente bloqueado no ZEN');
+  // Vendedor no ZEN e campo real da venda (sale.Sale.personSalesperson, confirmado
+  // em 2026-11-03 via /platform/openapi.json -- nao e so texto em comentario).
+  // Fonte: o representante DONO da conta no Hub, nao quem esta logado montando o
+  // orcamento (pode ser admin/manager atuando por proxy) -- mesma logica do Zen,
+  // onde o cliente ja carrega personSalesperson por padrao.
+  let vendedorErpId = null;
+  if (hc && hc.representante_id) {
+    const rep = (await sbGet(ctx, '/hub_representantes?id=eq.' + hc.representante_id + '&select=erp_representante_id&limit=1', 'comercial'))[0];
+    vendedorErpId = rep && rep.erp_representante_id ? Number(rep.erp_representante_id) : null;
+  }
   let endereco = cl.endereco || null;
   if (zenPerson && !endereco) {
     try {
@@ -373,7 +383,7 @@ async function criar(ctx, user, b, edit) {
     cliente_nome: String(cl.nome).trim(), cliente_fantasia: cl.fantasia || null, cliente_cnpj: cnpj, cliente_ie: cl.ie || null,
     cliente_email: String(cl.email).trim().toLowerCase(), cliente_celular: soDigitos(cl.celular), cliente_telefone: soDigitos(cl.telefone) || null,
     cliente_contato: cl.contato || null, cliente_cidade: cl.cidade || null, cliente_uf: cl.uf || uf, cliente_endereco: endereco,
-    zen_person_id: zenPerson, req_id: b.req_id ? String(b.req_id).slice(0, 80) : null,
+    zen_person_id: zenPerson, vendedor_erp_id: vendedorErpId, req_id: b.req_id ? String(b.req_id).slice(0, 80) : null,
     pagamento_tipo: avista ? 'avista' : 'boleto', parcelas, desconto_vista_pct: avista ? cond.vista : 0,
     frete_tipo: freteTipo, frete_valor: freteValor,
     observacoes: b.observacoes ? String(b.observacoes).slice(0, 1500) : null,
@@ -450,6 +460,7 @@ async function montarVendaZen(o, orc, itens) {
     properties: { comments: comentarios }
   };
   if (addr) sale.personAddressShipping = { id: addr.id };
+  if (o.vendedor_erp_id) sale.personSalesperson = { id: Number(o.vendedor_erp_id) };
   const pagamentos = o.pagamento_tipo === 'avista'
     ? [{ type: 'BILLING_TITLE', term: 0 }]
     : Array.from({ length: o.parcelas }, (_, i) => ({ type: 'BILLING_TITLE', term: (i + 1) * DIAS_POR_PARCELA }));

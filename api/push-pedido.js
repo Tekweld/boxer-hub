@@ -75,7 +75,7 @@ module.exports = async function handler(req, res) {
       HUB_URL + '/rest/v1/hub_pedidos?id=eq.' + pedido_id +
         '&select=id,numero,status,valor_total,cliente_id,representante_id,erp_pedido_id,' +
         'forma_pagamento,parcelas,observacoes,ordem_compra,frete_modalidade,' +
-        'hub_clientes(erp_cliente_id,razao_social),hub_pedido_itens(sku,quantidade,preco_final)',
+        'hub_clientes(erp_cliente_id,razao_social,representante_id),hub_pedido_itens(sku,quantidade,preco_final)',
       { headers: hubH('GET') }
     );
     const pedido = (await pedRes.json())?.[0];
@@ -139,6 +139,16 @@ module.exports = async function handler(req, res) {
     // "Formas de pagamento" (properties.paymentMethods) NAO entra aqui --
     // e so um espelho que o Zen preenche sozinho a partir do term do
     // primeiro salePayment, confirmado comparando 30 vendas reais.
+    //
+    // Corrigido em 2026-11-03: a lista acima estava incompleta. O campo
+    // "Vendedor" da tela de criacao do pedido no ZEN (sale/sale-edit) E um
+    // campo real da venda -- personSalesperson, {id} de catalog.person.Person
+    // -- confirmado contra /platform/openapi.json (nao estava na amostra
+    // porque nenhum pedido criado pelo Hub ate aqui o preenchia). Fonte:
+    // o representante dono da conta do cliente no Hub (hub_clientes.
+    // representante_id -> hub_representantes.erp_representante_id), nao
+    // quem esta logado fazendo o pedido -- mesma convencao do proprio ZEN,
+    // onde o Person do cliente ja carrega personSalesperson por padrao.
     let personAddressShippingId = null;
     try {
       const enderecos = await zenGet('/catalog/person/personAddress', {
@@ -146,6 +156,16 @@ module.exports = async function handler(req, res) {
       });
       personAddressShippingId = enderecos[0]?.id || null;
     } catch (_) {}
+
+    let erpRepresentanteId = null;
+    const repId = pedido.hub_clientes?.representante_id;
+    if (repId) {
+      const repRes = await fetch(
+        HUB_URL + '/rest/v1/hub_representantes?id=eq.' + repId + '&select=erp_representante_id&limit=1',
+        { headers: hubH('GET') }
+      );
+      erpRepresentanteId = (await repRes.json())?.[0]?.erp_representante_id || null;
+    }
 
     const comentarios = [pedido.ordem_compra ? 'OC: ' + pedido.ordem_compra : null, pedido.observacoes || null]
       .filter(Boolean).join(' — ') || undefined;
@@ -167,6 +187,7 @@ module.exports = async function handler(req, res) {
     };
     if (personAddressShippingId) saleBody.personAddressShipping = { id: personAddressShippingId };
     if (comentarios) saleBody.properties = { comments: comentarios };
+    if (erpRepresentanteId) saleBody.personSalesperson = { id: Number(erpRepresentanteId) };
 
     const pagamentos = montarPagamentos(pedido);
 

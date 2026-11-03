@@ -668,7 +668,7 @@ async function salvarUsuario() {
   btn.disabled = true;
   btn.textContent = 'Criando...';
   try {
-    const r = await fetch('/api/criar-usuario', {
+    const r = await fetch('/api/ativar', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SESSION.access_token },
       body: JSON.stringify(payload)

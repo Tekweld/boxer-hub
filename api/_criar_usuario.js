@@ -5,11 +5,13 @@
 // representante (ja sincronizado do ZEN, so falta o login) e time Boxer
 // (sem vinculo com ZEN, mas precisa de `area` pra cair na fila certa do
 // canal de resolucao).
+//
+// Prefixo `_` -- NAO e uma serverless function propria (Vercel Hobby limita
+// 12 por deploy, ja no teto). api/ativar.js despacha pra ca quando o body
+// tem `tipo` em vez de `onboarding_id`; mesma rota publica (/api/ativar).
 const SB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 
-module.exports = async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
+module.exports = async function criarUsuarioInterno(req, res) {
   const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
   if (!SB_SERVICE) return res.status(500).json({ error: 'SUPABASE_SERVICE_KEY nao configurada' });
 

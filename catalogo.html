@@ -202,6 +202,7 @@ let selectedCat = '';
 (async () => {
   await loadPerfil();
   renderTopbar('Catalogo');
+  restaurarAjustePolitica();
   await Promise.all([loadCategorias(), loadPrecos()]);
   await loadProdutos();
   updateCartBadge();
@@ -223,10 +224,37 @@ let selectedCat = '';
 // ainda precisa ser construido.
 let precoContexto = null;
 
+// Simulacao de politica comercial (segmento/classe/UF escolhidos na mao) --
+// so representante/staff atuando por uma revenda, nunca o proprio dealer
+// (ele sempre compra pela regra real dele, sem escolha). Usado tanto para
+// "testar" quanto para montar um orcamento com cenario diferente do
+// cadastro real do cliente. null = preco automatico de hub_fn_precos_cliente.
+let overridePolitica = null;
+const SEGMENTOS_TABELA1 = ['Física', 'Híbrido', 'Ecommerce'];
+const CLASSES_TABELA1 = [1, 2, 3];
+const UFS_BR = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
+
+function podeAjustarPolitica() {
+  return getUserTipo() !== 'cliente' && !!getClienteAtivo();
+}
+
 async function loadPrecos() {
   const clienteId = getClienteAtivo();
   try {
-    if (clienteId) {
+    if (clienteId && overridePolitica) {
+      const linhas = await sbRpc('hub_fn_precos_parametro', {
+        p_uf: overridePolitica.uf, p_segmento: overridePolitica.segmento, p_classe: overridePolitica.classe
+      });
+      linhas.forEach(l => {
+        allPrecos[l.produto_id] = {
+          preco_base: l.preco_final,
+          preco_tabela: l.preco_tabela,
+          ipi_percentual: l.ipi,
+          icms_percentual: l.icms
+        };
+      });
+      precoContexto = { tipo: 'simulado', uf: overridePolitica.uf, segmento: overridePolitica.segmento, classe: overridePolitica.classe };
+    } else if (clienteId) {
       const linhas = await sbRpc('hub_fn_precos_cliente', {
         p_cliente_id: clienteId, p_valor_pedido: 0
       });
@@ -259,6 +287,7 @@ async function loadPrecos() {
     console.error('[preco] falha ao carregar precos:', e);
   }
   renderAvisoPreco();
+  renderAjustePolitica();
 }
 
 // Preco de tabela riscado ao lado do preco final -- mesma transparencia que
@@ -284,6 +313,71 @@ function renderAvisoPreco() {
     '<button class="btn btn-primary btn-sm" onclick="abrirSeletorCliente()">Selecionar revenda</button>';
   const nav = document.querySelector('.hub-nav');
   if (nav && nav.parentNode) nav.parentNode.insertBefore(aviso, nav.nextSibling);
+}
+
+// Controle de "testar politica comercial" -- so aparece pra quem esta
+// atuando por uma revenda (Modo Proxy), nunca pro proprio dealer. Deixa
+// escolher segmento/classe/UF na mao para simular outro cenario (mesma
+// ideia da tabela-teste), recalculando o preco do catalogo inteiro na hora
+// via hub_fn_precos_parametro -- sem tocar no cadastro real do cliente.
+// Usado tanto pra conferir preco quanto como base de um orcamento.
+function renderAjustePolitica() {
+  const velho = document.getElementById('ajustePoliticaBox');
+  if (velho) velho.remove();
+  if (!podeAjustarPolitica() || !precoContexto || !['cliente', 'simulado'].includes(precoContexto.tipo)) return;
+
+  const box = document.createElement('div');
+  box.id = 'ajustePoliticaBox';
+  box.style.cssText = 'max-width:1400px;margin:12px auto 0;padding:10px 14px;background:#eef3ff;border:1px solid #c3d3f5;border-radius:8px;font-size:13px;color:#1d327b;display:flex;align-items:center;gap:10px;flex-wrap:wrap';
+  const simulando = precoContexto.tipo === 'simulado';
+  box.innerHTML = `
+    <strong>${simulando ? 'Simulando política comercial:' : 'Política comercial desta revenda:'}</strong>
+    <select id="apSegmento" style="padding:4px 8px;font-size:12px">${SEGMENTOS_TABELA1.map(s => `<option value="${s}" ${precoContexto.segmento === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+    <select id="apClasse" style="padding:4px 8px;font-size:12px">${CLASSES_TABELA1.map(c => `<option value="${c}" ${Number(precoContexto.classe) === c ? 'selected' : ''}>Classe ${c}</option>`).join('')}</select>
+    <select id="apUf" style="padding:4px 8px;font-size:12px">${UFS_BR.map(u => `<option value="${u}" ${precoContexto.uf === u ? 'selected' : ''}>${u}</option>`).join('')}</select>
+    <button class="btn btn-outline btn-sm" onclick="aplicarAjustePolitica()">Aplicar</button>
+    ${simulando ? '<button class="btn btn-outline btn-sm" onclick="limparAjustePolitica()">Usar o real da revenda</button>' : ''}
+  `;
+  const nav = document.querySelector('.hub-nav');
+  if (nav && nav.parentNode) nav.parentNode.insertBefore(box, nav.nextSibling);
+}
+
+async function aplicarAjustePolitica() {
+  overridePolitica = {
+    segmento: document.getElementById('apSegmento').value,
+    classe: Number(document.getElementById('apClasse').value),
+    uf: document.getElementById('apUf').value
+  };
+  // Persistido (com o id da revenda) para pedidos.html usar no "Enviar
+  // Orcamento" -- sem isso a simulacao se perderia ao navegar do catalogo
+  // pro carrinho/revisao. Amarrado ao cliente ativo para nao vazar pra outra
+  // revenda se o representante trocar de "atuando por" sem limpar antes.
+  try { localStorage.setItem('hub_override_politica', JSON.stringify({ clienteId: getClienteAtivo(), ...overridePolitica })); } catch (_) {}
+  allPrecos = {};
+  await loadPrecos();
+  await loadProdutos();
+}
+
+async function limparAjustePolitica() {
+  overridePolitica = null;
+  precoContexto = null;
+  try { localStorage.removeItem('hub_override_politica'); } catch (_) {}
+  allPrecos = {};
+  await loadPrecos();
+  await loadProdutos();
+}
+
+// Restaura a simulacao ao reabrir o catalogo (ex: foi pro carrinho e voltou)
+// -- so se ainda for a mesma revenda; troca de "atuando por" descarta.
+function restaurarAjustePolitica() {
+  try {
+    const salvo = JSON.parse(localStorage.getItem('hub_override_politica') || 'null');
+    if (salvo && salvo.clienteId === getClienteAtivo()) {
+      overridePolitica = { uf: salvo.uf, segmento: salvo.segmento, classe: salvo.classe };
+    } else if (salvo) {
+      localStorage.removeItem('hub_override_politica');
+    }
+  } catch (_) {}
 }
 
 // === CATEGORIAS ===

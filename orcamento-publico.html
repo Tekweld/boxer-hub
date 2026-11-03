@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Orçamento — Boxer Soldas</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c;padding-bottom:90px}
+.top{background:linear-gradient(135deg,#1d327b,#162666);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:3px solid #25bbee}
+.top-left{display:flex;align-items:center;gap:10px;color:#fff;font-weight:700;font-size:15px}
+.top-right{color:#93b4d4;font-size:13px;font-weight:600}
+.wrap{max-width:720px;margin:0 auto;padding:20px 16px}
+.card{background:#fff;border:1px solid #d0d8e8;border-radius:12px;padding:20px;margin-bottom:16px}
+.hero{border-left:4px solid #e30613;position:relative}
+.hero h1{font-size:19px;color:#1d327b;margin-bottom:8px}
+.chip{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;background:#e2e8f0;color:#4a5568;margin-right:6px}
+.chip.laranja{background:#fff4e5;color:#9a5b00}
+.chip.verm{background:#fee2e2;color:#991b1b}
+.chip.verde{background:#dcfce7;color:#166534}
+.sec-title{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#1d327b;font-weight:600;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead th{padding:6px 8px;text-align:left;color:#718096;font-weight:500;font-size:10px;text-transform:uppercase;border-bottom:2px solid #e2e8f0}
+tbody td{padding:8px;border-bottom:1px solid #e2e8f0;vertical-align:middle}
+tfoot td{padding:8px;font-weight:700;color:#1d327b;border-top:2px solid #1d327b}
+.est{display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:600}
+.est.ok{background:#dcfce7;color:#166534}
+.est.prev{background:#fff4e5;color:#9a5b00}
+.est.sem{background:#fee2e2;color:#991b1b}
+.est.info{background:#e2e8f0;color:#4a5568}
+.cond-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+.cond-item b{display:block;font-size:13px;color:#1a202c;margin-bottom:2px}
+.cond-item span{font-size:12px;color:#718096}
+.cta{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:2px solid #e2e8f0;padding:12px 16px;display:flex;align-items:center;gap:10px;z-index:50}
+.cta-total{font-size:17px;font-weight:700;color:#1d327b;flex:1}
+.btn{padding:10px 18px;border-radius:8px;border:1px solid;font-family:Outfit;font-size:13px;font-weight:600;cursor:pointer}
+.btn-primary{background:#e30613;color:#fff;border-color:#e30613}
+.btn-outline{background:#fff;color:#1d327b;border-color:#c3cfe2}
+.recusar{display:block;text-align:center;color:#a0aec0;font-size:12px;text-decoration:underline;margin-top:14px;cursor:pointer}
+.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal{background:#fff;border-radius:12px;padding:22px;width:100%;max-width:420px;margin:16px}
+.modal h3{color:#1d327b;font-size:16px;margin-bottom:12px}
+.field{margin-bottom:12px}
+.field label{display:block;font-size:11px;color:#4a5568;text-transform:uppercase;margin-bottom:4px}
+.field input,.field textarea{width:100%;padding:9px 12px;border:1px solid #c3cfe2;border-radius:8px;font-family:Outfit;font-size:13px}
+.aceito-faixa{background:#dcfce7;color:#166534;padding:12px 16px;border-radius:8px;font-size:13px;margin-bottom:16px;text-align:center}
+.empty{text-align:center;padding:60px 20px;color:#718096}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="top-left">
+    <svg width="26" height="26" viewBox="0 0 200 200">
+      <rect x="10" y="10" width="180" height="180" rx="30" fill="#e30613"/>
+      <line x1="30" y1="30" x2="82" y2="95" stroke="#fff" stroke-width="10" stroke-linecap="round"/>
+      <polygon points="100,38 108,80 145,55 118,88 158,92 120,105 148,138 108,118 100,162 92,118 52,138 80,105 42,92 82,88 55,55 92,80" fill="#fff"/>
+    </svg>
+    Boxer Soldas
+  </div>
+  <div class="top-right" id="topCodigo"></div>
+</div>
+
+<div class="wrap" id="corpo"><div class="empty">Carregando orçamento…</div></div>
+
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)fecharModal()">
+  <div class="modal" id="modalContent"></div>
+</div>
+
+<script>
+const SB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
+const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJtZXB4Y25yc29mb2Zvc3d1YnV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MTczNzMsImV4cCI6MjA5NTI5MzM3M30.S55ouFczRYlUYNFf5PotYKXBPT5idypTSmbzR-x2Pk0';
+const HUB_API = '/api/push-pedido?target=orcamento';
+
+function fmtMoeda(v) { return (v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
+function fmtData(d) { return d ? new Date(d).toLocaleDateString('pt-BR') : '—'; }
+function fmtDataHora(d) { return d ? new Date(d).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'; }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function abrirModal(html) { document.getElementById('modalContent').innerHTML = html; document.getElementById('modalOverlay').classList.add('show'); }
+function fecharModal() { document.getElementById('modalOverlay').classList.remove('show'); }
+
+async function rpc(nome, params) {
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + nome, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SB_ANON, Authorization: 'Bearer ' + SB_ANON, 'Content-Profile': 'comercial' },
+    body: JSON.stringify(params)
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+const params = new URLSearchParams(location.search);
+const token = params.get('t');
+let ORC = null;
+
+(async () => {
+  if (!token || !/^[0-9a-f-]{36}$/i.test(token)) {
+    document.getElementById('corpo').innerHTML = '<div class="empty"><h3>Link inválido</h3></div>';
+    return;
+  }
+  try {
+    ORC = await rpc('buscar_orcamento_publico', { p_token: token });
+  } catch (e) {
+    document.getElementById('corpo').innerHTML = '<div class="empty"><h3>Não foi possível abrir o orçamento</h3></div>';
+    return;
+  }
+  if (!ORC.encontrado) {
+    document.getElementById('corpo').innerHTML = '<div class="empty"><h3>Orçamento não encontrado</h3></div>';
+    return;
+  }
+  render();
+})();
+
+function render() {
+  document.getElementById('topCodigo').textContent = ORC.codigo;
+  const wrap = document.getElementById('corpo');
+
+  if (ORC.status === 'cancelado') {
+    wrap.innerHTML = '<div class="card empty"><h3>Orçamento cancelado</h3><p style="margin-top:8px;font-size:13px">Fale com ' + esc(ORC.vendedor_nome || 'seu representante') + ' para gerar um novo.</p></div>';
+    return;
+  }
+
+  const aceito = ORC.status === 'aceito_cliente' || ORC.status === 'aprovado';
+  const chipValidade = ORC.expirado
+    ? '<span class="chip verm">Expirado em ' + fmtData(ORC.validade_em) + '</span>'
+    : '<span class="chip' + (new Date(ORC.validade_em) - Date.now() < 2 * 86400000 ? ' laranja' : '') + '">Válido até ' + fmtData(ORC.validade_em) + '</span>';
+
+  const itens = ORC.itens || [];
+  const ESTOQUE = { ok: ['Disponível', 'ok'], prev: ['Previsão de chegada', 'prev'], sem: ['Sem previsão', 'sem'], sem_info: ['A confirmar', 'info'] };
+
+  const grupos = { ok: 0, prev: 0, sem: 0 };
+  itens.forEach(i => { if (grupos[i.estoque] !== undefined) grupos[i.estoque] += i.subtotal; });
+
+  wrap.innerHTML = `
+    ${aceito ? `<div class="aceito-faixa">${ORC.status === 'aprovado' ? '✓ Pedido confirmado pela Boxer' : '✓ Você aceitou este orçamento — aguardando confirmação da Boxer'}${ORC.aceito_em ? ' em ' + fmtDataHora(ORC.aceito_em) : ''}</div>` : ''}
+    <div class="card hero">
+      <h1>Orçamento para ${esc(ORC.cliente_fantasia || ORC.cliente_nome)}</h1>
+      ${chipValidade} <span class="chip">Emitido em ${fmtData(ORC.criado_em)}</span>
+    </div>
+
+    <div class="card">
+      <div class="sec-title">Itens do orçamento</div>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Produto</th><th>Qtd</th><th>Unit.</th><th>Estoque</th><th>Subtotal</th></tr></thead>
+        <tbody>${itens.map(i => {
+          const [label, cls] = ESTOQUE[i.estoque] || ESTOQUE.sem_info;
+          return `<tr>
+            <td>${esc(i.modelo || i.codigo)}</td>
+            <td>${i.qtd}</td>
+            <td>${fmtMoeda(i.unit)}</td>
+            <td><span class="est ${cls}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
+            <td>${fmtMoeda(i.subtotal)}</td>
+          </tr>`;
+        }).join('')}</tbody>
+        <tfoot>
+          ${ORC.frete_valor > 0 ? `<tr><td colspan="4">Frete</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
+          <tr><td colspan="4">Total geral</td><td>${fmtMoeda(ORC.total_final)}</td></tr>
+        </tfoot>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <div class="sec-title">Condições</div>
+      <div class="cond-grid">
+        <div class="cond-item"><b>Pagamento</b><span>${ORC.pagamento_tipo === 'avista' ? 'À vista (' + (ORC.desconto_vista_pct || 0) + '% de desconto)' : 'Boleto em ' + ORC.parcelas + 'x'}</span></div>
+        <div class="cond-item"><b>Frete</b><span>${ORC.frete_tipo === 'CIF' ? 'Incluso (CIF)' : ORC.frete_tipo === 'FOB' ? 'Por conta do cliente (FOB)' : 'A combinar'}</span></div>
+        <div class="cond-item"><b>Entrega</b><span>Sujeita à disponibilidade</span></div>
+      </div>
+    </div>
+
+    ${ORC.observacoes ? `<div class="card"><div class="sec-title">Observações</div><p style="font-size:13px;color:#4a5568">${esc(ORC.observacoes)}</p></div>` : ''}
+
+    <div class="card">
+      <div class="sec-title">Dados</div>
+      <div class="cond-grid">
+        <div class="cond-item"><b>${esc(ORC.cliente_nome)}</b><span>${esc(ORC.cliente_cnpj)} · ${esc(ORC.cliente_cidade || '')}${ORC.cliente_uf ? '/' + ORC.cliente_uf : ''}</span></div>
+        <div class="cond-item"><b>Representante</b><span>${esc(ORC.vendedor_nome || '')}${ORC.vendedor_empresa ? ' · ' + esc(ORC.vendedor_empresa) : ''}</span></div>
+        <div class="cond-item"><b>Contato</b><span>${esc(ORC.vendedor_email || '')}${ORC.vendedor_telefone ? ' · ' + esc(ORC.vendedor_telefone) : ''}</span></div>
+      </div>
+    </div>
+
+    ${!aceito && !ORC.expirado ? `<div class="recusar" onclick="abrirRecusa()">Não tenho interesse neste orçamento</div>` : ''}
+  `;
+
+  const cta = document.createElement('div');
+  cta.className = 'cta';
+  cta.innerHTML = `
+    <div class="cta-total">${fmtMoeda(ORC.total_final)}</div>
+    ${ORC.vendedor_telefone ? `<a class="btn btn-outline" href="https://wa.me/55${ORC.vendedor_telefone.replace(/\D/g,'')}" target="_blank" rel="noopener">Falar com ${esc((ORC.vendedor_nome || '').split(' ')[0] || 'vendedor')}</a>` : ''}
+    ${!aceito && !ORC.expirado ? `<button class="btn btn-primary" onclick="abrirAceite()">Aceitar orçamento</button>` : ''}
+  `;
+  document.body.appendChild(cta);
+}
+
+function abrirAceite() {
+  abrirModal(`
+    <h3>Aceitar orçamento ${esc(ORC.codigo)}</h3>
+    <p style="font-size:13px;color:#4a5568;margin-bottom:14px">Valor total: <strong>${fmtMoeda(ORC.total_final)}</strong></p>
+    <div class="field"><label>Seu nome completo</label><input id="aceiteNome" type="text" placeholder="Nome de quem está aceitando"></div>
+    <label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;color:#4a5568;margin-bottom:16px">
+      <input type="checkbox" id="aceiteConcordo" style="margin-top:2px">
+      <span>Confirmo que revisei os itens, preços e condições acima e aceito este orçamento.</span>
+    </label>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-outline" onclick="fecharModal()">Voltar</button>
+      <button class="btn btn-primary" onclick="confirmarAceite()">Aceitar orçamento</button>
+    </div>
+  `);
+}
+
+async function confirmarAceite() {
+  const nome = document.getElementById('aceiteNome').value.trim();
+  const concordo = document.getElementById('aceiteConcordo').checked;
+  if (!nome) { alert('Informe seu nome.'); return; }
+  if (!concordo) { alert('Confirme que revisou o orçamento.'); return; }
+  try {
+    await rpc('aceitar_orcamento_publico', { p_token: token, p_nome: nome });
+    fecharModal();
+    ORC = await rpc('buscar_orcamento_publico', { p_token: token });
+    render();
+    avisarRepresentante();
+  } catch (e) {
+    alert('Não foi possível registrar o aceite. Tente novamente.');
+  }
+}
+
+function abrirRecusa() {
+  abrirModal(`
+    <h3>Recusar orçamento ${esc(ORC.codigo)}</h3>
+    <div class="field"><label>Motivo (opcional)</label><textarea id="recusaMotivo" rows="3" placeholder="Ajuda seu representante a entender o que faltou"></textarea></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-outline" onclick="fecharModal()">Voltar</button>
+      <button class="btn btn-primary" onclick="confirmarRecusa()">Recusar orçamento</button>
+    </div>
+  `);
+}
+
+async function confirmarRecusa() {
+  const motivo = document.getElementById('recusaMotivo').value.trim();
+  try {
+    await rpc('recusar_orcamento_publico', { p_token: token, p_motivo: motivo || null });
+    fecharModal();
+    ORC = await rpc('buscar_orcamento_publico', { p_token: token });
+    render();
+    avisarRepresentante();
+  } catch (e) {
+    alert('Não foi possível registrar. Tente novamente.');
+  }
+}
+
+// Fire-and-forget: avisa o representante (e-mail) que o cliente respondeu.
+// Erro aqui nunca deve incomodar o cliente -- o aceite/recusa ja foi
+// gravado de verdade no passo anterior.
+function avisarRepresentante() {
+  fetch(HUB_API, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ acao: 'avisar', token })
+  }).catch(() => {});
+}
+</script>
+</body>
+</html>

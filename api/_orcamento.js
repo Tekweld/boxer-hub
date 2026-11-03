@@ -29,7 +29,11 @@ const ZEN_WORKFLOW_ID = 1001;
 const CAMINHO_ZEN = ['inicio', 'orcamento', 'webProntaEntrega'];
 const VALIDADE_DIAS = 7;
 const DIAS_POR_PARCELA = 28;
-const LINK_ORCAMENTO = 'https://app.boxersoldas.com.br/orcamento.html?t=';
+// Movido para dentro do Hub (2026-11-03): o representante monta tudo
+// (incluindo o link que o cliente recebe) sem sair pro app.boxersoldas.com.br.
+// orcamento-publico.html replica orcamento.html (boxer-app), chamando as
+// mesmas RPCs publicas (buscar/aceitar/recusar_orcamento_publico).
+const LINK_ORCAMENTO = 'https://hub.boxersoldas.com.br/orcamento-publico.html?t=';
 const APP_TABELA = 'https://app.boxersoldas.com.br/tabela-teste.html?t=1';
 const CLASSES_VALOR_FISICA = [[1, 20000], [2, 7000], [3, -1]];
 const COND_PADRAO = { pedMin: 3000, dupMin: 800, vista: 3 };

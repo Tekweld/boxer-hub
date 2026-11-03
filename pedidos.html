@@ -85,6 +85,11 @@ textarea:focus{border-color:#25bbee}
 .status-enviado{background:#ddd6fe;color:#5b21b6}
 .status-entregue{background:#d1fae5;color:#065f46}
 .status-cancelado{background:#f3f4f6;color:#6b7280}
+.orc-st-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;background:#e2e8f0;color:#4a5568}
+.orc-st-badge.verde{background:#dcfce7;color:#166534}
+.orc-st-badge.azul{background:#dbeafe;color:#1e40af}
+.orc-st-badge.laranja{background:#ffedd5;color:#9a3412}
+.orc-st-badge.verm{background:#fee2e2;color:#991b1b}
 
 .page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
 .page-title{font-size:16px;font-weight:600;color:#1d327b}
@@ -539,7 +544,7 @@ async function _enviarPedidoInterno() {
     // servidor. Nada foi submetido: o proximo passo e a revisao.
     const [politica, cliente, endereco] = await Promise.all([
       sbRpc('hub_fn_validar_politica', { p_pedido_id: pedido.id }),
-      sb('/hub_clientes?id=eq.' + clienteId + '&select=limite_credito,limite_disponivel,uf')
+      sb('/hub_clientes?id=eq.' + clienteId + '&select=limite_credito,limite_disponivel,uf,razao_social,nome_fantasia,cnpj,email_principal,telefone,canal')
         .then(r => r[0] || {}),
       // Endereco de entrega. Regra: o pedido usa o endereco do cadastro, sem
       // opcao de editar na tela -- alteracao vira solicitacao que muda
@@ -669,14 +674,138 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
       </div>
     </div>
 
+    ${podeEnviarOrcamento() ? `<div class="rev-sec">
+      <h4>Enviar para aprovação (orçamento)</h4>
+      <div style="font-size:12px;color:#718096;margin-bottom:10px">
+        Em vez de confirmar agora, envie um link pro cliente aprovar. Não reserva crédito nem estoque ainda.
+      </div>
+      <div class="form-row">
+        <label>Nome de quem recebe</label>
+        <input id="orcDestNome" type="text" maxlength="120" placeholder="Nome do contato">
+      </div>
+      <div class="form-row-inline">
+        <div class="form-row">
+          <label>E-mail</label>
+          <input id="orcDestEmail" type="email" value="${esc(cliente.email_principal || '')}">
+        </div>
+        <div class="form-row">
+          <label>Celular / WhatsApp</label>
+          <input id="orcDestCelular" type="text" value="${esc(cliente.telefone || '')}" placeholder="(11) 99999-9999">
+        </div>
+      </div>
+    </div>` : ''}
+
     <div class="form-actions">
       <button class="btn btn-outline" onclick="closeModal()">Voltar ao carrinho</button>
+      ${podeEnviarOrcamento() ? `<button class="btn btn-outline" id="btnEnviarOrcamento" onclick="enviarOrcamento()">Enviar Orçamento</button>` : ''}
       <button class="btn btn-primary" id="btnConfirmarEnvio" onclick="confirmarEnvio()"
               ${bloqueado ? 'disabled title="Resolva os bloqueios acima"' : ''}>Confirmar e enviar</button>
     </div>
   `);
 
   atualizarParcelas();
+}
+
+// "Enviar Orcamento" so existe pra quem esta montando pedido para OUTRA
+// revenda (Modo Proxy) -- o proprio dealer so tem "Confirmar e enviar": ele
+// ja esta comprando de verdade, nao faz sentido propor orcamento pra si
+// mesmo. Ver plano "Orcamento com link + aceite digital dentro do Hub".
+function podeEnviarOrcamento() {
+  return getUserTipo() !== 'cliente' && !!getClienteAtivo();
+}
+
+// Envia o carrinho como orcamento (perfil "Orcamento" no Zen, PREPARING, sem
+// reservar credito/estoque) em vez de pedido de verdade -- chama o mesmo
+// backend que ja atende tabela-teste.html (api/_orcamento.js, roteado por
+// api/push-pedido.js com ?target=orcamento). O preco e calculado la, com o
+// cenario de politica comercial escolhido em catalogo.html (ver
+// aplicarAjustePolitica) quando houver, senao a politica real da revenda.
+async function enviarOrcamento() {
+  if (!_revisao) return;
+  const btn = document.getElementById('btnEnviarOrcamento');
+  const nome = document.getElementById('orcDestNome').value.trim();
+  const email = document.getElementById('orcDestEmail').value.trim();
+  const celular = document.getElementById('orcDestCelular').value.trim();
+  if (!email || !/^\S+@\S+\.\S+$/.test(email)) { toast('Informe um e-mail valido para quem recebe o orcamento', 'error'); return; }
+  if (!celular.replace(/\D/g, '')) { toast('Informe o celular de quem recebe o orcamento', 'error'); return; }
+
+  const textoOriginal = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Enviando...';
+  try {
+    const clienteId = getClienteAtivo();
+    const cliente = _revisao.cliente;
+    const cart = getCart();
+
+    let override = null;
+    try {
+      const salvo = JSON.parse(localStorage.getItem('hub_override_politica') || 'null');
+      if (salvo && salvo.clienteId === clienteId) override = salvo;
+    } catch (_) {}
+    let uf = override?.uf, segmento = override?.segmento, classe = override?.classe;
+    if (!uf || !segmento || !classe) {
+      const base = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: 0 });
+      const ref = base[0];
+      if (!ref) { toast('Nao foi possivel calcular a politica comercial desta revenda', 'error'); return; }
+      uf = uf || ref.uf; segmento = segmento || ref.segmento; classe = classe || ref.classe;
+    }
+
+    const payload = {
+      acao: 'criar', tabela: 1,
+      uf, segmento, classe: Number(classe),
+      itens: cart.map(i => ({ codigo: i.sku, qtd: i.quantidade })),
+      cliente: {
+        cnpj: cliente.cnpj, nome: cliente.razao_social, fantasia: cliente.nome_fantasia || '',
+        email, celular, contato: nome || null, cidade: null, uf: cliente.uf
+      },
+      vendedor: { telefone: '' },
+      pagamento: {
+        tipo: document.getElementById('revPagamento').value === 'pix' ? 'avista' : 'boleto',
+        parcelas: Number(document.getElementById('revParcelas').value) || 1
+      },
+      observacoes: document.getElementById('revObs').value.trim() || null
+    };
+
+    const r = await fetch('/api/push-pedido?target=orcamento', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (SESSION?.access_token || '') },
+      body: JSON.stringify(payload)
+    });
+    const j = await r.json();
+    if (!r.ok) { toast(j.error || 'Erro ao gerar orcamento', 'error'); return; }
+
+    // O orcamento vive em comercial.orcamentos, nao em hub_pedidos -- o
+    // rascunho criado antes da revisao (so para calcular preco/credito) fica
+    // sem uso; apaga pra nao acumular rascunho orfao a cada orcamento
+    // enviado.
+    try { await sb('/hub_pedidos?id=eq.' + _revisao.pedidoId, 'DELETE'); } catch (_) {}
+    clearPedidoEmEdicao();
+    clearCart();
+    _revisao = null;
+
+    mostrarOrcamentoCriado(j);
+  } catch (e) {
+    toast('Erro ao gerar orcamento: ' + erroLegivel(e), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
+  }
+}
+
+function mostrarOrcamentoCriado(j) {
+  const wa = 'https://wa.me/?text=' + encodeURIComponent('Segue o orcamento: ' + j.link);
+  openModal(`
+    <div style="text-align:center">
+      <h3 style="color:#1d327b;margin-bottom:10px">Orcamento ${esc(j.codigo)} gerado!</h3>
+      <p style="font-size:13px;color:#4a5568;margin-bottom:14px">Valor: <strong>${fmtMoeda(j.total_final)}</strong> · validade ${fmtData(j.validade_em)}</p>
+      <div style="display:flex;gap:6px;margin-bottom:14px">
+        <input readonly value="${esc(j.link)}" style="flex:1;font-size:12px;padding:8px" onclick="this.select()">
+        <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${j.link}');toast('Link copiado')">Copiar</button>
+      </div>
+      <a class="btn btn-primary" href="${wa}" target="_blank" rel="noopener" style="margin-right:6px">Enviar por WhatsApp</a>
+      ${j.zen && !j.zen.ok ? `<div style="margin-top:12px;padding:8px;background:#fff4e5;color:#9a5b00;border-radius:6px;font-size:12px;text-align:left">${esc(j.zen.erro || '')}</div>` : ''}
+      ${(j.avisos || []).length ? `<div style="margin-top:10px;text-align:left;font-size:12px;color:#92400e">${j.avisos.map(a => '<div>⚠ ' + esc(a) + '</div>').join('')}</div>` : ''}
+      <div style="margin-top:18px"><button class="btn btn-outline" onclick="closeModal();document.querySelectorAll('.tab')[0].click();loadPedidos()">Fechar</button></div>
+    </div>
+  `);
 }
 
 // Quando ha alternativa real (pedido abaixo do minimo de frete gratis, ou UF
@@ -848,6 +977,37 @@ function clearCart() {
 
 function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// Status do orcamento -- mesma paleta/rotulo ja usada em tabela-teste.html
+// (orc-st), pra quem conhece as duas telas nao estranhar.
+const ORC_STATUS_LABEL = {
+  enviado: ['Enviado', ''], visualizado: ['Visto pelo cliente', 'azul'],
+  aceito_cliente: ['Aceito pelo cliente', 'laranja'], aprovado: ['No Zen', 'verde'],
+  cancelado: ['Cancelado', 'verm'], erro: ['Erro', 'verm']
+};
+let _orcamentosCache = {};
+
+// Dealer nunca cria nem ve orcamento (ver podeEnviarOrcamento) -- so chama o
+// backend quando faz sentido. Filtra pela revenda em foco comparando CNPJ,
+// porque o backend lista por user_id (quem criou), nao por cliente.
+async function carregarOrcamentosParaLista(clienteId) {
+  if (getUserTipo() === 'cliente') return [];
+  try {
+    const r = await fetch('/api/push-pedido?target=orcamento', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (SESSION?.access_token || '') },
+      body: JSON.stringify({ acao: 'listar', leve: true })
+    });
+    if (!r.ok) return [];
+    const j = await r.json();
+    let lista = (j.orcamentos || []).filter(o => !o.arquivado);
+    if (clienteId) {
+      const [c] = await sb('/hub_clientes?id=eq.' + clienteId + '&select=cnpj');
+      if (c) lista = lista.filter(o => o.cliente_cnpj === c.cnpj);
+    }
+    return lista;
+  } catch (_) { return []; }
+}
+
 async function loadPedidos() {
   const wrap = document.getElementById('pedidosList');
   const status = document.getElementById('filtroStatus').value;
@@ -861,25 +1021,184 @@ async function loadPedidos() {
   if (clienteId) url += '&cliente_id=eq.' + clienteId;
 
   try {
-    const pedidos = await sb(url);
-    if (!pedidos.length) {
+    const [pedidos, orcamentos] = await Promise.all([sb(url), carregarOrcamentosParaLista(clienteId)]);
+    _orcamentosCache = {};
+    orcamentos.forEach(o => { _orcamentosCache[o.id] = o; });
+
+    // Pedido e orcamento sao entidades separadas (ver plano), mas aparecem
+    // juntos aqui -- cronologico, com etiqueta de tipo -- pra nao exigir uma
+    // aba a parte so pra orcamento.
+    const linhas = [
+      ...pedidos.map(p => ({
+        tipo: 'pedido', id: p.id, numero: p.numero || 'Rascunho', cliente: p.hub_clientes?.razao_social || '—',
+        statusHtml: `<span class="status-badge status-${p.status}">${esc(etapaVisivel(p))}</span>`,
+        valor: p.valor_total, data: p.criado_em
+      })),
+      ...(status ? [] : orcamentos.map(o => {
+        const [label, classe] = ORC_STATUS_LABEL[o.status] || [o.status, ''];
+        return {
+          tipo: 'orcamento', id: o.id, numero: o.codigo, cliente: o.cliente_nome,
+          statusHtml: `<span class="orc-st-badge${classe ? ' ' + classe : ''}">${esc(label)}</span>`,
+          valor: o.total_final, data: o.criado_em
+        };
+      }))
+    ].sort((a, b) => new Date(b.data) - new Date(a.data));
+
+    if (!linhas.length) {
       wrap.innerHTML = '<div class="empty-state"><h3>Nenhum pedido encontrado</h3></div>';
       return;
     }
     wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Numero</th><th>Cliente</th><th>Status</th><th>Valor</th><th>Data</th><th></th></tr></thead>
-      <tbody>${pedidos.map(p => `<tr>
-        <td><strong>${p.numero || 'Rascunho'}</strong></td>
-        <td>${p.hub_clientes?.razao_social || '—'}</td>
-        <td><span class="status-badge status-${p.status}">${esc(etapaVisivel(p))}</span></td>
-        <td>${fmtMoeda(p.valor_total)}</td>
-        <td>${fmtData(p.criado_em)}</td>
-        <td><button class="btn btn-outline btn-sm" onclick="openPedido('${p.id}')">Ver</button></td>
+      <thead><tr><th>Numero</th><th>Cliente</th><th>Tipo</th><th>Status</th><th>Valor</th><th>Data</th><th></th></tr></thead>
+      <tbody>${linhas.map(l => `<tr>
+        <td><strong>${esc(l.numero)}</strong></td>
+        <td>${esc(l.cliente)}</td>
+        <td><span style="font-size:11px;font-weight:600;color:${l.tipo === 'orcamento' ? '#9a3412' : '#1d327b'}">${l.tipo === 'orcamento' ? 'Orçamento' : 'Pedido'}</span></td>
+        <td>${l.statusHtml}</td>
+        <td>${fmtMoeda(l.valor)}</td>
+        <td>${fmtData(l.data)}</td>
+        <td><button class="btn btn-outline btn-sm" onclick="${l.tipo === 'pedido' ? `openPedido('${l.id}')` : `abrirOrcamentoDetalhe('${l.id}')`}">Ver</button></td>
       </tr>`).join('')}</tbody>
     </table></div>`;
   } catch (e) {
     wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar pedidos</h3><p>' + e.message + '</p></div>';
   }
+}
+
+async function chamarOrcamentoApi(acao, extra) {
+  const r = await fetch('/api/push-pedido?target=orcamento', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (SESSION?.access_token || '') },
+    body: JSON.stringify(Object.assign({ acao }, extra))
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'Erro ao comunicar com o orcamento');
+  return j;
+}
+
+// Detalhe + acoes do orcamento (aprovar, cancelar, arquivar) -- edicao de
+// itens fica para depois (fase 2): hoje, pra mudar algo, cancela e cria de
+// novo. Quando aprovado, a venda ja virou pedido no Zen; o Hub cria a linha
+// em hub_pedidos pra ela aparecer igual a qualquer outro pedido dali pra
+// frente (ver nota em aprovarOrcamento).
+function abrirOrcamentoDetalhe(id) {
+  const o = _orcamentosCache[id];
+  if (!o) return;
+  const [label, classe] = ORC_STATUS_LABEL[o.status] || [o.status, ''];
+  const aberto = ['enviado', 'visualizado', 'aceito_cliente'].includes(o.status);
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
+      <div>
+        <h3 style="font-size:18px;color:#1d327b">Orçamento ${esc(o.codigo)}</h3>
+        <div style="font-size:13px;color:#718096">${esc(o.cliente_nome)}</div>
+      </div>
+      <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+      <div style="padding:10px;background:#f7fafc;border-radius:8px">
+        <div style="font-size:11px;color:#718096;text-transform:uppercase">Status</div>
+        <span class="orc-st-badge${classe ? ' ' + classe : ''}">${esc(label)}</span>
+      </div>
+      <div style="padding:10px;background:#f7fafc;border-radius:8px">
+        <div style="font-size:11px;color:#718096;text-transform:uppercase">Valor</div>
+        <div style="font-size:16px;font-weight:700;color:#1d327b">${fmtMoeda(o.total_final)}</div>
+      </div>
+      <div style="padding:10px;background:#f7fafc;border-radius:8px">
+        <div style="font-size:11px;color:#718096;text-transform:uppercase">Validade</div>
+        <div style="font-size:13px;font-weight:500">${fmtData(o.validade_em)}</div>
+      </div>
+    </div>
+    <div style="font-size:13px;color:#4a5568;margin-bottom:6px">${o.visualizacoes > 0 ? 'Cliente abriu o link ' + o.visualizacoes + 'x' + (o.ultima_visualizacao_em ? ' (ultima vez ' + fmtData(o.ultima_visualizacao_em) + ')' : '') : 'Cliente ainda nao abriu o link'}</div>
+    ${o.aceito_em ? `<div style="font-size:13px;color:#166534;margin-bottom:6px">Aceito por ${esc(o.aceito_nome || o.cliente_nome)} em ${fmtData(o.aceito_em)}</div>` : ''}
+    ${o.zen_erro ? `<div style="font-size:12px;color:#9a3412;background:#fff4e5;padding:8px;border-radius:6px;margin-bottom:10px">${esc(o.zen_erro)}</div>` : ''}
+    <div style="display:flex;gap:6px;margin:14px 0">
+      <input readonly value="${esc(o.link)}" style="flex:1;font-size:12px;padding:8px" onclick="this.select()">
+      <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${o.link}');toast('Link copiado')">Copiar</button>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0">
+      ${aberto ? `<button class="btn btn-outline" onclick="cancelarOrcamento('${o.id}')">Cancelar orçamento</button>` : ''}
+      ${!aberto && o.status !== 'aprovado' ? `<button class="btn btn-outline" onclick="arquivarOrcamento('${o.id}')">Arquivar</button>` : ''}
+      ${aberto && o.zen_sale_id ? `<button class="btn btn-primary" onclick="aprovarOrcamento('${o.id}')">${o.status === 'aceito_cliente' ? 'Confirmar e enviar ao ZEN' : 'Cliente confirmou por outro canal: enviar ao ZEN'}</button>` : ''}
+      <button class="btn btn-outline" onclick="closeModal()">Fechar</button>
+    </div>
+  `);
+}
+
+async function aprovarOrcamento(id) {
+  if (!confirm('Confirmar este orçamento? A venda vira pedido de verdade no Zen.')) return;
+  const o = _orcamentosCache[id];
+  try {
+    const r = await chamarOrcamentoApi('aprovar', { id });
+    toast('Orçamento aprovado — pedido criado no Zen');
+    closeModal();
+    if (r.zen_sale_id && o) await espelharOrcamentoComoPedido(o, r.zen_sale_id);
+    loadPedidos();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// Orcamento aprovado vira venda de verdade no Zen (ver aprovarOrcamento) --
+// mas comercial.orcamentos e comercial.hub_pedidos sao tabelas separadas de
+// proposito (ver plano). Sem espelhar aqui, o pedido some da visao do Hub
+// depois de aprovado; com a linha criada e erp_pedido_id preenchido, o cron
+// de sincronizacao que ja existe (api/sync-pedidos-zen.js) assume dali pra
+// frente e traz a etapa certa sozinho, igual a qualquer outro pedido. Se
+// isto falhar, o pedido no Zen continua real -- so nao aparece no Hub ainda
+// (Monitor de Pedidos/Zen continuam a fonte de verdade de qualquer jeito).
+async function espelharOrcamentoComoPedido(o, zenSaleId) {
+  try {
+    const [cliente] = await sb('/hub_clientes?cnpj=eq.' + o.cliente_cnpj + '&select=id,representante_id&limit=1');
+    if (!cliente) { toast('Pedido criado no Zen, mas sem cliente cadastrado no Hub pra espelhar aqui ainda', 'error'); return; }
+
+    const numero = await sbRpc('hub_fn_gerar_numero', {});
+    const [pedido] = await sb('/hub_pedidos', 'POST', {
+      numero: typeof numero === 'string' ? numero : numero?.numero || null,
+      cliente_id: cliente.id,
+      representante_id: cliente.representante_id || null,
+      status: 'submetido',
+      origem: 'orcamento',
+      forma_pagamento: o.pagamento_tipo,
+      parcelas: o.parcelas,
+      valor_frete: o.frete_valor || 0,
+      valor_total: o.total_final,
+      observacoes: o.observacoes || null,
+      erp_pedido_id: String(zenSaleId),
+      erp_tipo: 'sale',
+      erp_sincronizado_em: new Date().toISOString()
+    });
+    if (!pedido) return;
+
+    const itens = (o.itens || []).map(async (i) => {
+      const [prod] = await sb('/hub_produtos?sku=eq.' + encodeURIComponent(i.codigo) + '&select=id&limit=1');
+      return {
+        pedido_id: pedido.id, produto_id: prod?.id || null, sku: i.codigo, nome_produto: i.modelo,
+        quantidade: i.qtd, preco_unitario: i.unit_tabela ?? i.unit, preco_final: i.unit,
+        subtotal_item: i.subtotal ?? (i.unit * i.qtd)
+      };
+    });
+    await sb('/hub_pedido_itens', 'POST', await Promise.all(itens));
+  } catch (e) {
+    console.error('[orcamento->pedido] falha ao espelhar:', e);
+    toast('Pedido criado no Zen, mas houve erro ao refletir aqui no Hub — confira no Zen/Monitor', 'error');
+  }
+}
+
+async function cancelarOrcamento(id) {
+  if (!confirm('Cancelar este orçamento?')) return;
+  try {
+    await chamarOrcamentoApi('cancelar', { id });
+    toast('Orçamento cancelado');
+    closeModal();
+    loadPedidos();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function arquivarOrcamento(id) {
+  try {
+    await chamarOrcamentoApi('arquivar', { id, arquivar: true });
+    toast('Orçamento arquivado');
+    closeModal();
+    loadPedidos();
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 async function openPedido(id) {

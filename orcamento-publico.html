@@ -32,6 +32,11 @@ tfoot td{padding:8px;font-weight:700;color:#1d327b;border-top:2px solid #1d327b}
 .cond-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
 .cond-item b{display:block;font-size:13px;color:#1a202c;margin-bottom:2px}
 .cond-item span{font-size:12px;color:#718096}
+.dados-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px}
+.dados-bloco .t{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#718096;font-weight:600;margin-bottom:6px}
+.dados-bloco .nome{font-size:14px;font-weight:700;color:#1d327b;line-height:1.3}
+.dados-bloco .linha{font-size:12px;color:#4a5568;margin-top:3px;line-height:1.4}
+@media(max-width:640px){.dados-grid{grid-template-columns:1fr;gap:16px}}
 .cta{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:2px solid #e2e8f0;padding:12px 16px;display:flex;align-items:center;gap:10px;z-index:50;flex-wrap:wrap}
 .cta-total{font-size:17px;font-weight:700;color:#1d327b;flex:1}
 .btn{padding:10px 18px;border-radius:8px;border:1px solid;font-family:Outfit;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
@@ -96,6 +101,7 @@ function fmtMoeda(v) { return (v || 0).toLocaleString('pt-BR', { style: 'currenc
 function fmtData(d) { return d ? new Date(d).toLocaleDateString('pt-BR') : '—'; }
 function fmtDataHora(d) { return d ? new Date(d).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function fmtCnpj(c) { const d = String(c || '').replace(/\D/g, ''); return d.length === 14 ? d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5') : (c || ''); }
 function abrirModal(html) { document.getElementById('modalContent').innerHTML = html; document.getElementById('modalOverlay').classList.add('show'); }
 function fecharModal() { document.getElementById('modalOverlay').classList.remove('show'); }
 
@@ -198,10 +204,30 @@ function render() {
 
     <div class="card">
       <div class="sec-title">Dados</div>
-      <div class="cond-grid">
-        <div class="cond-item"><b>${esc(ORC.cliente_nome)}</b><span>${esc(ORC.cliente_cnpj)} · ${esc(ORC.cliente_cidade || '')}${ORC.cliente_uf ? '/' + ORC.cliente_uf : ''}</span></div>
-        <div class="cond-item"><b>Representante</b><span>${esc(ORC.vendedor_nome || '')}${ORC.vendedor_empresa ? ' · ' + esc(ORC.vendedor_empresa) : ''}</span></div>
-        <div class="cond-item"><b>Contato</b><span>${esc(ORC.vendedor_email || '')}${ORC.vendedor_telefone ? ' · ' + esc(ORC.vendedor_telefone) : ''}</span></div>
+      <div class="dados-grid">
+        <div class="dados-bloco">
+          <div class="t">Cliente</div>
+          <div class="nome">${esc(ORC.cliente_fantasia || ORC.cliente_nome)}</div>
+          ${ORC.cliente_fantasia && ORC.cliente_fantasia !== ORC.cliente_nome ? `<div class="linha">${esc(ORC.cliente_nome)}</div>` : ''}
+          <div class="linha">${fmtCnpj(ORC.cliente_cnpj)}</div>
+          ${ORC.cliente_endereco ? `<div class="linha">${esc(ORC.cliente_endereco)}</div>` : ''}
+          ${ORC.cliente_cidade || ORC.cliente_uf ? `<div class="linha">${esc(ORC.cliente_cidade || '')}${ORC.cliente_uf ? '/' + esc(ORC.cliente_uf) : ''}</div>` : ''}
+          ${ORC.cliente_contato ? `<div class="linha">A/C ${esc(ORC.cliente_contato)}</div>` : ''}
+        </div>
+        <div class="dados-bloco">
+          <div class="t">Enviado por</div>
+          ${ORC.vendedor_empresa ? `<div class="nome">${esc(ORC.vendedor_empresa)}</div>` : ''}
+          <div class="${ORC.vendedor_empresa ? 'linha' : 'nome'}">${esc(ORC.vendedor_nome || 'Representante Boxer')}</div>
+          ${ORC.vendedor_email ? `<div class="linha">${esc(ORC.vendedor_email)}</div>` : ''}
+          ${ORC.vendedor_telefone ? `<div class="linha">${esc(ORC.vendedor_telefone)}</div>` : ''}
+        </div>
+        <div class="dados-bloco">
+          <div class="t">Boxer Soldas</div>
+          <div class="nome">Tekweld Importação e Comércio de Máquinas Industriais Ltda</div>
+          <div class="linha">CNPJ 13.881.630/0001-64</div>
+          <div class="linha">Rua Alvino Cristo, 36 · Parque Industrial Experts</div>
+          <div class="linha">Nova Odessa/SP · CEP 13387-793</div>
+        </div>
       </div>
     </div>
 

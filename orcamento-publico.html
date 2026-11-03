@@ -143,20 +143,21 @@ function render() {
     <div class="card">
       <div class="sec-title">Itens do orçamento</div>
       <div style="overflow-x:auto"><table>
-        <thead><tr><th>Produto</th><th>Qtd</th><th>Unit.</th><th>Estoque</th><th>Subtotal</th></tr></thead>
+        <thead><tr><th>Código</th><th>Produto</th><th>Estoque</th><th>Qtd</th><th>Unitário</th><th>Total</th></tr></thead>
         <tbody>${itens.map(i => {
           const [label, cls] = ESTOQUE[i.estoque] || ESTOQUE.sem_info;
           return `<tr>
+            <td>${esc(i.codigo)}</td>
             <td>${esc(i.modelo || i.codigo)}</td>
+            <td><span class="est ${cls}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
             <td>${i.qtd}</td>
             <td>${fmtMoeda(i.unit)}</td>
-            <td><span class="est ${cls}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
             <td>${fmtMoeda(i.subtotal)}</td>
           </tr>`;
         }).join('')}</tbody>
         <tfoot>
-          ${ORC.frete_valor > 0 ? `<tr><td colspan="4">Frete</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
-          <tr><td colspan="4">Total geral</td><td>${fmtMoeda(ORC.total_final)}</td></tr>
+          ${ORC.frete_valor > 0 ? `<tr><td colspan="5">Frete</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
+          <tr><td colspan="5">Total geral</td><td>${fmtMoeda(ORC.total_final)}</td></tr>
         </tfoot>
       </table></div>
     </div>

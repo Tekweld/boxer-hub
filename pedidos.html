@@ -196,6 +196,27 @@ function saveCart(cart) {
 }
 
 let stockMap = {};
+// Hoisted pra fora de renderCarrinho (era local ali) -- enviarOrcamento
+// tambem precisa, pra mandar a disponibilidade real de cada item (sem isso
+// o orcamento publico sempre mostrava "A confirmar", nunca a previsao de
+// verdade -- bug visto ao vivo em teste, 2026-11-03).
+let prevMap = {};
+
+// Mesma logica de badgeEstoque em renderCarrinho, mas devolvendo o par
+// {disp, previsao} no formato que api/_orcamento.js espera por item
+// ('ok'|'prev'|'sem'|'sem_info', data ISO opcional).
+function dispDoItem(item) {
+  const prev = prevMap[item.sku];
+  if (prev) return prev.iso ? { disp: 'prev', previsao: prev.iso } : { disp: 'sem', previsao: null };
+  const st = stockMap[item.produto_id];
+  if (st) {
+    const info = stockLabel(st, item.quantidade);
+    if (info.cls === 's-ok' || info.cls === 's-low') return { disp: 'ok', previsao: null };
+    if (info.cls === 's-bo') return { disp: 'sem', previsao: null };
+    if (info.cls === 's-no') return { disp: 'sem', previsao: null };
+  }
+  return { disp: 'sem_info', previsao: null };
+}
 
 // === PEDIDO EM EDICAO ===
 // Todo envio criava um hub_pedidos novo, sempre. Consequencia: (a) reabrir um
@@ -267,7 +288,7 @@ async function renderCarrinho() {
     } catch {}
   }
 
-  const prevMap = {};
+  prevMap = {};
   try {
     await fetchDisponibilidadeEstoque(); // aquece o cache uma unica vez
     await Promise.all(cart.map(async item => {
@@ -312,14 +333,22 @@ async function renderCarrinho() {
         const stInfo = st ? stockLabel(st, item.quantidade) : { cls: '', text: '' };
         const prev = prevMap[item.sku];
         const prevTexto = prev ? (prev.iso ? 'Disponibilidade Prevista para ' + fmtData(prev.iso) : 'Sem Disponibilidade Prevista') : '';
+        // So uma badge de estoque por item -- antes mostravamos stInfo (calculo
+        // grosseiro: qtd x estoque_disponivel estatico) E prevTexto (previsao
+        // dinamica, mais precisa) ao mesmo tempo, as vezes se contradizendo
+        // (ex: "Indisponivel" e "Prevista para X" juntos). A previsao e mais
+        // informativa quando existe; a badge generica so entra quando nao ha
+        // previsao nenhuma calculada ainda. Bug visto ao vivo em teste, 2026-11-03.
+        const badgeEstoque = prevTexto
+          ? '<div class="cart-item-stock s-prev"><span class="dot"></span>' + prevTexto + '</div>'
+          : (stInfo.text ? '<div class="cart-item-stock ' + stInfo.cls + '"><span class="dot"></span>' + stInfo.text + '</div>' : '');
         return `
         <div class="cart-item">
           <div class="cart-item-info">
             <div class="cart-item-sku">${esc(item.sku)}</div>
             <div class="cart-item-nome">${esc(item.nome || item.sku)}</div>
             <div class="cart-item-preco">${fmtMoeda(precoDe(item))} un</div>
-            ${stInfo.text ? '<div class="cart-item-stock ' + stInfo.cls + '"><span class="dot"></span>' + stInfo.text + '</div>' : ''}
-            ${prevTexto ? '<div class="cart-item-stock s-prev"><span class="dot"></span>' + prevTexto + '</div>' : ''}
+            ${badgeEstoque}
           </div>
           <div class="cart-item-qty">
             <label>Qtd</label>
@@ -743,7 +772,17 @@ async function enviarOrcamento() {
     } catch (_) {}
     let uf = override?.uf, segmento = override?.segmento, classe = override?.classe;
     if (!uf || !segmento || !classe) {
-      const base = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: 0 });
+      // p_valor_pedido=0 sempre devolve a classe MAIS CARA (1) -- "preco
+      // publicado" antes de qualquer desconto por volume (ver comentario em
+      // hub_fn_precos_cliente). Pra achar a classe de verdade do carrinho,
+      // repete o mesmo passo-duplo que carregarPrecosCarrinho ja faz: mede o
+      // subtotal a preco de TABELA primeiro, so depois pede a classe naquela
+      // faixa. Sem isso, todo orcamento saia incorretamente classificado
+      // como classe 1 (bug visto ao vivo em teste, 2026-11-03).
+      const tabelaBase = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: 0 });
+      const porId = {}; tabelaBase.forEach(l => { porId[l.produto_id] = l; });
+      const subtotalTabela = cart.reduce((s, i) => s + (+(porId[i.produto_id]?.preco_tabela || 0) * i.quantidade), 0);
+      const base = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: subtotalTabela });
       const ref = base[0];
       if (!ref) { toast('Nao foi possivel calcular a politica comercial desta revenda', 'error'); return; }
       uf = uf || ref.uf; segmento = segmento || ref.segmento; classe = classe || ref.classe;
@@ -752,7 +791,7 @@ async function enviarOrcamento() {
     const payload = {
       acao: 'criar', tabela: 1,
       uf, segmento, classe: Number(classe),
-      itens: cart.map(i => ({ codigo: i.sku, qtd: i.quantidade })),
+      itens: cart.map(i => Object.assign({ codigo: i.sku, qtd: i.quantidade }, dispDoItem(i))),
       cliente: {
         cnpj: cliente.cnpj, nome: cliente.razao_social, fantasia: cliente.nome_fantasia || '',
         email, celular, contato: nome || null, cidade: null, uf: cliente.uf
@@ -1155,7 +1194,12 @@ async function espelharOrcamentoComoPedido(o, zenSaleId) {
       cliente_id: cliente.id,
       representante_id: cliente.representante_id || null,
       status: 'submetido',
-      origem: 'orcamento',
+      // hub_pedidos_origem_check so aceita cliente/proxy_representante/admin/
+      // erp -- 'orcamento' nao existe e derrubava o INSERT inteiro (bug
+      // visto ao vivo em teste, 2026-11-03: a venda avancou certo no Zen mas
+      // nunca apareceu no Hub). E sempre o representante/staff atuando por
+      // uma revenda que confirma o orcamento, nunca o proprio dealer.
+      origem: 'proxy_representante',
       forma_pagamento: o.pagamento_tipo,
       parcelas: o.parcelas,
       valor_frete: o.frete_valor || 0,

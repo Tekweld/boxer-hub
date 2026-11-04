@@ -10,8 +10,13 @@ const ZEN_TENANT = process.env.ZEN_TENANT   || 'boxer';
 // lenta/travada consome sozinha o orcamento inteiro da function (visto ao
 // vivo em producao, 2026-10-30: rodadas de 26s/33s/37s intercaladas com
 // >60s mesmo depois de limitar registros por chamada -- instabilidade de
-// rede do lado do Zen, nao do nosso codigo).
-const ZEN_TIMEOUT_MS = 10000;
+// rede do lado do Zen, nao do nosso codigo). Subido de 10s para 20s em
+// 2026-11-04: sync-financeiro travava TODO dia (31/10 a 04/11) numa faixa
+// de id (~88k-93k) onde uma pagina de 200 titulos passava um pouco de 10s
+// pra responder -- nao instabilidade pontual, um teto baixo demais pra
+// aquela faixa especifica. 20s ainda cabe com folga no maxDuration de 45-60s
+// de cada function que usa este cliente.
+const ZEN_TIMEOUT_MS = 20000;
 
 let _tokenCache = null;   // { token, obtidoEm }
 const TOKEN_TTL_MS = 30 * 60 * 1000;

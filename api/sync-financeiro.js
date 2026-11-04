@@ -406,8 +406,25 @@ async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
         limite: PASSO_ZEN
       });
     } catch (e) {
-      r.erros.push({ etapa: 'ler', cursor, detalhe: e.message.slice(0, 200) });
-      break;
+      // Achado em producao (2026-10-31 a 2026-11-04): o cron trava todo dia
+      // numa faixa de id por perto de 88k-93k, sempre com "operation aborted
+      // due to timeout" -- nao e rede instavel pontual (isso variaria), e uma
+      // pagina de 200 registros que o Zen demora mais de ZEN_TIMEOUT_MS pra
+      // responder NESSA faixa especifica. Uma pagina menor custa menos pro
+      // Zen computar -- tenta de novo so essa rodada com metade do passo
+      // antes de desistir (preserva ORCAMENTO_MS: so acontece quando a
+      // primeira tentativa ja falhou, nao dobra o custo do caminho feliz).
+      try {
+        lote = await zenGet('/financial/receivable', {
+          q: 'id>' + cursor + ';flow==IN;status==APPROVED',
+          order: 'id',
+          max: Math.max(25, Math.floor(PASSO_ZEN / 4)),
+          limite: Math.max(25, Math.floor(PASSO_ZEN / 4))
+        });
+      } catch (e2) {
+        r.erros.push({ etapa: 'ler', cursor, detalhe: e2.message.slice(0, 200) });
+        break;
+      }
     }
     if (!lote.length) { r.concluido = true; break; }
 
@@ -571,8 +588,20 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
         limite: PASSO_ZEN
       });
     } catch (e) {
-      r.erros.push({ etapa: 'ler', cursor, detalhe: e.message.slice(0, 200) });
-      break;
+      // Mesma mitigacao de sincronizarTitulos: pagina menor custa menos pro
+      // Zen computar numa faixa de id lenta -- tenta de novo so essa rodada
+      // antes de desistir.
+      try {
+        lote = await zenGet('/fiscal/outgoingInvoice', {
+          q: 'id>' + cursor + ';flow==OUT',
+          order: 'id',
+          max: Math.max(25, Math.floor(PASSO_ZEN / 4)),
+          limite: Math.max(25, Math.floor(PASSO_ZEN / 4))
+        });
+      } catch (e2) {
+        r.erros.push({ etapa: 'ler', cursor, detalhe: e2.message.slice(0, 200) });
+        break;
+      }
     }
     if (!lote.length) { r.concluido = true; break; }
 

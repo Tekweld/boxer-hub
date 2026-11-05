@@ -9,17 +9,17 @@
 # encadeando rodadas pelo `proximo_canal_idx`/`proximo_offset` que o endpoint
 # ja devolve (api/sync-zen-clientes.js, ORCAMENTO_MS=45s por chamada).
 #
-# Cadencia pedida pelo Andre (2026-11-05): no expediente (06h-19h BRT) o
-# cliente/credito/grupo precisa estar sempre fresco -- roda de 2 em 2 horas.
-# Fora do expediente, 1x so, as 23h BRT (ninguem decide limite de credito ou
-# cadastra cliente de madrugada). BRT = UTC-3, sem horario de verao.
+# Cadencia pedida pelo Andre (2026-11-05): 4x no expediente (06h/10h/15h/19h
+# BRT) + 1x fora (23h BRT), todo dia (inclusive fim de semana). Mesmos
+# horarios de sync-financeiro.yml -- "sincronizado" como pedido.
+# BRT = UTC-3, sem horario de verao.
 name: Sync clientes ZenERP
 
 on:
   schedule:
-    # 09,11,13,15,17,19,21 UTC = 06,08,10,12,14,16,18h BRT (expediente, 2 em 2h)
+    # 09,13,18,22 UTC = 06,10,15,19h BRT (expediente)
     # 02 UTC = 23h BRT do dia anterior (unica rodada fora do expediente)
-    - cron: '0 9,11,13,15,17,19,21,2 * * *'
+    - cron: '0 9,13,18,22,2 * * *'
   workflow_dispatch:
     inputs:
       canal_idx:

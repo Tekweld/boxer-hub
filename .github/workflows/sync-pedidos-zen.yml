@@ -5,11 +5,14 @@
 # e o volume e baixo (dezenas de pedidos abertos, nao milhares). Se o Watcher
 # nativo do Zen (webhook) se provar utilizavel, isto vira redundancia e o
 # intervalo pode cair para horario.
+#
+# Pedido do Andre, 2026-11-05: restrito ao expediente (06h-19h45 BRT =
+# 09-22h UTC), todo dia (inclusive fim de semana) -- antes rodava 24/7.
 name: Sync pedidos ZenERP
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/15 9-22 * * *'
   workflow_dispatch:
     inputs:
       debug_sale:

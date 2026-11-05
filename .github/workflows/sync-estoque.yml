@@ -1,17 +1,18 @@
-# Sincroniza o estoque do ZenERP para o Hub de hora em hora, em horario
-# comercial. Nao usa o Vercel Cron porque o plano Hobby so permite cron
-# diario -- este agendador e gratuito e faz o mesmo, chamando o endpoint
-# que ja existe. Mesmo padrao usado no repo bav-boxer.
+# Sincroniza o estoque do ZenERP para o Hub. Nao usa o Vercel Cron porque o
+# plano Hobby so permite cron diario -- este agendador e gratuito e faz o
+# mesmo, chamando o endpoint que ja existe. Mesmo padrao usado no repo
+# bav-boxer.
 name: Sync estoque ZenERP
 
 on:
   schedule:
-    # De hora em hora, 24/7. Era so horario comercial quando o estoque era
-    # apenas informativo; agora ele decide o que aparece no catalogo e o que
-    # pode ser pedido, entao janela fechada significa vitrine desatualizada
-    # justamente quando alguem quer comprar (ex: estoque que chega sexta a
-    # noite so apareceria na segunda).
-    - cron: '0 * * * *'
+    # Pedido do Andre, 2026-11-05: de 15 em 15 minutos, so no expediente
+    # (06h-19h45 BRT = 09-22h UTC), todo santo dia (inclusive fim de semana).
+    # ATENCAO -- isto reabre um problema ja resolvido antes (ver historico:
+    # rodava 24/7 porque estoque que chega sexta a noite so apareceria na
+    # vitrine na segunda de manha com janela fechada). Decisao consciente do
+    # Andre, mas vale lembrar se o cenario voltar a incomodar.
+    - cron: '*/15 9-22 * * *'
   workflow_dispatch: # permite disparar na mao pela aba Actions
 
 concurrency:

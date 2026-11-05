@@ -9,11 +9,12 @@
 # terminava antes do outro (bug corrigido em 2026-10-30, duas semanas de
 # cron falhando sem ninguem notar).
 #
-# Cadencia (Andre, 2026-11-05): no expediente, de 2 em 2h -- fora, 1x as 23h.
-# Mesmos horarios de sync-zen-clientes.yml, "sincronizado" como pedido.
+# Cadencia (Andre, 2026-11-05): 4x no expediente (06h/10h/15h/19h BRT) + 1x
+# fora (23h BRT), todo dia (inclusive fim de semana). Mesmos horarios de
+# sync-zen-clientes.yml, "sincronizado" como pedido.
 # ATENCAO: titulo sempre RELÊ TODO O HISTORICO a cada rodada (de proposito --
-# e como pega titulo que mudou de status sem precisar de webhook do Zen). Rodar
-# de 2 em 2h multiplica por ~7x a carga no Zen/GitHub Actions em relacao ao
+# e como pega titulo que mudou de status sem precisar de webhook do Zen).
+# Rodar 5x/dia multiplica por 5x a carga no Zen/GitHub Actions em relacao ao
 # 1x/dia de antes. Se o Zen comecar a reclamar de volume ou o job passar a
 # demorar demais, a saida e tornar isso incremental (cursor persistente +
 # segunda varredura so de status) em vez de voltar a rodar so 1x/dia.
@@ -21,9 +22,9 @@ name: Sync financeiro ZenERP
 
 on:
   schedule:
-    # 09,11,13,15,17,19,21 UTC = 06,08,10,12,14,16,18h BRT (expediente, 2 em 2h)
+    # 09,13,18,22 UTC = 06,10,15,19h BRT (expediente)
     # 02 UTC = 23h BRT do dia anterior (unica rodada fora do expediente)
-    - cron: '0 9,11,13,15,17,19,21,2 * * *'
+    - cron: '0 9,13,18,22,2 * * *'
   workflow_dispatch:
     inputs:
       alvo:

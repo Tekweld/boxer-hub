@@ -1021,8 +1021,12 @@ async function notificarRepresentante(o, { titulo, mensagem, cor }) {
     const [perfil] = await sb('/hub_perfis?representante_id=eq.' + o.representante_id + '&tipo=eq.representante&ativo=eq.true&select=user_id&limit=1');
 
     if (perfil?.user_id) {
+      // tipo tem CHECK constraint de lista fechada (achado testando, 2026-11-05)
+      // -- 'onboarding' nao e um valor aceito. 'aprovacao_pendente' e o que
+      // mais se encaixa (hub_v_notif_pendentes/topbar nao distinguem por
+      // tipo, so usam pra existir a notificacao).
       await sb('/hub_notificacoes', 'POST', {
-        usuario_id: perfil.user_id, tipo: 'onboarding', titulo,
+        usuario_id: perfil.user_id, tipo: 'aprovacao_pendente', titulo,
         mensagem: o.razao_social + ' — ' + mensagem,
         referencia_tipo: 'onboarding', referencia_id: o.id, lida: false
       });

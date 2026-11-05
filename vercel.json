@@ -8,7 +8,6 @@
     "api/sync-pedidos-zen.js": { "maxDuration": 45 }
   },
   "crons": [
-    { "path": "/api/sync-zen-clientes", "schedule": "0 6 * * *" },
     { "path": "/api/sync-pdm?target=produtos", "schedule": "0 7 * * 1" }
   ],
   "rewrites": [

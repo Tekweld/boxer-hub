@@ -1,0 +1,109 @@
+# Sincroniza clientes (hub_clientes: cadastro, credito, grupo empresarial,
+# representante) do Zen para o Hub.
+#
+# Ate 2026-11-05 isso rodava so no Cron nativo da Vercel (1x/dia, 06:00 UTC) --
+# o plano Hobby da Vercel permite no maximo 1 execucao de cron por dia por
+# rota, entao nao dava pra pedir mais de uma vez por dia direto na Vercel.
+# Migrado pra GitHub Actions (mesmo padrao de sync-financeiro.yml/
+# sync-estoque.yml) pra poder rodar varias vezes ao dia sem custo de plano,
+# encadeando rodadas pelo `proximo_canal_idx`/`proximo_offset` que o endpoint
+# ja devolve (api/sync-zen-clientes.js, ORCAMENTO_MS=45s por chamada).
+#
+# Cadencia pedida pelo Andre (2026-11-05): no expediente (06h-19h BRT) o
+# cliente/credito/grupo precisa estar sempre fresco -- roda de 2 em 2 horas.
+# Fora do expediente, 1x so, as 23h BRT (ninguem decide limite de credito ou
+# cadastra cliente de madrugada). BRT = UTC-3, sem horario de verao.
+name: Sync clientes ZenERP
+
+on:
+  schedule:
+    # 09,11,13,15,17,19,21 UTC = 06,08,10,12,14,16,18h BRT (expediente, 2 em 2h)
+    # 02 UTC = 23h BRT do dia anterior (unica rodada fora do expediente)
+    - cron: '0 9,11,13,15,17,19,21,2 * * *'
+  workflow_dispatch:
+    inputs:
+      canal_idx:
+        description: 'Indice do canal pra retomar (avancado -- normalmente deixar vazio)'
+        required: false
+        default: ''
+      offset:
+        description: 'Offset pra retomar (avancado -- normalmente deixar vazio)'
+        required: false
+        default: ''
+      dry:
+        description: 'Simular sem gravar (1 = sim)'
+        required: false
+        default: '0'
+
+concurrency:
+  group: sync-zen-clientes
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Encadear /api/sync-zen-clientes ate concluir
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CANAL_IDX: ${{ github.event.inputs.canal_idx || '' }}
+          OFFSET: ${{ github.event.inputs.offset || '' }}
+          DRY: ${{ github.event.inputs.dry || '0' }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          canal_idx="$CANAL_IDX"
+          offset="$OFFSET"
+          rodada=0
+          sem_avanco=0
+
+          while [ "$rodada" -lt 60 ]; do
+            rodada=$((rodada + 1))
+            url="https://hub.boxersoldas.com.br/api/sync-zen-clientes?dry=${DRY}"
+            [ -n "$canal_idx" ] && url="${url}&canal_idx=${canal_idx}"
+            [ -n "$offset" ] && url="${url}&offset=${offset}"
+
+            corpo=$(mktemp)
+            codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+              -X POST "$url" \
+              -H "x-cron-secret: $CRON_SECRET" \
+              --max-time 120)
+
+            echo "--- rodada $rodada (canal_idx ${canal_idx:-0} / offset ${offset:-0}) -> HTTP $codigo"
+            jq . "$corpo" 2>/dev/null || cat "$corpo"; echo
+
+            if [ "$codigo" != "200" ]; then
+              echo "::error::sync-zen-clientes respondeu $codigo"
+              exit 1
+            fi
+
+            concluido=$(jq -r '.concluido // empty' "$corpo")
+            if [ "$concluido" = "true" ] || [ -z "$(jq -r '.paginando // empty' "$corpo")" ]; then
+              echo "Concluido."
+              exit 0
+            fi
+
+            prox_canal=$(jq -r '.proximo_canal_idx // empty' "$corpo")
+            prox_offset=$(jq -r '.proximo_offset // empty' "$corpo")
+
+            if [ "$prox_canal" = "$canal_idx" ] && [ "$prox_offset" = "$offset" ]; then
+              sem_avanco=$((sem_avanco + 1))
+              if [ "$sem_avanco" -ge 5 ]; then
+                echo "::error::cursor nao avancou por 5 rodadas seguidas (canal_idx $canal_idx / offset $offset) -- abortando"
+                exit 1
+              fi
+              echo "aviso: sem avancar (tentativa $sem_avanco/5) -- tentando de novo"
+            else
+              sem_avanco=0
+            fi
+
+            canal_idx="$prox_canal"
+            offset="$prox_offset"
+          done
+
+          echo "::error::teto de rodadas atingido sem concluir"
+          exit 1

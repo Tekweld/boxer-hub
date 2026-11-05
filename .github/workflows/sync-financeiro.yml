@@ -1,9 +1,5 @@
 # Sincroniza titulos e notas fiscais do Zen para o Hub.
 #
-# Manual + diario. Diario porque titulo/NF nao mudam de minuto em minuto e
-# volume tende a ser alto. Manual (workflow_dispatch) para retomar de onde
-# parou passando `desde=<id>` ou rodar so `alvo=titulos` / `alvo=notas`.
-#
 # O endpoint tem orcamento de 15s de leitura por chamada (funcao Vercel morre
 # em 60s) e devolve `proximo_desde` PARA CADA ALVO -- este job encadeia as
 # rodadas ate os dois (titulos e notas) chegarem em `concluido:true`. Sao
@@ -12,13 +8,22 @@
 # cursor compartilhado travava o job inteiro sempre que um dos dois
 # terminava antes do outro (bug corrigido em 2026-10-30, duas semanas de
 # cron falhando sem ninguem notar).
+#
+# Cadencia (Andre, 2026-11-05): no expediente, de 2 em 2h -- fora, 1x as 23h.
+# Mesmos horarios de sync-zen-clientes.yml, "sincronizado" como pedido.
+# ATENCAO: titulo sempre RELÊ TODO O HISTORICO a cada rodada (de proposito --
+# e como pega titulo que mudou de status sem precisar de webhook do Zen). Rodar
+# de 2 em 2h multiplica por ~7x a carga no Zen/GitHub Actions em relacao ao
+# 1x/dia de antes. Se o Zen comecar a reclamar de volume ou o job passar a
+# demorar demais, a saida e tornar isso incremental (cursor persistente +
+# segunda varredura so de status) em vez de voltar a rodar so 1x/dia.
 name: Sync financeiro ZenERP
 
 on:
   schedule:
-    # 05:30 BRT (08:30 UTC) -- antes do horario comercial, para o cliente ver
-    # dados frescos ao logar de manha.
-    - cron: '30 8 * * *'
+    # 09,11,13,15,17,19,21 UTC = 06,08,10,12,14,16,18h BRT (expediente, 2 em 2h)
+    # 02 UTC = 23h BRT do dia anterior (unica rodada fora do expediente)
+    - cron: '0 9,11,13,15,17,19,21,2 * * *'
   workflow_dispatch:
     inputs:
       alvo:

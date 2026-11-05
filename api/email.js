@@ -142,6 +142,30 @@ function buildEmail(tipo, d) {
         `
       };
 
+    // Avisa o representante quando o cadastro que ELE abriu (via
+    // cadastro-representante.html) avanca, e reprova ou e cancelado --
+    // pedido do Andre, 2026-11-06: "toda aprovacao ou reprovacao tem que ir
+    // pra ele tambem". So dispara quando o cadastro foi criado por
+    // representante (criado_por_tipo='representante'); cadastro aberto pela
+    // propria revenda continua indo so pra ela (sem mudanca).
+    case 'onboarding_rep_update':
+      return {
+        to: d.email,
+        subject: 'Cadastro ' + d.razao_social + ' — ' + d.titulo,
+        body: `
+          <p>Ola${d.nome_representante ? ', <strong>' + d.nome_representante + '</strong>' : ''}! Atualizacao no cadastro que voce abriu no Boxer Hub.</p>
+          ${infoBox([
+            ['Empresa', d.razao_social],
+            ['CNPJ', d.cnpj],
+            ['Status', d.titulo]
+          ])}
+          <div style="background:${d.cor === 'erro' ? '#fef2f2' : '#eef3ff'};border:1px solid ${d.cor === 'erro' ? '#fecaca' : '#c3d3f5'};border-radius:8px;padding:16px;margin:16px 0">
+            <p style="font-size:13px;color:${d.cor === 'erro' ? '#991b1b' : '#1d327b'};margin:0;white-space:pre-line">${d.mensagem}</p>
+          </div>
+          ${btnLink(HUB_URL + '/pedidos.html', 'Acompanhar no Hub')}
+        `
+      };
+
     case 'senha_alterada':
       return {
         to: d.email,

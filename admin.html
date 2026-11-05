@@ -784,10 +784,22 @@ function etapaLabel(e) {
   return found ? found.label : e;
 }
 
-function openOnbDetail(id) {
+async function openOnbDetail(id) {
   const o = allOnboardings.find(x => x.id === id);
   if (!o) return;
   _currentOnbId = id;
+
+  // Origem do cadastro -- modulo novo do representante (2026-11-06), ver
+  // cadastro-representante.html. Sem FK embutida (hub_onboarding.
+  // representante_id nao tem foreign key declarada), entao busca o nome
+  // a parte em vez de tentar embed do PostgREST.
+  let repNomeOrigem = null;
+  if (o.representante_id) {
+    try {
+      const [r] = await sb('/hub_representantes?id=eq.' + o.representante_id + '&select=nome');
+      repNomeOrigem = r?.nome || null;
+    } catch {}
+  }
 
   const contatos = o.contatos || [];
   const enderecos = o.enderecos || [];
@@ -798,9 +810,12 @@ function openOnbDetail(id) {
 
   const html = `
     <h3 style="font-size:18px;margin-bottom:4px;color:#1d327b">${o.razao_social}</h3>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
       <span class="etapa-badge etapa-${o.etapa_atual}">${etapaLabel(o.etapa_atual)}</span>
       <span style="font-size:12px;color:#718096">Criado em ${fmtData(o.criado_em)}</span>
+      ${o.criado_por_tipo === 'representante'
+        ? `<span style="font-size:11px;font-weight:600;color:#1d327b;background:#eef3ff;border:1px solid #c3d3f5;padding:2px 8px;border-radius:4px">Cadastrado por representante${repNomeOrigem ? ': ' + repNomeOrigem : ''}</span>`
+        : `<span style="font-size:11px;font-weight:600;color:#718096;background:#f7fafc;border:1px solid #e2e8f0;padding:2px 8px;border-radius:4px">Autosservico (cliente)</span>`}
     </div>
 
     <div class="detail-section">
@@ -898,7 +913,7 @@ function buildOnbActions(o) {
           ${cancelBtn}
           <button class="btn btn-danger btn-sm" onclick="abrirRejeicao('${o.id}')">Reprovar</button>
           <span style="font-size:12px;color:#718096;flex:1;text-align:right">MVP: validacao manual (IA futura)</span>
-          <button class="btn btn-success btn-sm" onclick="avancarOnb('${o.id}','aprovacao_adm',{aprovador_docs_id:getUserId(),aprovador_docs_observacoes:document.getElementById('onbObsIA').value,docs_status:'aprovado',docs_aprovado_em:new Date().toISOString()})">Aprovar Dados + Docs</button>
+          <button class="btn btn-success btn-sm" onclick="avancarOnb('${o.id}','aprovacao_adm',{aprovador_docs_id:getUserId(),aprovador_docs_observacoes:document.getElementById('onbObsIA').value,docs_status:'aprovado',docs_aprovado_em:new Date().toISOString()},{titulo:'Dados e documentos aprovados',mensagem:'Seguiu para aprovacao da ADM de Vendas.'})">Aprovar Dados + Docs</button>
         </div>`;
     }
   }
@@ -910,7 +925,7 @@ function buildOnbActions(o) {
         <div class="action-bar">
           ${cancelBtn}
           <button class="btn btn-danger btn-sm" onclick="abrirRejeicao('${o.id}')">Rejeitar</button>
-          <button class="btn btn-success btn-sm" onclick="avancarOnb('${o.id}','analise_credito',{aprovador_docs_observacoes:(document.getElementById('onbObsAdm').value||'')})">Aprovar Cadastro</button>
+          <button class="btn btn-success btn-sm" onclick="avancarOnb('${o.id}','analise_credito',{aprovador_docs_observacoes:(document.getElementById('onbObsAdm').value||'')},{titulo:'Cadastro aprovado pela ADM de Vendas',mensagem:'Agora em analise de credito.'})">Aprovar Cadastro</button>
         </div>`;
     }
   }
@@ -992,11 +1007,47 @@ function buildOnbActions(o) {
   return html;
 }
 
-async function avancarOnb(id, novaEtapa, extraFields) {
+// Avisa o representante (email + notificacao dentro do Hub) toda vez que o
+// cadastro que ELE abriu muda de status -- pedido do Andre, 2026-11-06:
+// "toda aprovacao ou reprovacao tem que ir pra ele tambem". So dispara
+// quando criado_por_tipo='representante'; cadastro aberto pela propria
+// revenda continua indo so pra ela (sem mudar nada do que ja existia).
+// Fire-and-forget de proposito -- nunca deve travar nem poluir o fluxo
+// principal do admin com erro de notificacao.
+async function notificarRepresentante(o, { titulo, mensagem, cor }) {
+  if (o.criado_por_tipo !== 'representante' || !o.representante_id) return;
   try {
+    const [rep] = await sb('/hub_representantes?id=eq.' + o.representante_id + '&select=nome,email');
+    const [perfil] = await sb('/hub_perfis?representante_id=eq.' + o.representante_id + '&tipo=eq.representante&ativo=eq.true&select=user_id&limit=1');
+
+    if (perfil?.user_id) {
+      await sb('/hub_notificacoes', 'POST', {
+        usuario_id: perfil.user_id, tipo: 'onboarding', titulo,
+        mensagem: o.razao_social + ' — ' + mensagem,
+        referencia_tipo: 'onboarding', referencia_id: o.id, lida: false
+      });
+    }
+    if (rep?.email) {
+      fetch('/api/email', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tipo: 'onboarding_rep_update',
+          dados: { email: rep.email, nome_representante: rep.nome, razao_social: o.razao_social, cnpj: o.cnpj, titulo, mensagem, cor: cor || 'ok' }
+        })
+      }).catch(() => {});
+    }
+  } catch (e) {
+    console.warn('Falha ao notificar representante:', e.message);
+  }
+}
+
+async function avancarOnb(id, novaEtapa, extraFields, notif) {
+  try {
+    const o = allOnboardings.find(x => x.id === id);
     const body = { etapa_atual: novaEtapa, atualizado_em: new Date().toISOString() };
     if (extraFields) Object.assign(body, extraFields);
     await sb('/hub_onboarding?id=eq.' + id, 'PATCH', body);
+    if (o && notif) notificarRepresentante(o, notif);
     toast('Cadastro avancado para: ' + etapaLabel(novaEtapa));
     closeModal();
     await loadOnboardings();
@@ -1061,6 +1112,7 @@ async function confirmarRejeicao(id) {
         })
       }).catch(() => {});
     }
+    if (o) notificarRepresentante(o, { titulo: 'Cadastro reprovado', cor: 'erro', mensagem: motivo });
 
     toast('Cadastro reprovado. Email enviado ao cliente.');
     closeModal();
@@ -1074,6 +1126,7 @@ async function aprovarCredito(id) {
   const limite = parseFloat(document.getElementById('onbLimite').value);
   if (!limite || limite <= 0) { toast('Informe um limite valido', 'error'); return; }
   const obs = document.getElementById('onbObsFin').value;
+  const o = allOnboardings.find(x => x.id === id);
   try {
     await sb('/hub_onboarding?id=eq.' + id, 'PATCH', {
       etapa_atual: 'aprovacao_financeiro',
@@ -1081,6 +1134,10 @@ async function aprovarCredito(id) {
       credito_status: 'em_analise',
       aprovador_credito_observacoes: obs,
       atualizado_em: new Date().toISOString()
+    });
+    if (o) notificarRepresentante(o, {
+      titulo: 'Limite de credito sugerido', cor: 'ok',
+      mensagem: 'Limite sugerido: R$ ' + limite.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) + '. Aguardando aprovacao do Financeiro.'
     });
     toast('Enviado para aprovacao do Financeiro — limite sugerido R$ ' + limite.toLocaleString('pt-BR', {minimumFractionDigits:2}));
     closeModal();
@@ -1094,6 +1151,7 @@ async function aprovarFinanceiro(id) {
   const limite = parseFloat(document.getElementById('onbLimiteFin').value);
   if (!limite || limite <= 0) { toast('Informe um limite valido', 'error'); return; }
   const obs = document.getElementById('onbObsFinAprova').value;
+  const o = allOnboardings.find(x => x.id === id);
   try {
     await sb('/hub_onboarding?id=eq.' + id, 'PATCH', {
       etapa_atual: 'ativacao',
@@ -1103,6 +1161,10 @@ async function aprovarFinanceiro(id) {
       aprovador_credito_observacoes: obs,
       credito_aprovado_em: new Date().toISOString(),
       atualizado_em: new Date().toISOString()
+    });
+    if (o) notificarRepresentante(o, {
+      titulo: 'Credito aprovado', cor: 'ok',
+      mensagem: 'Limite aprovado: R$ ' + limite.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) + '. Cadastro pronto para ativacao.'
     });
     toast('Credito aprovado — R$ ' + limite.toLocaleString('pt-BR', {minimumFractionDigits:2}));
     closeModal();
@@ -1148,6 +1210,7 @@ async function confirmarCancelamento(id) {
       campo: 'etapa_atual', valor_anterior: o?.etapa_atual || '', valor_novo: 'cancelado',
       acao: 'cancelamento_onboarding'
     });
+    if (o) notificarRepresentante(o, { titulo: 'Cadastro cancelado', cor: 'erro', mensagem: motivo });
     toast('Cadastro cancelado.');
     closeModal();
     await loadOnboardings();
@@ -1214,6 +1277,12 @@ async function ativarCliente(id) {
       if (btn) { btn.disabled = false; btn.textContent = 'Confirmar e Ativar'; }
       return;
     }
+
+    const oAtivado = allOnboardings.find(x => x.id === id);
+    if (oAtivado) notificarRepresentante(oAtivado, {
+      titulo: 'Cliente ativado', cor: 'ok',
+      mensagem: 'Ja pode fazer login e comprar no Hub. Limite de credito: ' + fmtMoeda(data.limite) + '.'
+    });
 
     openModal(`
       <h3 style="font-size:18px;color:#16a34a;margin-bottom:16px">Cliente Ativado</h3>

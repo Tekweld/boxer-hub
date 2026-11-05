@@ -84,6 +84,25 @@ module.exports = async function handler(req, res) {
           'tenant': ZEN_TENANT
         };
 
+        // Vendedor (personSalesperson na propria Person) -- achado em
+        // 2026-11-06: o campo "Vendedor" (aba Comercial) nunca era
+        // preenchido na ativacao, so depois em sale.Sale (push-pedido.js/
+        // _orcamento.js). Igual category1/category2, Person nao aceita
+        // update -- tem que ir no POST unico de criacao. Fonte:
+        // hub_onboarding.representante_id, setado pelo modulo de cadastro
+        // do representante (cadastro-representante.html) ou manualmente
+        // pelo admin -- nunca pelo IBGE no formulario publico (so sugere,
+        // nunca grava, ver onboarding.html lookupRep()).
+        let erpRepresentanteId = null;
+        if (onb.representante_id) {
+          const repRes = await fetch(
+            SB_URL + '/rest/v1/hub_representantes?id=eq.' + onb.representante_id + '&select=erp_representante_id',
+            { headers: sbHeaders('GET') }
+          );
+          const reps = repRes.ok ? await repRes.json() : [];
+          if (reps?.[0]?.erp_representante_id) erpRepresentanteId = reps[0].erp_representante_id;
+        }
+
         // Resolver ids das categorias no Zen. Cada valor tem varias grafias
         // possiveis (E-commerce/Ecommerce, Hibrido/Hibrido/Híbrido). Tenta
         // em ordem, a primeira que bater vence.
@@ -188,6 +207,7 @@ module.exports = async function handler(req, res) {
         if (category1Id) personBody.category1 = { id: category1Id };
         if (category2Id) personBody.category2 = { id: category2Id };
         if (fiscalProfileId) personBody.fiscalProfilePerson = { id: fiscalProfileId };
+        if (erpRepresentanteId) personBody.personSalesperson = { id: Number(erpRepresentanteId) };
         if (onb.inscricao_estadual && onb.inscricao_estadual !== 'ISENTO') {
           personBody.document2Type = 'BR_INSCRICAO_ESTADUAL';
           personBody.document2Number = onb.inscricao_estadual;
@@ -461,7 +481,11 @@ module.exports = async function handler(req, res) {
           uf: endParaCliente.uf || null,
           cidade: endParaCliente.cidade || null,
           limite_credito: onb.limite_aprovado || 0,
-          limite_disponivel: onb.limite_aprovado || 0
+          limite_disponivel: onb.limite_aprovado || 0,
+          // So sobrescreve se o onboarding trouxe representante -- nunca
+          // apaga um vinculo ja existente (ex: ZEN sync) so por este
+          // cadastro nao ter vindo do modulo do representante.
+          ...(onb.representante_id ? { representante_id: onb.representante_id } : {})
         })
       });
     } else {
@@ -490,6 +514,7 @@ module.exports = async function handler(req, res) {
           cidade: endParaCliente.cidade || null,
           email_principal: onb.contato_email || null,
           telefone: onb.contato_telefone || null,
+          representante_id: onb.representante_id || null,
           ativo: true
         })
       });

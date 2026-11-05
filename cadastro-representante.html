@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Novo Cadastro — Boxer Hub</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
+.topbar{background:linear-gradient(135deg,#1d327b,#162666);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;border-bottom:3px solid #25bbee}
+.topbar-left{display:flex;align-items:center;gap:12px}
+.topbar h1{color:#fff;font-size:18px;font-weight:700}
+.topbar-right{display:flex;align-items:center;gap:16px}
+.user-badge{color:#93b4d4;font-size:13px}.user-badge strong{color:#fff}
+.logout-btn{color:#93b4d4;font-size:13px;padding:6px 12px;border:1px solid rgba(255,255,255,.2);border-radius:6px;cursor:pointer}
+.logout-btn:hover{background:rgba(255,255,255,.1);color:#fff}
+.notif-badge{background:#e30613;color:#fff;font-size:10px;padding:2px 6px;border-radius:10px;cursor:pointer}
+
+.container{max-width:720px;margin:0 auto;padding:24px 16px 60px}
+
+/* Stepper */
+.stepper{display:flex;gap:0;margin-bottom:28px;overflow-x:auto;padding-bottom:4px}
+.step-item{flex:1;text-align:center;position:relative;min-width:80px}
+.step-num{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;margin:0 auto 4px;border:2px solid #d0d8e8;color:#a0aec0;background:#fff;transition:all .2s}
+.step-item.active .step-num{background:#1d327b;color:#fff;border-color:#1d327b}
+.step-item.done .step-num{background:#16a34a;color:#fff;border-color:#16a34a}
+.step-label{font-size:11px;font-weight:500;color:#a0aec0;transition:color .2s}
+.step-item.active .step-label{color:#1d327b;font-weight:600}
+.step-item.done .step-label{color:#16a34a}
+.step-item::after{content:'';position:absolute;top:15px;left:calc(50% + 20px);width:calc(100% - 40px);height:2px;background:#d0d8e8}
+.step-item:last-child::after{display:none}
+.step-item.done::after{background:#16a34a}
+
+/* Card */
+.card{background:#fff;border:1px solid #d0d8e8;border-radius:12px;padding:24px;box-shadow:0 1px 3px rgba(29,50,123,.06)}
+.card-title{font-size:16px;font-weight:700;color:#1d327b;margin-bottom:4px}
+.card-subtitle{font-size:13px;color:#718096;margin-bottom:20px}
+
+/* Form */
+.form-row{margin-bottom:16px}
+.form-row label{display:block;font-size:12px;font-weight:500;color:#4a5568;margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px}
+.form-row label .req{color:#e30613}
+.form-row input,.form-row select,.form-row textarea{width:100%;font-family:Outfit,sans-serif;font-size:14px;padding:10px 14px;border:1px solid #c3cfe2;border-radius:8px;outline:none;transition:border-color .15s}
+.form-row input:focus,.form-row select:focus,.form-row textarea:focus{border-color:#25bbee}
+.form-row input.err,.form-row select.err{border-color:#e30613}
+.form-row .hint{font-size:11px;color:#718096;margin-top:3px}
+.form-row textarea{resize:vertical;min-height:60px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.form-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+@media(max-width:600px){
+  .form-grid,.form-grid-3{grid-template-columns:1fr}
+}
+
+/* Rep info (fixo, nao editavel -- quem preenche e o dono) */
+.rep-box{display:flex;align-items:center;gap:10px;padding:12px 14px;background:#eef3ff;border:1px solid #c3d3f5;border-radius:8px;margin-bottom:20px;font-size:13px;color:#1d327b}
+.rep-box strong{font-weight:700}
+
+/* CNPJ lookup */
+.cnpj-wrap{display:flex;gap:8px}
+.cnpj-wrap input{flex:1}
+.cnpj-wrap button{flex-shrink:0}
+.cnpj-status{font-size:12px;margin-top:6px;padding:8px 12px;border-radius:6px;display:none}
+.cnpj-status.ok{display:block;background:#dcfce7;color:#166534;border:1px solid #bbf7d0}
+.cnpj-status.err{display:block;background:#fee2e2;color:#991b1b;border:1px solid #fecaca}
+.cnpj-status.loading{display:block;background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe}
+
+/* Contact section */
+.contact-section{border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-bottom:16px;background:#f7fafc}
+.contact-section h4{font-size:13px;font-weight:600;color:#1d327b;margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px}
+
+/* Classification questions */
+.question{margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #e2e8f0}
+.question:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
+.question .q-label{font-size:14px;font-weight:600;color:#1a202c;margin-bottom:10px}
+.option-group{display:flex;flex-wrap:wrap;gap:8px}
+.option-btn{padding:8px 16px;border:1px solid #c3cfe2;border-radius:8px;background:#fff;font-family:Outfit,sans-serif;font-size:13px;font-weight:500;color:#4a5568;cursor:pointer;transition:all .15s}
+.option-btn:hover{border-color:#25bbee;color:#1d327b}
+.option-btn.selected{background:#1d327b;color:#fff;border-color:#1d327b}
+.option-btn.selected-alt{background:#25bbee;color:#fff;border-color:#25bbee}
+.sub-options{margin-top:10px;padding:12px;background:#f0f4f8;border-radius:8px;display:none}
+.sub-options.show{display:block}
+.sub-options .option-group{margin-top:6px}
+.q-block{padding-top:4px}
+.q-title{font-size:14px;font-weight:600;color:#1a202c;margin-bottom:6px}
+.q-help{font-size:12px;color:#718096;margin-bottom:10px;line-height:1.5}
+.options-row{display:flex;gap:8px;flex-wrap:wrap}
+
+/* Document upload */
+.doc-item{padding:12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:10px;background:#fff}
+.doc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.doc-label{font-size:13px;font-weight:500;color:#1a202c}
+.doc-status{font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px}
+.doc-req{background:#fee2e2;color:#991b1b}
+.doc-opt{background:#f1f5f9;color:#475569}
+.doc-upload{display:flex;align-items:center;gap:8px}
+.doc-upload input[type=file]{font-family:Outfit,sans-serif;font-size:12px;color:#4a5568}
+.doc-upload input[type=file]::file-selector-button{background:#1d327b;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-family:Outfit,sans-serif;font-size:12px;font-weight:500;cursor:pointer;margin-right:8px}
+.doc-upload input[type=file]::file-selector-button:hover{background:#162666}
+.doc-ok{font-size:12px;color:#16a34a;font-weight:600;display:none}
+.doc-err{font-size:11px;color:#e30613;margin-top:4px;display:none}
+
+/* Review */
+.review-section{margin-bottom:16px;padding:14px;background:#f7fafc;border-radius:8px;border:1px solid #e2e8f0}
+.review-section h4{font-size:12px;font-weight:600;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.review-row{display:flex;justify-content:space-between;padding:4px 0;font-size:13px}
+.review-row .review-label{color:#718096}
+.review-row .review-value{color:#1a202c;font-weight:500;text-align:right;max-width:60%}
+
+/* Buttons */
+.btn{padding:10px 20px;border-radius:8px;border:1px solid;font-family:Outfit,sans-serif;font-size:14px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:all .15s}
+.btn-primary{background:#1d327b;color:#fff;border-color:#1d327b}
+.btn-primary:hover{background:#162666}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-outline{background:#fff;color:#4a5568;border-color:#c3cfe2}
+.btn-outline:hover{border-color:#25bbee;color:#1d327b}
+.btn-success{background:#16a34a;color:#fff;border-color:#16a34a}
+.btn-success:hover{background:#15803d}
+.form-actions{display:flex;justify-content:space-between;margin-top:24px;gap:12px}
+
+/* Classification result */
+.class-result{margin-top:16px;padding:14px;border-radius:8px;border:1px solid;display:none}
+.class-result.show{display:block}
+.class-result .class-tag{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+.class-ecommerce{background:#dbeafe;border-color:#93c5fd;color:#1e40af}
+.class-hibrido{background:#fef3c7;border-color:#fcd34d;color:#92400e}
+.class-varejo{background:#dcfce7;border-color:#86efac;color:#166534}
+
+/* Toast */
+.toast{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;color:#fff;font-family:Outfit,sans-serif;font-size:13px;font-weight:500;z-index:2000;animation:slideIn .3s;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+.toast-success{background:#16a34a}
+.toast-error{background:#dc2626}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* Success page */
+.success-page{text-align:center;padding:60px 20px}
+.success-icon{width:72px;height:72px;border-radius:50%;background:#dcfce7;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:32px;color:#16a34a}
+.success-page h2{font-size:22px;color:#1a202c;margin-bottom:8px}
+.success-page p{font-size:14px;color:#718096;max-width:480px;margin:0 auto 24px;line-height:1.6}
+
+.hidden{display:none!important}
+.empty-state{text-align:center;padding:60px 20px;color:#718096}
+</style>
+</head>
+<body>
+
+<div id="topbarWrap"></div>
+
+<div class="container" id="pageWrap">
+
+  <div class="empty-state" id="semAcesso" style="display:none">
+    <h3 style="color:#4a5568;margin-bottom:8px">Acesso restrito</h3>
+    <p>Este cadastro e exclusivo para representantes. Fale com o ADM de Vendas se precisar cadastrar uma revenda nova.</p>
+  </div>
+
+  <div id="formWrap">
+
+  <!-- Stepper -->
+  <div class="stepper" id="stepper">
+    <div class="step-item active" data-step="1"><div class="step-num">1</div><div class="step-label">Empresa</div></div>
+    <div class="step-item" data-step="2"><div class="step-num">2</div><div class="step-label">Endereco</div></div>
+    <div class="step-item" data-step="3"><div class="step-num">3</div><div class="step-label">Contatos</div></div>
+    <div class="step-item" data-step="4"><div class="step-num">4</div><div class="step-label">Perfil</div></div>
+    <div class="step-item" data-step="5"><div class="step-num">5</div><div class="step-label">Documentos</div></div>
+    <div class="step-item" data-step="6"><div class="step-num">6</div><div class="step-label">Revisao</div></div>
+  </div>
+
+  <!-- STEP 1: Empresa -->
+  <div class="card step-content" id="step1">
+    <div class="card-title">Dados da Empresa</div>
+    <div class="card-subtitle">Informe o CNPJ da revenda nova para buscar os dados automaticamente</div>
+
+    <div class="rep-box">Representante responsavel: <strong id="repNomeBox"></strong> — esse cadastro ja nasce vinculado a voce.</div>
+
+    <div class="form-row">
+      <label>CNPJ <span class="req">*</span></label>
+      <div class="cnpj-wrap">
+        <input type="text" id="fCnpj" placeholder="00.000.000/0000-00" maxlength="18" oninput="maskCnpj(this)">
+        <button class="btn btn-primary" onclick="lookupCnpj()" id="btnLookup">Buscar</button>
+      </div>
+      <div class="cnpj-status" id="cnpjStatus"></div>
+    </div>
+
+    <div id="empresaFields">
+      <div class="form-row">
+        <label>Razao Social <span class="req">*</span></label>
+        <input type="text" id="fRazao" placeholder="Razao social da empresa">
+      </div>
+      <div class="form-row">
+        <label>Nome da Fachada / Loja <span class="req">*</span></label>
+        <input type="text" id="fFantasia" placeholder="Nome visivel na fachada da loja">
+        <div class="hint">Como o cliente conhece a loja</div>
+      </div>
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Inscricao Estadual</label>
+          <input type="text" id="fIe" placeholder="000.000.000.000">
+          <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;text-transform:none;letter-spacing:0;cursor:pointer;color:#4a5568">
+            <input type="checkbox" id="fIeIsento" onchange="toggleIeIsento(this)" style="width:auto;padding:0"> Isento / Nao possui inscricao estadual
+          </label>
+        </div>
+        <div class="form-row">
+          <label>Email Principal <span class="req">*</span></label>
+          <input type="email" id="fEmail" placeholder="contato@empresa.com.br">
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Telefone Principal <span class="req">*</span></label>
+          <input type="tel" id="fTelefone" placeholder="(00) 00000-0000" maxlength="15" oninput="maskTel(this)">
+        </div>
+        <div class="form-row">
+          <label>Nome do Responsavel <span class="req">*</span></label>
+          <input type="text" id="fNomeResp" placeholder="Nome completo">
+        </div>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <div></div>
+      <button class="btn btn-primary" onclick="nextStep(2)" id="btnStep1">Proximo &#8594;</button>
+    </div>
+  </div>
+
+  <!-- STEP 2: Endereco -->
+  <div class="card step-content hidden" id="step2">
+    <div class="card-title">Endereco Principal</div>
+    <div class="card-subtitle">Endereco da sede ou loja principal</div>
+
+    <div class="form-grid">
+      <div class="form-row">
+        <label>CEP <span class="req">*</span></label>
+        <input type="text" id="fCep" placeholder="00000-000" maxlength="9" oninput="maskCep(this)" onblur="lookupCep()">
+      </div>
+      <div class="form-row">
+        <label>UF <span class="req">*</span></label>
+        <input type="text" id="fUf" placeholder="SP" maxlength="2" readonly style="background:#f7fafc">
+      </div>
+    </div>
+    <div class="form-row">
+      <label>Logradouro <span class="req">*</span></label>
+      <input type="text" id="fLogradouro" placeholder="Rua, Avenida, etc.">
+    </div>
+    <div class="form-grid-3">
+      <div class="form-row">
+        <label>Numero <span class="req">*</span></label>
+        <input type="text" id="fNumero" placeholder="123">
+      </div>
+      <div class="form-row">
+        <label>Complemento</label>
+        <input type="text" id="fComplemento" placeholder="Sala, Galpao...">
+      </div>
+      <div class="form-row">
+        <label>Bairro <span class="req">*</span></label>
+        <input type="text" id="fBairro" placeholder="Bairro">
+      </div>
+    </div>
+    <div class="form-grid">
+      <div class="form-row">
+        <label>Cidade <span class="req">*</span></label>
+        <input type="text" id="fCidade" placeholder="Cidade" readonly style="background:#f7fafc">
+      </div>
+      <div class="form-row">
+        <label>Codigo IBGE</label>
+        <input type="text" id="fIbge" placeholder="Auto" readonly style="background:#f7fafc">
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="prevStep(1)">&#8592; Voltar</button>
+      <button class="btn btn-primary" onclick="nextStep(3)">Proximo &#8594;</button>
+    </div>
+  </div>
+
+  <!-- STEP 3: Contatos -->
+  <div class="card step-content hidden" id="step3">
+    <div class="card-title">Contatos</div>
+    <div class="card-subtitle">Informe pelo menos o contato comercial e financeiro</div>
+
+    <div class="contact-section">
+      <h4>Contato Comercial</h4>
+      <div class="form-row">
+        <label>Nome <span class="req">*</span></label>
+        <input type="text" id="fContatoComNome" placeholder="Nome completo">
+      </div>
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Email <span class="req">*</span></label>
+          <input type="email" id="fContatoComEmail" placeholder="comercial@empresa.com.br">
+        </div>
+        <div class="form-row">
+          <label>Telefone <span class="req">*</span></label>
+          <input type="tel" id="fContatoComTel" placeholder="(00) 00000-0000" maxlength="15" oninput="maskTel(this)">
+        </div>
+      </div>
+    </div>
+
+    <div class="contact-section">
+      <h4>Contato Financeiro</h4>
+      <div class="form-row">
+        <label>Nome <span class="req">*</span></label>
+        <input type="text" id="fContatoFinNome" placeholder="Nome completo">
+      </div>
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Email <span class="req">*</span></label>
+          <input type="email" id="fContatoFinEmail" placeholder="financeiro@empresa.com.br">
+        </div>
+        <div class="form-row">
+          <label>Telefone <span class="req">*</span></label>
+          <input type="tel" id="fContatoFinTel" placeholder="(00) 00000-0000" maxlength="15" oninput="maskTel(this)">
+        </div>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="prevStep(2)">&#8592; Voltar</button>
+      <button class="btn btn-primary" onclick="nextStep(4)">Proximo &#8594;</button>
+    </div>
+  </div>
+
+  <!-- STEP 4: Perfil -->
+  <div class="card step-content hidden" id="step4">
+    <div class="card-title">Perfil da Loja</div>
+    <div class="card-subtitle">Essas informacoes ajudam a definir as melhores condicoes comerciais</div>
+
+    <div class="question">
+      <div class="q-label">1. A revenda tem loja fisica?</div>
+      <div class="option-group">
+        <button class="option-btn" onclick="toggleOption(this,'q1','sim')">Sim</button>
+        <button class="option-btn" onclick="toggleOption(this,'q1','nao')">Nao</button>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="q-label">2. Ela vende pelos Marketplaces?</div>
+      <div class="option-group">
+        <button class="option-btn" onclick="toggleOption(this,'q2','sim');toggleSub('q2sub',true)">Sim</button>
+        <button class="option-btn" onclick="toggleOption(this,'q2','nao');toggleSub('q2sub',false)">Nao</button>
+      </div>
+      <div class="sub-options" id="q2sub">
+        <div style="font-size:12px;color:#718096;margin-bottom:6px">Quais? (selecione todos que se aplicam)</div>
+        <div class="option-group">
+          <button class="option-btn" onclick="toggleMulti(this,'q2_mkt')">Mercado Livre</button>
+          <button class="option-btn" onclick="toggleMulti(this,'q2_mkt')">Shopee</button>
+          <button class="option-btn" onclick="toggleMulti(this,'q2_mkt')">Amazon</button>
+          <button class="option-btn" onclick="toggleMulti(this,'q2_mkt')">Magazine Luiza</button>
+          <button class="option-btn" onclick="toggleMulti(this,'q2_mkt')">Outro</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="q-label">3. Ela tem equipe de televendas ou venda externa?</div>
+      <div class="option-group">
+        <button class="option-btn" onclick="toggleOption(this,'q3','televendas')">Televendas</button>
+        <button class="option-btn" onclick="toggleOption(this,'q3','venda_externa')">Venda Externa</button>
+        <button class="option-btn" onclick="toggleOption(this,'q3','ambos')">Ambos</button>
+        <button class="option-btn" onclick="toggleOption(this,'q3','nao_tenho')">Nao tenho</button>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="q-label">4. Ela tem site proprio?</div>
+      <div class="option-group">
+        <button class="option-btn" onclick="toggleOption(this,'q4','sim');toggleSub('q4sub',true)">Sim</button>
+        <button class="option-btn" onclick="toggleOption(this,'q4','nao');toggleSub('q4sub',false)">Nao</button>
+      </div>
+      <div class="sub-options" id="q4sub">
+        <div class="form-row" style="margin-bottom:0">
+          <label>URL do site</label>
+          <input type="url" id="fSiteUrl" placeholder="https://www.seusite.com.br">
+        </div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="q-label">5. Perfil da loja (selecione todos que se aplicam)</div>
+      <div class="option-group">
+        <button class="option-btn" onclick="toggleMulti(this,'q5_perfil')">Autoservico</button>
+        <button class="option-btn" onclick="toggleMulti(this,'q5_perfil')">Balcao</button>
+        <button class="option-btn" onclick="toggleMulti(this,'q5_perfil')">Venda Especializada</button>
+        <button class="option-btn" onclick="toggleMulti(this,'q5_perfil')">Distribuicao</button>
+        <button class="option-btn" onclick="toggleMulti(this,'q5_perfil')">Apenas Retirada</button>
+        <button class="option-btn" onclick="toggleMulti(this,'q5_perfil')">Assistencia Tecnica</button>
+        <button class="option-btn" onclick="toggleMulti(this,'q5_perfil')">Online / E-commerce</button>
+      </div>
+    </div>
+
+    <div class="class-result" id="classResult">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Classificacao sugerida</div>
+      <div class="class-tag" id="classTag"></div>
+    </div>
+
+    <div class="q-block" style="margin-top:20px">
+      <div class="q-title">Como a revenda prefere receber pedidos quando algum item esta em falta?</div>
+      <div class="q-help">Se aceita <b>faturamento parcial</b>, enviamos o que temos e o restante vai depois. Caso contrario, aguardamos ter todo o pedido completo antes de faturar.</div>
+      <div class="options-row">
+        <button class="option-btn" id="fatOptCompleto" onclick="setFatParcial(false, this)">Somente pedido completo</button>
+        <button class="option-btn" id="fatOptParcial"  onclick="setFatParcial(true,  this)">Aceita receber parcial</button>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="prevStep(3)">&#8592; Voltar</button>
+      <button class="btn btn-primary" onclick="nextStep(5)">Proximo &#8594;</button>
+    </div>
+  </div>
+
+  <!-- STEP 5: Documentos -->
+  <div class="card step-content hidden" id="step5">
+    <div class="card-title">Documentos Cadastrais</div>
+    <div class="card-subtitle">Envie os documentos abaixo (PDF ou imagem, maximo 2MB cada)</div>
+
+    <div class="doc-item" data-doc="contrato_social" data-req="true">
+      <div class="doc-header"><span class="doc-label">Contrato Social / Estatuto (vigente, assinado)</span><span class="doc-status doc-req">Obrigatorio</span></div>
+      <div class="doc-upload"><input type="file" accept=".pdf,.jpg,.jpeg,.png" onchange="handleDocUpload(this,'contrato_social')"><span class="doc-ok" id="ok_contrato_social">Enviado</span></div>
+      <div class="doc-err" id="err_contrato_social"></div>
+    </div>
+
+    <div class="doc-item" data-doc="cartao_cnpj" data-req="true">
+      <div class="doc-header"><span class="doc-label">Cartao CNPJ atualizado</span><span class="doc-status doc-req">Obrigatorio</span></div>
+      <div class="doc-upload"><input type="file" accept=".pdf,.jpg,.jpeg,.png" onchange="handleDocUpload(this,'cartao_cnpj')"><span class="doc-ok" id="ok_cartao_cnpj">Enviado</span></div>
+      <div class="doc-err" id="err_cartao_cnpj"></div>
+    </div>
+
+    <div class="doc-item" data-doc="comprovante_endereco" data-req="true">
+      <div class="doc-header"><span class="doc-label">Comprovante de Endereco da empresa</span><span class="doc-status doc-req">Obrigatorio</span></div>
+      <div class="doc-upload"><input type="file" accept=".pdf,.jpg,.jpeg,.png" onchange="handleDocUpload(this,'comprovante_endereco')"><span class="doc-ok" id="ok_comprovante_endereco">Enviado</span></div>
+      <div class="doc-err" id="err_comprovante_endereco"></div>
+    </div>
+
+    <div style="margin:20px 0 10px;padding:10px 14px;background:#f0f4f8;border-radius:8px;border:1px solid #d0d8e8">
+      <div style="font-size:12px;font-weight:600;color:#1d327b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Documentos Financeiros</div>
+      <div style="font-size:12px;color:#718096">Balanco e DRE sao obrigatorios. Faturamento 12 meses e opcional.</div>
+    </div>
+
+    <div class="doc-item" data-doc="balanco" data-req="true">
+      <div class="doc-header"><span class="doc-label">Balanco Patrimonial (assinado pelo contador)</span><span class="doc-status doc-req">Obrigatorio</span></div>
+      <div class="doc-upload"><input type="file" accept=".pdf,.jpg,.jpeg,.png" onchange="handleDocUpload(this,'balanco')"><span class="doc-ok" id="ok_balanco">Enviado</span></div>
+      <div class="doc-err" id="err_balanco"></div>
+    </div>
+
+    <div class="doc-item" data-doc="dre" data-req="true">
+      <div class="doc-header"><span class="doc-label">DRE — ano atual e anterior (assinado pelo contador)</span><span class="doc-status doc-req">Obrigatorio</span></div>
+      <div class="doc-upload"><input type="file" accept=".pdf,.jpg,.jpeg,.png" onchange="handleDocUpload(this,'dre')"><span class="doc-ok" id="ok_dre">Enviado</span></div>
+      <div class="doc-err" id="err_dre"></div>
+    </div>
+
+    <div class="doc-item" data-doc="faturamento_12m">
+      <div class="doc-header"><span class="doc-label">Relatorio de faturamento dos ultimos 12 meses (assinado pelo contador)</span><span class="doc-status doc-opt">Opcional</span></div>
+      <div class="doc-upload"><input type="file" accept=".pdf,.jpg,.jpeg,.png" onchange="handleDocUpload(this,'faturamento_12m')"><span class="doc-ok" id="ok_faturamento_12m">Enviado</span></div>
+      <div class="doc-err" id="err_faturamento_12m"></div>
+    </div>
+
+    <div class="hint" style="margin-top:12px">Formatos aceitos: PDF, JPG, PNG. Tamanho maximo: 2MB por arquivo.<br>Todos os documentos devem conter assinatura e carimbo do contador responsavel.</div>
+
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="prevStep(4)">&#8592; Voltar</button>
+      <button class="btn btn-primary" onclick="nextStep(6)">Revisar &#8594;</button>
+    </div>
+  </div>
+
+  <!-- STEP 6: Revisao -->
+  <div class="card step-content hidden" id="step6">
+    <div class="card-title">Revisao do Cadastro</div>
+    <div class="card-subtitle">Verifique se todas as informacoes estao corretas antes de enviar</div>
+
+    <div id="reviewContent"></div>
+
+    <div class="form-row" style="margin-top:16px">
+      <label>Observacoes (opcional)</label>
+      <textarea id="fObservacoes" placeholder="Alguma informacao adicional que gostaria de compartilhar?"></textarea>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="prevStep(5)">&#8592; Voltar</button>
+      <button class="btn btn-success" onclick="submitOnboarding()" id="btnSubmit">Enviar Cadastro</button>
+    </div>
+  </div>
+
+  <!-- Success -->
+  <div class="card step-content hidden" id="stepSuccess">
+    <div class="success-page">
+      <div class="success-icon">&#10003;</div>
+      <h2>Cadastro Enviado!</h2>
+      <p>O cadastro foi enviado com sucesso, ja vinculado a voce. Nossa equipe de ADM Vendas vai analisar as informacoes e dar andamento. O processo leva em media 2 a 3 dias uteis -- acompanhe pelo canal de resolucao se precisar.</p>
+      <p style="font-size:13px;color:#a0aec0">Protocolo: <strong id="protocoloId"></strong></p>
+      <button class="btn btn-primary" onclick="window.location.href='pedidos.html'" style="margin-top:16px">Voltar para Pedidos</button>
+    </div>
+  </div>
+
+  </div>
+</div>
+
+<script src="hub.js"></script>
+<script>
+if (!requireAuth()) throw 'auth';
+
+(async () => {
+  await loadPerfil();
+  document.getElementById('topbarWrap').innerHTML = '';
+  renderTopbar('Novo Cadastro');
+  // Modulo exclusivo do representante (pedido do Andre, 2026-11-06) -- admin/
+  // manager/analyst ja tem o pipeline completo de onboarding/ativacao no
+  // admin.html, e dealer nunca cadastraria outra revenda. Nao bloqueado so
+  // no front: a RPC de submissao confere de novo no servidor.
+  if (getUserTipo() !== 'representante') {
+    document.getElementById('formWrap').classList.add('hidden');
+    document.getElementById('semAcesso').style.display = 'block';
+    return;
+  }
+  document.getElementById('repNomeBox').textContent = getUserNome() || 'voce';
+})();
+
+let currentStep = 1;
+const answers = { q1: null, q2: null, q2_mkt: [], q3: null, q4: null, q5_perfil: [] };
+const uploadedDocs = {};
+const MAX_FILE_SIZE = 2 * 1024 * 1024;
+
+// === STEPPER NAV ===
+
+function goToStep(n) {
+  document.querySelectorAll('.step-content').forEach(el => el.classList.add('hidden'));
+  document.getElementById('step' + n).classList.remove('hidden');
+  document.querySelectorAll('.step-item').forEach(el => {
+    const s = parseInt(el.dataset.step);
+    el.classList.remove('active', 'done');
+    if (s < n) el.classList.add('done');
+    if (s === n) el.classList.add('active');
+  });
+  currentStep = n;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function nextStep(n) {
+  if (!validateStep(currentStep)) return;
+  if (n === 6) buildReview();
+  goToStep(n);
+}
+
+function prevStep(n) { goToStep(n); }
+
+// === VALIDATION ===
+
+function validateStep(n) {
+  clearErrors();
+  let ok = true;
+
+  if (n === 1) {
+    if (!v('fCnpj')) ok = false;
+    else if (!validarCnpj(gi('fCnpj'))) {
+      document.getElementById('fCnpj').classList.add('err');
+      ok = false;
+    }
+    if (!v('fRazao')) ok = false;
+    if (!v('fFantasia')) ok = false;
+    const ieIsento = document.getElementById('fIeIsento').checked;
+    if (!ieIsento && !v('fIe')) ok = false;
+    if (!v('fEmail')) ok = false;
+    if (!v('fTelefone')) ok = false;
+    if (!v('fNomeResp')) ok = false;
+    if (!ok) {
+      const cnpjInvalido = document.getElementById('fCnpj').classList.contains('err') && gi('fCnpj');
+      showToast(cnpjInvalido ? 'CNPJ invalido — verifique os digitos' : 'Preencha todos os campos obrigatorios', 'error');
+    }
+  }
+  if (n === 2) {
+    if (!v('fCep')) ok = false;
+    if (!v('fLogradouro')) ok = false;
+    if (!v('fNumero')) ok = false;
+    if (!v('fBairro')) ok = false;
+    if (!v('fCidade')) ok = false;
+    if (!v('fUf')) ok = false;
+    if (!ok) showToast('Preencha o endereco completo', 'error');
+  }
+  if (n === 3) {
+    if (!v('fContatoComNome')) ok = false;
+    if (!v('fContatoComEmail')) ok = false;
+    if (!v('fContatoComTel')) ok = false;
+    if (!v('fContatoFinNome')) ok = false;
+    if (!v('fContatoFinEmail')) ok = false;
+    if (!v('fContatoFinTel')) ok = false;
+    if (!ok) showToast('Preencha os dois contatos obrigatorios', 'error');
+  }
+  if (n === 4) {
+    if (!answers.q1) { ok = false; }
+    if (!answers.q2) { ok = false; }
+    if (!answers.q3) { ok = false; }
+    if (!answers.q4) { ok = false; }
+    if (answers.q5_perfil.length === 0) { ok = false; }
+    if (!ok) showToast('Responda todas as perguntas sobre o perfil', 'error');
+  }
+  if (n === 5) {
+    const reqDocs = ['contrato_social', 'cartao_cnpj', 'comprovante_endereco', 'balanco', 'dre'];
+    const missing = reqDocs.filter(tipo => !uploadedDocs[tipo]);
+    if (missing.length > 0) {
+      ok = false;
+      showToast('Envie todos os documentos obrigatorios (' + missing.length + ' faltando)', 'error');
+    }
+  }
+  return ok;
+}
+
+function v(id) {
+  const el = document.getElementById(id);
+  if (!el.value.trim()) { el.classList.add('err'); return false; }
+  el.classList.remove('err');
+  return true;
+}
+
+function clearErrors() {
+  document.querySelectorAll('.err').forEach(el => el.classList.remove('err'));
+}
+
+// === CNPJ VALIDATION ===
+
+function validarCnpj(cnpj) {
+  const raw = cnpj.replace(/\D/g, '');
+  if (raw.length !== 14) return false;
+  if (/^(\d)\1{13}$/.test(raw)) return false;
+  const pesos1 = [5,4,3,2,9,8,7,6,5,4,3,2];
+  const pesos2 = [6,5,4,3,2,9,8,7,6,5,4,3,2];
+  let soma = 0;
+  for (let i = 0; i < 12; i++) soma += parseInt(raw[i]) * pesos1[i];
+  let resto = soma % 11;
+  const d1 = resto < 2 ? 0 : 11 - resto;
+  if (parseInt(raw[12]) !== d1) return false;
+  soma = 0;
+  for (let i = 0; i < 13; i++) soma += parseInt(raw[i]) * pesos2[i];
+  resto = soma % 11;
+  const d2 = resto < 2 ? 0 : 11 - resto;
+  return parseInt(raw[13]) === d2;
+}
+
+// === IE ISENTO ===
+
+function toggleIeIsento(cb) {
+  const input = document.getElementById('fIe');
+  if (cb.checked) {
+    input.value = '';
+    input.disabled = true;
+    input.style.background = '#f0f4f8';
+    input.style.opacity = '0.6';
+    input.classList.remove('err');
+  } else {
+    input.disabled = false;
+    input.style.background = '';
+    input.style.opacity = '';
+  }
+}
+
+// === CNPJ LOOKUP (BrasilAPI) ===
+
+async function lookupCnpj() {
+  const raw = document.getElementById('fCnpj').value.replace(/\D/g, '');
+  if (raw.length !== 14) { showCnpjStatus('CNPJ deve ter 14 digitos', 'err'); return; }
+  if (!validarCnpj(raw)) { showCnpjStatus('CNPJ invalido — verifique os digitos', 'err'); return; }
+
+  showCnpjStatus('Buscando dados do CNPJ...', 'loading');
+  document.getElementById('btnLookup').disabled = true;
+
+  try {
+    const r = await fetch('https://brasilapi.com.br/api/cnpj/v1/' + raw);
+    if (!r.ok) throw new Error('CNPJ nao encontrado');
+    const d = await r.json();
+
+    document.getElementById('fRazao').value = d.razao_social || '';
+    document.getElementById('fFantasia').value = d.nome_fantasia || '';
+    if (d.cep) {
+      document.getElementById('fCep').value = maskCepValue(d.cep.replace(/\D/g, ''));
+      document.getElementById('fLogradouro').value = d.logradouro || '';
+      document.getElementById('fNumero').value = d.numero || '';
+      document.getElementById('fComplemento').value = d.complemento || '';
+      document.getElementById('fBairro').value = d.bairro || '';
+      document.getElementById('fCidade').value = d.municipio || '';
+      document.getElementById('fUf').value = d.uf || '';
+      if (d.codigo_municipio_ibge) document.getElementById('fIbge').value = d.codigo_municipio_ibge;
+    }
+
+    showCnpjStatus('Dados encontrados para ' + (d.razao_social || raw), 'ok');
+  } catch (e) {
+    showCnpjStatus('CNPJ nao encontrado. Preencha os dados manualmente.', 'err');
+  }
+  document.getElementById('btnLookup').disabled = false;
+}
+
+function showCnpjStatus(msg, type) {
+  const el = document.getElementById('cnpjStatus');
+  el.textContent = msg;
+  el.className = 'cnpj-status ' + type;
+}
+
+// === CEP LOOKUP (ViaCEP) ===
+
+async function lookupCep() {
+  const raw = document.getElementById('fCep').value.replace(/\D/g, '');
+  if (raw.length !== 8) return;
+
+  try {
+    const r = await fetch('https://viacep.com.br/ws/' + raw + '/json/');
+    const d = await r.json();
+    if (d.erro) return;
+
+    document.getElementById('fLogradouro').value = d.logradouro || '';
+    document.getElementById('fBairro').value = d.bairro || '';
+    document.getElementById('fCidade').value = d.localidade || '';
+    document.getElementById('fUf').value = d.uf || '';
+    if (d.ibge) document.getElementById('fIbge').value = d.ibge;
+  } catch {}
+}
+
+// === CLASSIFICATION LOGIC ===
+
+function toggleOption(btn, key, val) {
+  const group = btn.parentElement;
+  group.querySelectorAll('.option-btn').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  answers[key] = val;
+  updateClassification();
+}
+
+function toggleMulti(btn, key) {
+  btn.classList.toggle('selected-alt');
+  const group = btn.parentElement;
+  answers[key] = Array.from(group.querySelectorAll('.selected-alt')).map(b => b.textContent.trim());
+  updateClassification();
+}
+
+function toggleSub(id, show) {
+  const el = document.getElementById(id);
+  if (show) el.classList.add('show');
+  else el.classList.remove('show');
+}
+
+function calcClassification() {
+  const lojaFisica = answers.q1 === 'sim';
+  const marketplace = answers.q2 === 'sim';
+  const site = answers.q4 === 'sim';
+  const perfilOnline = answers.q5_perfil.includes('Online / E-commerce');
+  const online = marketplace || site || perfilOnline;
+
+  if (online && !lojaFisica) return 'ecommerce';
+  if (lojaFisica && online) return 'hibrido';
+  return 'varejo';
+}
+
+function updateClassification() {
+  const el = document.getElementById('classResult');
+  const tag = document.getElementById('classTag');
+  if (!answers.q1) { el.className = 'class-result'; return; }
+  const cls = calcClassification();
+  el.className = 'class-result show class-' + cls;
+  tag.textContent = cls === 'ecommerce' ? 'E-commerce' : cls === 'hibrido' ? 'Hibrido' : 'Varejo';
+}
+
+function getClassification() {
+  return calcClassification();
+}
+
+function setFatParcial(val, btn) {
+  answers.aceita_faturamento_parcial = val;
+  const grp = btn.parentElement;
+  grp.querySelectorAll('.option-btn').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+}
+
+// === MASKS ===
+
+function maskCnpj(el) {
+  let v = el.value.replace(/\D/g, '').slice(0, 14);
+  if (v.length > 12) v = v.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{0,2})/, '$1.$2.$3/$4-$5');
+  else if (v.length > 8) v = v.replace(/^(\d{2})(\d{3})(\d{3})(\d{0,4})/, '$1.$2.$3/$4');
+  else if (v.length > 5) v = v.replace(/^(\d{2})(\d{3})(\d{0,3})/, '$1.$2.$3');
+  else if (v.length > 2) v = v.replace(/^(\d{2})(\d{0,3})/, '$1.$2');
+  el.value = v;
+}
+
+function maskTel(el) {
+  let v = el.value.replace(/\D/g, '').slice(0, 11);
+  if (v.length > 6) v = v.replace(/^(\d{2})(\d{5})(\d{0,4})/, '($1) $2-$3');
+  else if (v.length > 2) v = v.replace(/^(\d{2})(\d{0,5})/, '($1) $2');
+  el.value = v;
+}
+
+function maskCep(el) {
+  let v = el.value.replace(/\D/g, '').slice(0, 8);
+  if (v.length > 5) v = v.replace(/^(\d{5})(\d{0,3})/, '$1-$2');
+  el.value = v;
+}
+
+function maskCepValue(v) {
+  if (v.length > 5) return v.replace(/^(\d{5})(\d{0,3})/, '$1-$2');
+  return v;
+}
+
+// === REVIEW ===
+
+function buildReview() {
+  const cls = getClassification();
+  const clsLabel = cls === 'ecommerce' ? 'E-commerce' : cls === 'hibrido' ? 'Hibrido' : 'Varejo';
+
+  const html = `
+    <div class="review-section">
+      <h4>Empresa</h4>
+      <div class="review-row"><span class="review-label">CNPJ</span><span class="review-value">${gi('fCnpj')}</span></div>
+      <div class="review-row"><span class="review-label">Razao Social</span><span class="review-value">${gi('fRazao')}</span></div>
+      <div class="review-row"><span class="review-label">Nome da Fachada</span><span class="review-value">${gi('fFantasia')}</span></div>
+      <div class="review-row"><span class="review-label">IE</span><span class="review-value">${document.getElementById('fIeIsento').checked ? 'Isento' : gi('fIe')}</span></div>
+      <div class="review-row"><span class="review-label">Email</span><span class="review-value">${gi('fEmail')}</span></div>
+      <div class="review-row"><span class="review-label">Telefone</span><span class="review-value">${gi('fTelefone')}</span></div>
+      <div class="review-row"><span class="review-label">Responsavel</span><span class="review-value">${gi('fNomeResp')}</span></div>
+    </div>
+    <div class="review-section">
+      <h4>Endereco</h4>
+      <div class="review-row"><span class="review-label">CEP</span><span class="review-value">${gi('fCep')}</span></div>
+      <div class="review-row"><span class="review-label">Endereco</span><span class="review-value">${gi('fLogradouro')}, ${gi('fNumero')} ${gi('fComplemento')}</span></div>
+      <div class="review-row"><span class="review-label">Bairro</span><span class="review-value">${gi('fBairro')}</span></div>
+      <div class="review-row"><span class="review-label">Cidade / UF</span><span class="review-value">${gi('fCidade')} / ${gi('fUf')}</span></div>
+    </div>
+    <div class="review-section">
+      <h4>Contatos</h4>
+      <div class="review-row"><span class="review-label">Comercial</span><span class="review-value">${gi('fContatoComNome')} — ${gi('fContatoComEmail')}</span></div>
+      <div class="review-row"><span class="review-label">Financeiro</span><span class="review-value">${gi('fContatoFinNome')} — ${gi('fContatoFinEmail')}</span></div>
+    </div>
+    <div class="review-section">
+      <h4>Perfil e Classificacao</h4>
+      <div class="review-row"><span class="review-label">Loja Fisica</span><span class="review-value">${answers.q1 === 'sim' ? 'Sim' : 'Nao'}</span></div>
+      <div class="review-row"><span class="review-label">Marketplaces</span><span class="review-value">${answers.q2 === 'sim' ? 'Sim — ' + answers.q2_mkt.join(', ') : 'Nao'}</span></div>
+      <div class="review-row"><span class="review-label">Equipe de Vendas</span><span class="review-value">${formatQ3(answers.q3)}</span></div>
+      <div class="review-row"><span class="review-label">Site Proprio</span><span class="review-value">${answers.q4 === 'sim' ? 'Sim — ' + (gi('fSiteUrl') || '') : 'Nao'}</span></div>
+      <div class="review-row"><span class="review-label">Perfil</span><span class="review-value">${answers.q5_perfil.join(', ')}</span></div>
+      <div class="review-row"><span class="review-label">Classificacao</span><span class="review-value" style="font-weight:700;color:#1d327b">${clsLabel}</span></div>
+      <div class="review-row"><span class="review-label">Representante</span><span class="review-value">${getUserNome() || '—'}</span></div>
+    </div>
+    <div class="review-section">
+      <h4>Documentos Confirmados</h4>
+      ${buildDocReview()}
+    </div>
+  `;
+  document.getElementById('reviewContent').innerHTML = html;
+}
+
+function gi(id) { return document.getElementById(id)?.value?.trim() || ''; }
+
+function formatQ3(v) {
+  const map = { televendas: 'Televendas', venda_externa: 'Venda Externa', ambos: 'Ambos', nao_tenho: 'Nao possui' };
+  return map[v] || v;
+}
+
+function handleDocUpload(input, tipo) {
+  const file = input.files[0];
+  const okEl = document.getElementById('ok_' + tipo);
+  const errEl = document.getElementById('err_' + tipo);
+  errEl.style.display = 'none';
+  okEl.style.display = 'none';
+
+  if (!file) { delete uploadedDocs[tipo]; return; }
+
+  if (file.size > MAX_FILE_SIZE) {
+    errEl.textContent = 'Arquivo muito grande (' + (file.size / 1024 / 1024).toFixed(1) + 'MB). Maximo 2MB.';
+    errEl.style.display = 'block';
+    input.value = '';
+    delete uploadedDocs[tipo];
+    return;
+  }
+
+  const allowed = ['application/pdf', 'image/jpeg', 'image/png'];
+  if (!allowed.includes(file.type)) {
+    errEl.textContent = 'Formato nao aceito. Use PDF, JPG ou PNG.';
+    errEl.style.display = 'block';
+    input.value = '';
+    delete uploadedDocs[tipo];
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    uploadedDocs[tipo] = {
+      tipo: tipo,
+      nome: file.name,
+      mime_type: file.type,
+      base64: e.target.result.split(',')[1]
+    };
+    okEl.style.display = 'inline';
+  };
+  reader.readAsDataURL(file);
+}
+
+function buildDocReview() {
+  const docLabels = {
+    contrato_social: 'Contrato Social', cartao_cnpj: 'Cartao CNPJ',
+    comprovante_endereco: 'Comprovante Endereco',
+    balanco: 'Balanco Patrimonial', dre: 'DRE', faturamento_12m: 'Faturamento 12 meses'
+  };
+  return Object.entries(uploadedDocs)
+    .map(([tipo, doc]) => `<div class="review-row"><span class="review-label">${docLabels[tipo] || tipo}</span><span class="review-value" style="color:#16a34a">${doc.nome} (${(doc.base64.length * 0.75 / 1024).toFixed(0)}KB)</span></div>`)
+    .join('');
+}
+
+// === SUBMIT ===
+
+async function submitOnboarding() {
+  const btn = document.getElementById('btnSubmit');
+  btn.disabled = true;
+  btn.textContent = 'Enviando...';
+
+  const enderecos = [{
+    tipo: 'principal',
+    cep: gi('fCep'),
+    logradouro: gi('fLogradouro'),
+    numero: gi('fNumero'),
+    complemento: gi('fComplemento'),
+    bairro: gi('fBairro'),
+    cidade: gi('fCidade'),
+    uf: gi('fUf'),
+    ibge_codigo: gi('fIbge')
+  }];
+
+  const contatos = [
+    { tipo: 'comercial', nome: gi('fContatoComNome'), email: gi('fContatoComEmail'), telefone: gi('fContatoComTel') },
+    { tipo: 'financeiro', nome: gi('fContatoFinNome'), email: gi('fContatoFinEmail'), telefone: gi('fContatoFinTel') }
+  ];
+
+  const respostas = {
+    loja_fisica: answers.q1 === 'sim',
+    marketplaces: { ativo: answers.q2 === 'sim', quais: answers.q2_mkt },
+    equipe_vendas: answers.q3,
+    site_proprio: { ativo: answers.q4 === 'sim', url: gi('fSiteUrl') },
+    perfil_loja: answers.q5_perfil
+  };
+
+  try {
+    const docsArray = Object.values(uploadedDocs);
+
+    // Representante vem do perfil logado, nunca de um campo editavel na tela
+    // -- a propria RPC confere de novo que bate com quem esta autenticado.
+    const result = await sbRpc('hub_fn_submeter_onboarding_representante', {
+      p_cnpj: gi('fCnpj').replace(/\D/g, ''),
+      p_razao_social: gi('fRazao'),
+      p_nome_fantasia: gi('fFantasia'),
+      p_inscricao_estadual: document.getElementById('fIeIsento').checked ? 'ISENTO' : gi('fIe'),
+      p_contato_nome: gi('fNomeResp'),
+      p_contato_email: gi('fEmail'),
+      p_contato_telefone: gi('fTelefone'),
+      p_enderecos: enderecos,
+      p_contatos: contatos,
+      p_respostas_classificacao: respostas,
+      p_representante_id: getUserRepresentanteId(),
+      p_classificacao: getClassification(),
+      p_regiao: gi('fUf'),
+      p_documentos: docsArray,
+      p_aceita_faturamento_parcial: answers.aceita_faturamento_parcial === true
+    });
+
+    if (result.ok === false) {
+      showToast(result.erro || 'Erro ao enviar cadastro', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Enviar Cadastro';
+      return;
+    }
+
+    document.getElementById('protocoloId').textContent = result.id?.substring(0, 8)?.toUpperCase() || '';
+    document.getElementById('stepper').classList.add('hidden');
+    document.querySelectorAll('.step-content').forEach(el => el.classList.add('hidden'));
+    document.getElementById('stepSuccess').classList.remove('hidden');
+
+    fetch('/api/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tipo: 'onboarding_novo',
+        dados: {
+          razao_social: gi('fRazao'),
+          cnpj: gi('fCnpj'),
+          nome_fantasia: gi('fFantasia'),
+          contato_email: gi('fEmail'),
+          contato_telefone: gi('fTelefone'),
+          classificacao: getClassification(),
+          regiao: gi('fUf')
+        }
+      })
+    }).catch(() => {});
+
+  } catch (e) {
+    showToast('Erro de conexao. Tente novamente.', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Enviar Cadastro';
+  }
+}
+
+// === TOAST ===
+
+function showToast(msg, tipo) {
+  const d = document.createElement('div');
+  d.className = 'toast toast-' + tipo;
+  d.textContent = msg;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 3500);
+}
+</script>
+</body>
+</html>

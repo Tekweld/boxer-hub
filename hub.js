@@ -634,6 +634,12 @@ function renderTopbar(titulo) {
     navItems.push({ href: 'financeiro.html', label: 'Financeiro', icon: boxerNavIcon('#1d327b') });
     navItems.push({ href: 'cadastro.html', label: 'Cadastro', icon: boxerNavIcon('#4a6fa5') });
   }
+  // Modulo novo (Andre, 2026-11-06): representante cadastra uma revenda nova
+  // direto no Hub, ja vinculada a ele -- so pra quem e representante de fato
+  // (dealer nunca cadastraria outra revenda, staff ja usa o pipeline do admin).
+  if (tipo === 'representante') {
+    navItems.push({ href: 'cadastro-representante.html', label: 'Novo Cliente', icon: boxerNavIcon('#dc2626') });
+  }
   // Financeiro nunca aparecia para a equipe interna, mesmo com RLS liberando
   // admin/manager/financial (ver CLAUDE.md, tabela de RLS) -- so dava pra
   // acessar digitando a URL direto. Analyst fica de fora, igual a RLS.

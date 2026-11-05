@@ -540,10 +540,23 @@ module.exports = async function handler(req, res) {
 
     // 6 — Criar (ou reutilizar) hub_perfis por user_id
     const existingPerfilRes = await fetch(
-      SB_URL + '/rest/v1/hub_perfis?user_id=eq.' + newUser.id + '&select=id',
+      SB_URL + '/rest/v1/hub_perfis?user_id=eq.' + newUser.id + '&select=id,tipo',
       { headers: sbHeaders('GET') }
     );
     const existingPerfis = existingPerfilRes.ok ? await existingPerfilRes.json() : [];
+    // Guarda simetrica a de api/_criar_usuario.js (2026-11-04): o email de
+    // contato do onboarding pode coincidir com o de um representante/
+    // funcionario/admin ja cadastrado no Hub (erro de digitacao, email
+    // corporativo reaproveitado). Sem isto, o PATCH abaixo converteria
+    // SILENCIOSAMENTE essa conta em dealer do CNPJ novo, derrubando o
+    // acesso que a pessoa ja tinha -- achado em auditoria, 2026-11-05,
+    // antes de acontecer em producao.
+    if (existingPerfis?.[0] && existingPerfis[0].tipo && existingPerfis[0].tipo !== 'cliente') {
+      return res.status(409).json({
+        ok: false,
+        error: 'O email de contato (' + emailCliente + ') ja pertence a uma conta ' + existingPerfis[0].tipo + ' existente no Hub. Use outro email de contato para este cadastro, ou avise o TI antes de prosseguir.'
+      });
+    }
     if (existingPerfis?.[0]) {
       await fetch(SB_URL + '/rest/v1/hub_perfis?id=eq.' + existingPerfis[0].id, {
         method: 'PATCH',

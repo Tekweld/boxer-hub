@@ -159,18 +159,18 @@ async function renderResumoFinanceiro(linhas, clienteId) {
 
   // Limite/Disponivel so fazem sentido por revenda -- somar o limite de
   // milhares de clientes nao e um numero que ajuda ninguem a decidir nada.
-  // Mas DENTRO do mesmo grupo empresarial (ex.: Diafer, 8 CNPJs), o credito e
-  // real por filial no ZEN -- somamos as filiais do grupo pra mostrar o
-  // quadro completo, nao so o da filial que esta selecionada no momento.
+  // Mas DENTRO do mesmo grupo empresarial (ex.: Diafer, 8 CNPJs), o credito
+  // pode ser real por filial (soma de verdade) ou do grupo inteiro
+  // (replicado em cada filial -- somar duplicaria). somarCreditoGrupo (hub.js)
+  // decide pela fonte gravada pelo sync.
   let limiteCards = '';
   if (clienteId) {
     try {
       const idsGrupo = await getClienteGrupoIds(clienteId);
       const filtroId = idsGrupo.length > 1 ? 'id=in.(' + idsGrupo.join(',') + ')' : 'id=eq.' + clienteId;
-      const clientesGrupo = await sb('/hub_clientes?' + filtroId + '&select=limite_credito,limite_disponivel');
+      const clientesGrupo = await sb('/hub_clientes?' + filtroId + '&select=limite_credito,limite_disponivel,limite_credito_fonte');
       if (clientesGrupo.length) {
-        const limiteTotal = clientesGrupo.reduce((s, c) => s + (Number(c.limite_credito) || 0), 0);
-        const limiteDisp = clientesGrupo.reduce((s, c) => s + (Number(c.limite_disponivel) || 0), 0);
+        const { credito: limiteTotal, disponivel: limiteDisp } = somarCreditoGrupo(clientesGrupo);
         limiteCards = `
           <div class="kpi-card"><div class="kpi-label">Limite Total${idsGrupo.length > 1 ? ' (grupo)' : ''}</div><div class="kpi-value">${fmtMoeda(limiteTotal)}</div></div>
           <div class="kpi-card"><div class="kpi-label">Disponivel${idsGrupo.length > 1 ? ' (grupo)' : ''}</div><div class="kpi-value">${fmtMoeda(limiteDisp)}</div></div>`;
@@ -297,8 +297,7 @@ async function loadCreditoResumo() {
     const filtro = idsGrupo.length > 1 ? 'cliente_id=in.(' + idsGrupo.join(',') + ')' : 'cliente_id=eq.' + clienteId;
     const linhas = await sb('/hub_v_financeiro_cliente?' + filtro + '&select=*');
     if (!linhas.length) { wrap.innerHTML = ''; return; }
-    const limiteTotal = linhas.reduce((s, r) => s + (Number(r.limite_credito) || 0), 0);
-    const limiteDisp = linhas.reduce((s, r) => s + (Number(r.limite_disponivel) || 0), 0);
+    const { credito: limiteTotal, disponivel: limiteDisp } = somarCreditoGrupo(linhas);
     const comprometido = Math.max(0, limiteTotal - limiteDisp);
     const diasAtraso = linhas.map(r => r.dias_medio_atraso_vencidos || 0);
     const piorAtraso = diasAtraso.length ? Math.max(...diasAtraso) : 0;

@@ -59,18 +59,18 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
 .produto-card{background:#fff;border:1px solid #d0d8e8;border-radius:8px;overflow:hidden;transition:box-shadow .2s,transform .15s}
 .produto-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.08)}
 .produto-card:active{transform:scale(.98)}
-.produto-img{aspect-ratio:4/3;background:#f7fafc;display:flex;align-items:center;justify-content:center;color:#a0aec0;font-size:10px;position:relative;overflow:hidden;cursor:pointer}
+.produto-img{aspect-ratio:3/2;background:#f7fafc;display:flex;align-items:center;justify-content:center;color:#a0aec0;font-size:10px;position:relative;overflow:hidden;cursor:pointer}
 .produto-img img{width:100%;height:100%;object-fit:contain}
 .produto-info{padding:6px 8px 0;cursor:pointer}
-.produto-sku{font-size:9px;color:#718096;text-transform:uppercase;letter-spacing:.5px}
-.produto-nome{font-size:11px;font-weight:600;margin:2px 0 4px;color:#1a202c;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.produto-cat{font-size:9px;color:#a0aec0}
-.produto-volt{display:inline-block;font-size:9px;font-weight:600;color:#1d327b;background:#e8f4fd;border:1px solid #b3d9f2;padding:1px 5px;border-radius:4px;margin-top:3px}
-.produto-preco{font-size:13px;font-weight:700;color:#1d327b;margin:4px 0 0}
-.produto-preco-ipi{font-size:8px;color:#a0aec0;font-weight:400}
-.produto-preco-tabela{font-size:11px;color:#a0aec0;font-weight:500;text-decoration:line-through;margin-right:5px}
-.produto-stock-tag{font-size:8px;font-weight:600;margin:3px 0 0;display:flex;align-items:center;gap:3px}
-.produto-stock-tag .dot{width:5px;height:5px;border-radius:50%;display:inline-block}
+.produto-sku{font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.5px}
+.produto-nome{font-size:13px;font-weight:600;margin:2px 0 4px;color:#1a202c;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.produto-cat{font-size:10px;color:#a0aec0}
+.produto-volt{display:inline-block;font-size:10px;font-weight:600;color:#1d327b;background:#e8f4fd;border:1px solid #b3d9f2;padding:1px 5px;border-radius:4px;margin-top:3px}
+.produto-preco{font-size:14px;font-weight:700;color:#1d327b;margin:4px 0 0}
+.produto-preco-ipi{font-size:9px;color:#a0aec0;font-weight:400}
+.produto-preco-tabela{font-size:12px;color:#a0aec0;font-weight:500;text-decoration:line-through;margin-right:5px}
+.produto-stock-tag{font-size:11px;font-weight:600;margin:4px 0 0;display:flex;align-items:center;gap:4px}
+.produto-stock-tag .dot{width:6px;height:6px;border-radius:50%;display:inline-block;flex-shrink:0}
 .stock-ok{color:#16a34a}.stock-ok .dot{background:#16a34a}
 .stock-low{color:#f59e0b}.stock-low .dot{background:#f59e0b}
 .stock-bo{color:#718096}.stock-bo .dot{background:#718096}
@@ -78,7 +78,7 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
 .stock-prev{color:#1d4ed8}.stock-prev .dot{background:#1d4ed8}
 .produto-actions{padding:6px 8px 8px;display:flex;gap:4px;align-items:center}
 .produto-qty-wrap{display:flex;align-items:center;gap:3px}
-.produto-qty-label{font-size:9px;color:#718096;font-weight:500}
+.produto-qty-label{font-size:10px;color:#718096;font-weight:500}
 .produto-qty{width:40px;padding:4px;border:1px solid #d0d8e8;border-radius:4px;text-align:center;font-family:Outfit;font-size:12px}
 .produto-add-btn{flex:1;padding:6px 0;border:none;border-radius:6px;background:#1d327b;color:#fff;font-family:Outfit;font-size:11px;font-weight:600;cursor:pointer}
 .produto-add-btn:hover{background:#162666}
@@ -144,9 +144,9 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
   .search-input{max-width:320px}
   .produto-grid{grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
   .produto-info{padding:8px 10px 0}
-  .produto-sku{font-size:10px}
-  .produto-nome{font-size:12px}
-  .produto-cat{font-size:10px}
+  .produto-sku{font-size:11px}
+  .produto-nome{font-size:14px}
+  .produto-cat{font-size:11px}
   .pdp-content{padding:24px}
   .pdp-layout{grid-template-columns:2fr 3fr;gap:24px}
   .pdp-gallery{max-height:400px;aspect-ratio:auto;min-height:300px}
@@ -173,6 +173,10 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
   <div class="page-wrap">
     <div class="results-bar">
       <span class="results-count" id="resultsCount"></span>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#4a5568">
+        <input type="checkbox" id="filtroSoEstoque" onchange="loadProdutos()" style="width:14px;height:14px;cursor:pointer">
+        So em estoque (pode faturar ja)
+      </label>
     </div>
     <div class="produto-grid" id="produtoGrid">
       <div class="empty-state"><h3>Carregando catalogo...</h3></div>
@@ -552,15 +556,37 @@ async function atualizarSeloEstoque(produtoId) {
 
 const atualizarSeloEstoqueDebounced = debounce(atualizarSeloEstoque, 350);
 
+// Time interno (funcionario/admin) ve a quantidade real junto do selo --
+// revenda e representante continuam vendo so o qualitativo (Em estoque/
+// Estoque baixo), igual sempre foi. Pedido do Andre, 2026-11-04.
+function podeVerQuantidadeEstoque() {
+  const tipo = getUserTipo();
+  return tipo === 'funcionario' || tipo === 'admin';
+}
+
 function stockInfo(p) {
   const prev = p.previsao_chegada && p.status_estoque !== 'disponivel' ? fmtPrevisao(p.previsao_chegada) : '';
+  const qtd = podeVerQuantidadeEstoque() && p.estoque_disponivel != null ? ' · ' + p.estoque_disponivel + ' un.' : '';
   // 'sem_info': o conector ZEN ainda nao popula estoque. Omitir o selo e mais
   // honesto do que marcar o catalogo inteiro como indisponivel.
   if (p.status_estoque === 'sem_info') return null;
-  if (p.status_estoque === 'disponivel') return { cls: 'stock-ok', scls: 's-ok', text: 'Em estoque', prev: '' };
-  if (p.status_estoque === 'baixo') return { cls: 'stock-low', scls: 's-low', text: 'Estoque baixo', prev };
+  if (p.status_estoque === 'disponivel') return { cls: 'stock-ok', scls: 's-ok', text: 'Em estoque' + qtd, prev: '' };
+  if (p.status_estoque === 'baixo') return { cls: 'stock-low', scls: 's-low', text: 'Estoque baixo' + qtd, prev };
   if (p.backorder_disponivel) return { cls: 'stock-bo', scls: 's-bo', text: 'Sob encomenda', prev };
   return { cls: 'stock-no', scls: 's-no', text: 'Indisponivel', prev };
+}
+
+// Ordem de exibicao pedida pelo Andre, 2026-11-04: em estoque primeiro,
+// depois quem tem previsao de chegada (FUP), por ultimo sem previsao
+// nenhuma. So reordena -- a ordem de categoria/sku dentro de cada grupo e
+// preservada (Array.sort e estavel), sem custo de rede extra: a
+// disponibilidade do FUP ja vem toda numa chamada so (fetchDisponibilidadeEstoque,
+// cacheada) e o calculo e local.
+function tierDisponibilidade(p, disp) {
+  if (p.status_estoque === 'disponivel' || p.status_estoque === 'baixo') return 0;
+  const records = disp?.disponibilidade?.porCodigo?.[String(p.sku).trim().toUpperCase()];
+  if (Array.isArray(records) && records.length && calcularDisponibilidadePrevista(records, 1)) return 1;
+  return 2;
 }
 
 // === PRODUTOS ===
@@ -589,9 +615,14 @@ async function loadProdutos() {
   // quando nao ha (stockInfo/fmtPrevisao). Achado pelo Andre, 2026-11-03:
   // navegando por categoria/grupo sumia item sem estoque (ex.: DURAMAX285),
   // so aparecia buscando pelo nome -- revendedor nao sabia que existia.
+  const soEstoque = document.getElementById('filtroSoEstoque')?.checked;
+  if (soEstoque) url += '&status_estoque=in.(disponivel,baixo)';
 
   try {
-    const prods = await sb(url);
+    const [prods, disp] = await Promise.all([sb(url), fetchDisponibilidadeEstoque()]);
+    // Em estoque primeiro, depois quem tem previsao de chegada, por ultimo
+    // sem previsao -- ordem estavel preserva categoria/sku dentro do empate.
+    prods.sort((a, b) => tierDisponibilidade(a, disp) - tierDisponibilidade(b, disp));
     document.getElementById('resultsCount').textContent = prods.length + ' produto' + (prods.length !== 1 ? 's' : '');
 
     if (!prods.length) {

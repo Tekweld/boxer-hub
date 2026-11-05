@@ -41,7 +41,7 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 
 | Tabela | Colunas-chave | Uso |
 |---|---|---|
-| `hub_clientes` | cnpj, razao_social, nome_fantasia, status_cadastro, limite_credito, limite_disponivel, tabela_preco_id, representante_id, erp_cliente_id | Cadastro do revendedor |
+| `hub_clientes` | cnpj, razao_social, nome_fantasia, status_cadastro, limite_credito, limite_disponivel, limite_credito_fonte (grupo/pessoa — credito e do PersonGroup replicado em cada filial, ou da pessoa de verdade; decide se agregacao por grupo soma ou deduplica, ver `somarCreditoGrupo` em hub.js), grupo_erp_id, grupo_nome, tabela_preco_id, representante_id, erp_cliente_id | Cadastro do revendedor |
 | `hub_representantes` | nome, email, regiao, meta_mensal, comissao_percentual, erp_representante_id | Representantes comerciais |
 | `hub_enderecos` | cliente_id, tipo (principal/entrega/cobranca), cep-logradouro-cidade-uf | Enderecos do cliente |
 | `hub_produtos` | sku, nome, descricao, ncm, categoria_id, estoque_disponivel, estoque_minimo, previsao_chegada, ficha_tecnica (jsonb), erp_produto_id | Catalogo de produtos |

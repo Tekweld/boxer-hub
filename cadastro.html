@@ -78,10 +78,17 @@ if (!requireAuth()) throw 'auth';
 
 async function loadCadastro() {
   const wrap = document.getElementById('cadastroWrap');
-  const clienteId = getUserClienteId();
+  // Bug achado pelo Andre, 2026-11-05: usava getUserClienteId() (so existe
+  // pra tipo=cliente) em vez de getClienteAtivo() (respeita "Atuando por X").
+  // Efeito real: QUALQUER representante/funcionario que selecionasse uma
+  // revenda e clicasse em Cadastro caia direto em "nao vinculado" -- afetava
+  // 100% dos representantes, sempre.
+  const clienteId = getClienteAtivo();
 
   if (!clienteId) {
-    wrap.innerHTML = '<div class="empty-state"><h3>Cadastro nao vinculado</h3><p>Seu perfil nao esta vinculado a um cliente.</p></div>';
+    wrap.innerHTML = getUserTipo() === 'cliente'
+      ? '<div class="empty-state"><h3>Cadastro nao vinculado</h3><p>Seu perfil nao esta vinculado a um cliente.</p></div>'
+      : '<div class="empty-state"><h3>Selecione uma revenda</h3><p>Escolha a revenda para ver o cadastro dela.</p><button class="btn btn-primary" onclick="abrirSeletorCliente()">Selecionar revenda</button></div>';
     return;
   }
 
@@ -156,7 +163,7 @@ async function enviarAlteracao() {
   const desc = document.getElementById('altDescricao').value.trim();
   if (!desc) { toast('Descreva a alteracao', 'error'); return; }
 
-  const clienteId = getUserClienteId();
+  const clienteId = getClienteAtivo();
   try {
     await sb('/hub_solicitacoes_alteracao_cadastral', 'POST', {
       cliente_id: clienteId,

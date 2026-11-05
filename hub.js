@@ -358,6 +358,26 @@ async function getClienteGrupoIds(clienteId) {
   }
 }
 
+// Soma credito de um grupo SEM duplicar. Achado pelo Andre, 2026-11-04: no
+// ZEN o credito pode ser da PESSOA (cada filial com sua propria linha, soma
+// de verdade -- caso real: Diafer) ou do GRUPO (uma linha so, e o sync
+// replica o MESMO valor em toda filial membro -- caso real: Luitex). Somar
+// cego dá o credito real x numero de filiais nesse segundo caso.
+// `limite_credito_fonte` ('grupo'/'pessoa', gravado por sync-zen-clientes.js)
+// resolve: soma as de fonte 'pessoa' normalmente, e conta as de fonte
+// 'grupo' so UMA vez (sao todas o mesmo valor replicado).
+function somarCreditoGrupo(linhas) {
+  const pessoa = linhas.filter(l => l.limite_credito_fonte !== 'grupo');
+  const grupo = linhas.filter(l => l.limite_credito_fonte === 'grupo');
+  let credito = pessoa.reduce((s, l) => s + (Number(l.limite_credito) || 0), 0);
+  let disponivel = pessoa.reduce((s, l) => s + (Number(l.limite_disponivel) || 0), 0);
+  if (grupo.length) {
+    credito += Number(grupo[0].limite_credito) || 0;
+    disponivel += Number(grupo[0].limite_disponivel) || 0;
+  }
+  return { credito, disponivel };
+}
+
 // === ORCAMENTO PARA CNPJ NOVO (ainda nao e cliente do Hub) ===
 // Pedido do Andre, 2026-11-03: "isso e fundamental" -- hoje so da pra montar
 // pedido/orcamento para uma revenda que ja existe em hub_clientes. O backend
@@ -585,6 +605,18 @@ function getUserArea() { return PERFIL?.area || null; }
 
 // === TOPBAR ===
 
+// Icone de nav = o simbolo da logo Boxer (o raio+estrela branco da faixa
+// azul), so que em cor propria por modulo -- pedido do Andre, 2026-11-04.
+// So troca a cor do mesmo simbolo (fica reconhecivel como "o" icone do Hub
+// em vez de um emoji/glifo solto por modulo), sempre dentro das 3 cores da
+// marca (navy/cyan/red), nunca uma cor nova -- so tons diferentes das 3.
+function boxerNavIcon(cor) {
+  return `<svg width="14" height="14" viewBox="0 0 200 200" style="vertical-align:-2px;margin-right:5px" aria-hidden="true" focusable="false">
+    <line x1="30" y1="30" x2="82" y2="95" stroke="${cor}" stroke-width="14" stroke-linecap="round"/>
+    <polygon points="100,38 108,80 145,55 118,88 158,92 120,105 148,138 108,118 100,162 92,118 52,138 80,105 42,92 82,88 55,55 92,80" fill="${cor}"/>
+  </svg>`;
+}
+
 function renderTopbar(titulo) {
   const role = getUserRole();
   const slug = location.pathname.split('/').pop().replace('.html', '') || 'index';
@@ -595,23 +627,23 @@ function renderTopbar(titulo) {
   // Indicadores, Admin -- Indicadores por ultimo antes do Admin, nunca logo
   // apos Pedidos.
   const navItems = [
-    { href: 'catalogo.html', label: 'Catalogo', icon: '&#9783;' },
-    { href: 'pedidos.html', label: 'Pedidos', icon: '&#9776;' }
+    { href: 'catalogo.html', label: 'Catalogo', icon: boxerNavIcon('#e30613') },
+    { href: 'pedidos.html', label: 'Pedidos', icon: boxerNavIcon('#25bbee') }
   ];
   if (tipo === 'cliente' || tipo === 'representante') {
-    navItems.push({ href: 'financeiro.html', label: 'Financeiro', icon: '&#36;' });
-    navItems.push({ href: 'cadastro.html', label: 'Cadastro', icon: '&#9881;' });
+    navItems.push({ href: 'financeiro.html', label: 'Financeiro', icon: boxerNavIcon('#1d327b') });
+    navItems.push({ href: 'cadastro.html', label: 'Cadastro', icon: boxerNavIcon('#4a6fa5') });
   }
   // Financeiro nunca aparecia para a equipe interna, mesmo com RLS liberando
   // admin/manager/financial (ver CLAUDE.md, tabela de RLS) -- so dava pra
   // acessar digitando a URL direto. Analyst fica de fora, igual a RLS.
   if (['admin', 'manager', 'financial'].includes(role)) {
-    navItems.push({ href: 'financeiro.html', label: 'Financeiro', icon: '&#36;' });
+    navItems.push({ href: 'financeiro.html', label: 'Financeiro', icon: boxerNavIcon('#1d327b') });
   }
-  navItems.push({ href: 'pesquisas.html', label: 'Pesquisas', icon: '&#9998;' });
-  navItems.push({ href: 'indicadores.html', label: 'Indicadores', icon: '&#128202;' });
+  navItems.push({ href: 'pesquisas.html', label: 'Pesquisas', icon: boxerNavIcon('#0891b2') });
+  navItems.push({ href: 'indicadores.html', label: 'Indicadores', icon: boxerNavIcon('#a3121f') });
   if (['admin', 'manager', 'analyst'].includes(role)) {
-    navItems.push({ href: 'admin.html', label: 'Admin', icon: '&#9878;' });
+    navItems.push({ href: 'admin.html', label: 'Admin', icon: boxerNavIcon('#0f1b4c') });
   }
 
   const navHtml = navItems.map(n => {

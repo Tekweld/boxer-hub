@@ -977,9 +977,9 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
 
     <div class="form-actions">
       <button class="btn btn-outline" onclick="closeModal()">Voltar ao carrinho</button>
-      ${podeEnviarOrcamento() ? `<button class="btn" style="background:#25bbee;color:#fff;border-color:#25bbee" id="btnEnviarOrcamento" onclick="enviarOrcamento()">Enviar Link do Orçamento</button>` : ''}
+      ${podeEnviarOrcamento() ? `<button class="btn btn-outline" style="color:#0e7490;border-color:#67c6e8" id="btnEnviarOrcamento" onclick="enviarOrcamento()">Enviar Orçamento</button>` : ''}
       <button class="btn btn-primary" id="btnConfirmarEnvio" onclick="confirmarEnvio()"
-              ${bloqueado ? 'disabled title="Resolva os bloqueios acima"' : ''}>Confirmar e Enviar para ZEN</button>
+              ${bloqueado ? 'disabled title="Resolva os bloqueios acima"' : ''}>Confirmar e Enviar Pedido${getUserTipo() === 'cliente' ? '' : ' para ZEN'}</button>
     </div>
   `);
 }

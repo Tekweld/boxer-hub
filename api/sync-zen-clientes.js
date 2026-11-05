@@ -616,6 +616,7 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
       const grupoId = grupoPorCliente[erpId];
       let par = null; // { credito, saldo }
 
+      let fonte = 'pessoa';
       if (grupoId) {
         if (!(grupoId in gruposResolvidos)) {
           const linhas = await zenCreditoDataSource('/financial/credit/dataSource/creditLineStats', {
@@ -626,6 +627,7 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
           gruposResolvidos[grupoId] = saldo != null ? { credito: credito ?? saldo, saldo } : null;
         }
         par = gruposResolvidos[grupoId];
+        if (par) fonte = 'grupo';
       }
 
       if (!par) {
@@ -637,7 +639,13 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
         par = saldo != null ? { credito: credito ?? saldo, saldo } : null;
       }
 
-      if (par && par.saldo > 0) porId[erpId] = par;
+      // 'grupo': o mesmo credito e replicado em CADA filial do grupo (nao e
+      // soma -- e o mesmo pool mostrado em todas). financeiro.html usa esta
+      // marca pra deduplicar em vez de somar por filial (achado pelo Andre,
+      // 2026-11-04: Diafer sozinho tem credito por filial de verdade, mas
+      // outros grupos tem credito so no grupo, tipo Luitex -- ver comentario
+      // acima).
+      if (par && par.saldo > 0) porId[erpId] = { ...par, fonte };
     } catch (e) {
       console.warn('[ZEN] falha ao buscar creditLineStats de', erpId, ':', e.message.slice(0, 150));
     }
@@ -652,7 +660,7 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
   for (const id of encontrados) {
     const r = await fetch(HUB_URL + '/rest/v1/hub_clientes?erp_cliente_id=eq.' + id, {
       method: 'PATCH', headers: hubH('PATCH'),
-      body: JSON.stringify({ limite_credito: porId[id].credito, limite_disponivel: porId[id].saldo })
+      body: JSON.stringify({ limite_credito: porId[id].credito, limite_disponivel: porId[id].saldo, limite_credito_fonte: porId[id].fonte })
     });
     if (r.ok) atualizados++;
   }

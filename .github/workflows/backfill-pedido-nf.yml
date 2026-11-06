@@ -1,0 +1,123 @@
+# Preenche hub_notas_fiscais.pedido_id / erp_pedido_id (sale.id do Zen) para
+# NFs que ainda nao tem isso -- ver api/sync-financeiro.js (?backfill_pedido_nf=1).
+#
+# Por que isso nao entra no sync normal (sync-financeiro.yml): resolver
+# pedido/venda por invoice custa 1 chamada extra ao Zen a cada 40 ids, e
+# rodar isso no MESMO job que le NFs novas ja estourou o timeout da function
+# em producao (2026-10-30, ver comentario em sync-financeiro.js). Por isso o
+# endpoint fica paginado e separado, chamado em rodadas pequenas (PASSO=50)
+# ate `concluido:true` -- mesmo padrao de encadeamento de sync-financeiro.yml.
+#
+# Nao e so backfill de uma vez: toda NF nova sincronizada pelo job normal
+# entra sem pedido_id/erp_pedido_id (de proposito, por causa do custo acima)
+# -- esta rotina roda todo dia de madrugada pra alcancar o que entrou no dia.
+#
+# Seguranca contra travar sem ninguem perceber (pergunta do Andre,
+# 2026-11-06): 3 redes de protecao independentes, nenhuma delas e "esperar
+# alguem notar":
+#   1. timeout-minutes do job -- o GitHub mata a execucao sozinho se passar
+#      disso, nao importa o que o script esteja fazendo.
+#   2. teto de rodadas (while) -- mesmo que o endpoint nunca devolva
+#      `concluido:true` por algum bug, o loop para e falha explicitamente.
+#   3. deteccao de "nao avancou" -- se o offset ficar parado por varias
+#      rodadas seguidas (erro silencioso do lado do Zen), aborta cedo em vez
+#      de girar ate o teto.
+# Qualquer uma das tres termina o job com `exit 1` e uma linha `::error::`,
+# que o GitHub marca como execucao VERMELHA na aba Actions e manda email de
+# falha pra quem observa o repositorio -- o mesmo mecanismo que ja protege
+# sync-financeiro.yml e os outros crons deste projeto. Nao preenche
+# silenciosamente: ou termina com `concluido:true` ou falha de forma visivel.
+name: Backfill pedido/venda em notas fiscais
+
+on:
+  schedule:
+    # 05 UTC = 02h BRT -- fora do expediente e fora dos horarios do sync
+    # normal (06/10/15/19/23h BRT), pra nao concorrer pelo mesmo Zen na
+    # mesma janela.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      offset_inicial:
+        description: 'Offset inicial (retomar uma execucao anterior que falhou)'
+        required: false
+        default: '0'
+
+concurrency:
+  # Mesmo grupo do sync normal -- os dois escrevem em hub_notas_fiscais;
+  # preferir fila (esperar o outro terminar) a deixar rodar em paralelo.
+  group: sync-financeiro
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Encadear backfill_pedido_nf ate concluir
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          OFFSET_INICIAL: ${{ github.event.inputs.offset_inicial || '0' }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          offset="$OFFSET_INICIAL"
+          total_atualizadas=0
+          rodada=0
+          sem_avanco=0
+          # ~7.300 pendentes em 2026-11-06, 50 por rodada -> ~150 rodadas.
+          # Teto com folga generosa; se precisar de mais que isso o backlog
+          # cresceu muito e vale investigar, nao so aumentar o numero.
+          TETO_RODADAS=400
+
+          while [ "$rodada" -lt "$TETO_RODADAS" ]; do
+            rodada=$((rodada + 1))
+            url="https://hub.boxersoldas.com.br/api/sync-financeiro?backfill_pedido_nf=1&offset=${offset}"
+
+            corpo=$(mktemp)
+            codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+              -X POST "$url" \
+              -H "x-cron-secret: $CRON_SECRET" \
+              --max-time 120)
+
+            echo "--- rodada $rodada (offset $offset) -> HTTP $codigo"
+            jq . "$corpo" 2>/dev/null || cat "$corpo"; echo
+
+            if [ "$codigo" != "200" ]; then
+              echo "::error::backfill_pedido_nf respondeu $codigo no offset $offset"
+              exit 1
+            fi
+
+            ok=$(jq -r '.ok // false' "$corpo")
+            if [ "$ok" != "true" ]; then
+              echo "::error::backfill_pedido_nf devolveu ok=false no offset $offset"
+              exit 1
+            fi
+
+            atualizadas=$(jq -r '.atualizadas // 0' "$corpo")
+            total_atualizadas=$((total_atualizadas + atualizadas))
+
+            concluido=$(jq -r '.concluido // false' "$corpo")
+            if [ "$concluido" = "true" ]; then
+              echo "Concluido. Total atualizado nesta execucao: $total_atualizadas"
+              exit 0
+            fi
+
+            proximo=$(jq -r '.proximo_offset // empty' "$corpo")
+            if [ -z "$proximo" ] || [ "$proximo" = "$offset" ]; then
+              sem_avanco=$((sem_avanco + 1))
+              if [ "$sem_avanco" -ge 5 ]; then
+                echo "::error::offset nao avancou por 5 rodadas seguidas (ficou em $offset) -- abortando"
+                exit 1
+              fi
+              echo "aviso: offset sem avancar (tentativa $sem_avanco/5) -- tentando de novo"
+            else
+              sem_avanco=0
+              offset="$proximo"
+            fi
+          done
+
+          echo "::error::teto de $TETO_RODADAS rodadas atingido sem concluir (parou no offset $offset) -- backlog pode ter crescido, investigar antes de so aumentar o teto"
+          exit 1

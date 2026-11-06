@@ -109,7 +109,6 @@ select,input,textarea{font-family:Outfit,sans-serif}
   <div class="tab" onclick="showTab('precos',this)">Tabelas de Preco</div>
   <div class="tab" onclick="showTab('regras',this)">Regras Comerciais</div>
   <div class="tab" onclick="showTab('catalogo',this)">Catalogo</div>
-  <div class="tab" onclick="showTab('convites',this)">Convites</div>
   <div class="tab" onclick="showTab('solicitacoes',this)">Solicitacoes</div>
   <div class="tab" onclick="showTab('logs',this)">Logs</div>
 </div>
@@ -121,7 +120,7 @@ select,input,textarea{font-family:Outfit,sans-serif}
     <div class="panel-hint">
       <b>Cadastro de revendedor novo</b> (que ainda nao existe no ZEN). Cliente preenche o formulario publico, a IA valida os dados,
       <b>ADM de Vendas aprova os documentos</b>, <b>Financeiro define o limite de credito</b> e o sistema cria a Pessoa no ZEN e ativa o acesso.
-      Cada card mostra em que etapa o cadastro esta. Para cliente que <em>ja existe</em> no ZEN, use a aba <b>Convites</b>.
+      Cada card mostra em que etapa o cadastro esta. Para cliente que <em>ja existe</em> no ZEN, use o botao <b>Convidar</b> na aba <b>Clientes</b>.
     </div>
     <div id="onbFilterBar" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
     <div id="onboardingList"></div>
@@ -279,18 +278,6 @@ select,input,textarea{font-family:Outfit,sans-serif}
     </div>
     <div id="catalogoList"></div>
   </div>
-  <div class="panel-content hidden" id="tab-convites">
-    <div class="page-header">
-      <h2 class="page-title">Convites para Clientes Existentes</h2>
-      <button class="btn btn-primary" onclick="openNovoConvite()">Novo convite</button>
-    </div>
-    <div class="panel-hint">
-      Para <b>clientes que JA existem no ZEN</b> (revenda antiga que ainda nao acessa o Hub). Voce insere o email, o sistema gera um link de convite
-      e dispara por email (Resend). O cliente abre, define senha e ja entra ativo -- <b>limite de credito ja vem do ZEN</b>, nao precisa passar por analise.
-      Para cliente novo, use a aba <b>Onboarding</b>.
-    </div>
-    <div id="convitesList"></div>
-  </div>
   <div class="panel-content hidden" id="tab-solicitacoes">
     <div class="page-header">
       <h2 class="page-title">Canal Unico — Solicitacoes</h2>
@@ -342,12 +329,18 @@ select,input,textarea{font-family:Outfit,sans-serif}
 <script>
 if (!requireAuth()) throw 'auth';
 
+// hub.js expoe escHub() (nao esc()) de proposito, pra nao colidir com telas
+// que ja tinham seu proprio esc() antes -- admin.html nao tinha nenhum, entao
+// usa o de hub.js direto. Sem isso, toda chamada a esc() (Logs, dropdown de
+// representante, Convidar) dava ReferenceError (achado e corrigido antes do
+// primeiro uso em producao, 2026-11-06).
+function esc(s) { return escHub(s); }
+
 function showTab(n, el) {
   document.querySelectorAll('.panel-content').forEach(p => p.classList.add('hidden'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('tab-' + n).classList.remove('hidden');
   el.classList.add('active');
-  if (n === 'convites') loadConvites();
   if (n === 'usuarios') loadUsuarios();
   if (n === 'catalogo') loadCatalogo();
   if (n === 'clientes') loadClientes();
@@ -560,24 +553,57 @@ async function loadClientes() {
     }
     const LIMITE = 500;
     const clientes = await sb('/hub_clientes?ativo=eq.true' + filtro +
-      '&order=nome_exibicao.asc&select=id,nome_exibicao,cnpj,canal,grupo_nome,status_cadastro,bloqueado,tags&limit=' + LIMITE);
+      '&order=nome_exibicao.asc&select=id,nome_exibicao,razao_social,cnpj,email_principal,canal,grupo_nome,status_cadastro,bloqueado,tags&limit=' + LIMITE);
 
     if (!clientes.length) {
       wrap.innerHTML = '<div class="empty-state"><h3>Nenhum cliente encontrado</h3></div>';
       return;
     }
+
+    // Acesso ao Hub (pedido do Andre, 2026-11-06: fundir a aba Convites aqui
+    // em vez de uma aba separada que so repetia a busca por cliente que esta
+    // tela ja faz). Duas fontes por cliente: tem perfil ativo (ja entrou) ou
+    // tem convite em aberto (enviado, aguardando). So busca pros ids desta
+    // pagina, nao a base inteira.
+    const ids = clientes.map(c => c.id);
+    const [perfisAtivos, convites] = await Promise.all([
+      sb('/hub_perfis?cliente_id=in.(' + ids.join(',') + ')&tipo=eq.cliente&ativo=eq.true&select=cliente_id'),
+      sb('/hub_convites?cliente_id=in.(' + ids.join(',') + ')&status=eq.pendente&order=criado_em.desc&select=id,cliente_id,token,expira_em')
+    ]);
+    const temAcesso = new Set(perfisAtivos.map(p => p.cliente_id));
+    const convitePorCliente = {};
+    convites.forEach(c => { if (!convitePorCliente[c.cliente_id]) convitePorCliente[c.cliente_id] = c; }); // mais recente primeiro
+
     wrap.innerHTML = `${clientes.length === LIMITE ? `<div style="font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;margin-bottom:10px">Mostrando os primeiros ${LIMITE} — refine o filtro para ver o restante.</div>` : ''}
     <div style="overflow-x:auto"><table>
-      <thead><tr><th>Cliente</th><th>CNPJ</th><th>Canal</th><th>Grupo</th><th>Status</th><th>Tags</th><th></th></tr></thead>
-      <tbody>${clientes.map(c => `<tr>
+      <thead><tr><th>Cliente</th><th>CNPJ</th><th>Canal</th><th>Grupo</th><th>Status</th><th>Tags</th><th>Acesso ao Hub</th><th></th></tr></thead>
+      <tbody>${clientes.map(c => {
+        const convite = convitePorCliente[c.id];
+        const expirado = convite && new Date(convite.expira_em) < new Date();
+        let acessoHtml;
+        if (temAcesso.has(c.id)) {
+          acessoHtml = '<span class="etapa-badge" style="background:#d1fae5;color:#065f46">Ativo no Hub</span>';
+        } else if (convite && !expirado) {
+          acessoHtml = `<span class="etapa-badge" style="background:#dbeafe;color:#1e40af">Convite pendente</span>
+            <div style="margin-top:4px"><a href="javascript:void(0)" onclick="copiarLinkConvite('${convite.token}')" style="font-size:11px;color:#25bbee">copiar link</a>
+            · <a href="javascript:void(0)" onclick="cancelarConvite('${convite.id}')" style="font-size:11px;color:#e30613">cancelar</a></div>`;
+        } else {
+          acessoHtml = convite && expirado ? '<span class="etapa-badge" style="background:#fee2e2;color:#991b1b">Convite expirado</span>' : '<span style="font-size:11px;color:#a0aec0">Sem acesso</span>';
+        }
+        return `<tr>
         <td><strong>${c.nome_exibicao || ''}</strong></td>
         <td>${c.cnpj || ''}</td>
         <td>${c.canal || ''}</td>
         <td>${c.grupo_nome || '-'}</td>
         <td>${c.status_cadastro || ''}</td>
         <td style="font-size:11px;color:#718096">${(c.tags || []).join(', ')}</td>
-        <td>${c.bloqueado ? `<button class="btn btn-primary btn-sm" onclick="liberarCliente('${c.id}')">Liberar acesso</button>` : ''}</td>
-      </tr>`).join('')}</tbody>
+        <td style="white-space:nowrap">${acessoHtml}</td>
+        <td style="white-space:nowrap">
+          ${c.bloqueado ? `<button class="btn btn-primary btn-sm" onclick="liberarCliente('${c.id}')">Liberar acesso</button>` : ''}
+          ${!temAcesso.has(c.id) && (!convite || expirado) ? `<button class="btn btn-outline btn-sm" onclick="abrirConvidarCliente('${c.id}','${esc(c.razao_social || c.nome_exibicao || '').replace(/'/g, "\\'")}','${c.cnpj || ''}','${esc(c.email_principal || '').replace(/'/g, "\\'")}')">Convidar</button>` : ''}
+        </td>
+      </tr>`;
+      }).join('')}</tbody>
     </table></div>`;
   } catch (e) { wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar clientes</h3></div>'; }
 }
@@ -627,8 +653,8 @@ async function syncZenClientes() {
 // "Novo Usuario" nao cria cadastro do zero -- cliente/representante ja tem
 // que existir sincronizado do ZEN (hub_clientes/hub_representantes exigem
 // erp_*_id). Por isso o tipo decide o que a tela pede:
-//   cliente       -> nao cria aqui, aponta pra aba Convites (ja faz a busca
-//                    por CNPJ/razao social e o cliente escolhe a propria senha)
+//   cliente       -> nao cria aqui, aponta pro botao Convidar em Admin >
+//                    Clientes (o cliente escolhe a propria senha ao aceitar)
 //   representante -> busca o hub_representantes ja sincronizado sem user_id
 //   funcionario   -> nome/email livres + Area (pra rotear o canal de resolucao)
 //   admin         -> nome/email livres, sem area (ja enxerga tudo)
@@ -660,8 +686,8 @@ function renderCamposNovoUsuario() {
 
   if (tipo === 'cliente') {
     wrap.innerHTML = `<div class="panel-hint" style="margin:0 0 16px">
-      Cliente precisa ja existir no ZEN. Use a aba <b>Convites</b> -- ela busca por CNPJ/razao social
-      e o proprio cliente define a senha ao aceitar.
+      Cliente precisa ja existir no ZEN. Va em <b>Admin &gt; Clientes</b>, encontre a revenda e use o
+      botao <b>Convidar</b> -- o proprio cliente define a senha ao aceitar.
     </div>`;
     btn.classList.add('hidden');
     return;
@@ -1582,10 +1608,6 @@ function copiarCredenciais(email, senha, limite, razao) {
   navigator.clipboard.writeText(texto).then(() => toast('Credenciais copiadas!')).catch(() => toast('Erro ao copiar', 'error'));
 }
 
-// === CONVITES ===
-
-let allConvites = [];
-
 let _logsBuscaTimer = null;
 function debounceLogs() { clearTimeout(_logsBuscaTimer); _logsBuscaTimer = setTimeout(loadLogs, 350); }
 
@@ -1681,55 +1703,22 @@ async function loadLogs() {
   }
 }
 
-async function loadConvites() {
-  const wrap = document.getElementById('convitesList');
-  try {
-    allConvites = await sb('/hub_convites?order=criado_em.desc&select=*,hub_clientes(razao_social,cnpj)');
-    if (!allConvites.length) {
-      wrap.innerHTML = '<div class="empty-state"><h3>Nenhum convite criado</h3><p style="margin-top:8px;font-size:13px">Use o botao acima para convidar clientes que ja existem no ZEN/ERP.</p></div>';
-      return;
-    }
-    const statusColors = {pendente:'#dbeafe;color:#1e40af',aceito:'#d1fae5;color:#065f46',expirado:'#fee2e2;color:#991b1b',cancelado:'#f3f4f6;color:#6b7280'};
-    wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Empresa</th><th>Email</th><th>Status</th><th>Criado em</th><th>Expira em</th><th></th></tr></thead>
-      <tbody>${allConvites.map(c => {
-        const cli = c.hub_clientes || {};
-        const sc = statusColors[c.status] || statusColors.pendente;
-        return `<tr>
-          <td><strong>${cli.razao_social || '—'}</strong><br><span style="font-size:11px;color:#718096">${cli.cnpj ? fmtCnpj(cli.cnpj) : ''}</span></td>
-          <td>${c.email}</td>
-          <td><span class="etapa-badge" style="background:${sc}">${c.status}</span></td>
-          <td style="white-space:nowrap">${fmtData(c.criado_em)}</td>
-          <td style="white-space:nowrap">${fmtData(c.expira_em)}</td>
-          <td style="white-space:nowrap">
-            ${c.status === 'pendente' ? `<button class="btn btn-outline btn-sm" onclick="copiarLinkConvite('${c.token}')">Copiar link</button> <button class="btn btn-danger btn-sm" onclick="cancelarConvite('${c.id}')">Cancelar</button>` : ''}
-          </td>
-        </tr>`;
-      }).join('')}</tbody>
-    </table></div>`;
-  } catch (e) {
-    wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar convites</h3><p>' + e.message + '</p></div>';
-  }
-}
+// === CONVITES (fundido em Admin > Clientes, 2026-11-06 -- antes era aba
+// propria que so repetia a busca por cliente que a tela de Clientes ja faz;
+// agora e um botao "Convidar" por linha, pro cliente que a propria tabela
+// ja tem na tela) ===
 
-let _conviteBuscaTimer = null;
-
-function openNovoConvite() {
+function abrirConvidarCliente(id, nome, cnpj, emailAtual) {
   openModal(`
-    <h3 style="font-size:18px;margin-bottom:16px;color:#1d327b">Novo Convite</h3>
-    <div class="form-row">
-      <label>Buscar cliente (CNPJ ou razao social)</label>
-      <input id="convBusca" placeholder="Digite CNPJ ou nome..." oninput="buscarClienteConvite()">
-    </div>
-    <div id="convResultados" style="margin-bottom:16px"></div>
-    <div id="convClienteSel" class="hidden" style="padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;margin-bottom:16px">
-      <div style="font-size:14px;font-weight:700;color:#166534" id="convSelNome"></div>
-      <div style="font-size:12px;color:#4a5568" id="convSelInfo"></div>
-      <input type="hidden" id="convSelId">
+    <h3 style="font-size:18px;margin-bottom:16px;color:#1d327b">Convidar Cliente</h3>
+    <div style="padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;margin-bottom:16px">
+      <div style="font-size:14px;font-weight:700;color:#166534" id="convSelNome">${esc(nome)}</div>
+      <div style="font-size:12px;color:#4a5568" id="convSelInfo">CNPJ: ${esc(fmtCnpj(cnpj))}</div>
+      <input type="hidden" id="convSelId" value="${esc(id)}">
     </div>
     <div class="form-row">
       <label>Email do cliente</label>
-      <input id="convEmail" type="email" placeholder="email@empresa.com">
+      <input id="convEmail" type="email" placeholder="email@empresa.com" value="${esc(emailAtual || '')}">
       <div style="font-size:11px;color:#718096;margin-top:3px">Email que recebera o link de convite</div>
     </div>
     <div class="form-actions">
@@ -1737,46 +1726,6 @@ function openNovoConvite() {
       <button class="btn btn-primary" id="btnCriarConvite" onclick="criarConvite()">Criar Convite</button>
     </div>
   `);
-}
-
-async function buscarClienteConvite() {
-  clearTimeout(_conviteBuscaTimer);
-  const q = document.getElementById('convBusca').value.trim();
-  const wrap = document.getElementById('convResultados');
-  if (q.length < 3) { wrap.innerHTML = ''; return; }
-
-  _conviteBuscaTimer = setTimeout(async () => {
-    try {
-      const qClean = q.replace(/[.\-\/]/g, '');
-      let clientes;
-      if (/^\d+$/.test(qClean) && qClean.length >= 3) {
-        clientes = await sb('/hub_clientes?cnpj=ilike.*' + qClean + '*&ativo=eq.true&limit=8&select=id,razao_social,cnpj,nome_fantasia,limite_credito');
-      } else {
-        clientes = await sb('/hub_clientes?or=(razao_social.ilike.*' + encodeURIComponent(q) + '*,nome_fantasia.ilike.*' + encodeURIComponent(q) + '*)&ativo=eq.true&limit=8&select=id,razao_social,cnpj,nome_fantasia,limite_credito');
-      }
-      if (!clientes.length) {
-        wrap.innerHTML = '<div style="font-size:12px;color:#718096;padding:8px 0">Nenhum cliente encontrado</div>';
-        return;
-      }
-      wrap.innerHTML = `<div style="border:1px solid #e2e8f0;border-radius:6px;max-height:200px;overflow-y:auto">${clientes.map(c => `
-        <div style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #e2e8f0;font-size:13px" onmouseover="this.style.background='#f0f7ff'" onmouseout="this.style.background=''" onclick="selecionarClienteConvite('${c.id}','${(c.razao_social||'').replace(/'/g,"\\'")}','${c.cnpj}','${c.nome_fantasia||''}',${c.limite_credito||0})">
-          <strong>${c.razao_social}</strong><br>
-          <span style="font-size:11px;color:#718096">${fmtCnpj(c.cnpj)} ${c.nome_fantasia ? '| ' + c.nome_fantasia : ''}</span>
-        </div>
-      `).join('')}</div>`;
-    } catch (e) {
-      wrap.innerHTML = '<div style="font-size:12px;color:#e30613;padding:8px 0">Erro na busca</div>';
-    }
-  }, 300);
-}
-
-function selecionarClienteConvite(id, nome, cnpj, fantasia, limite) {
-  document.getElementById('convSelId').value = id;
-  document.getElementById('convSelNome').textContent = nome;
-  document.getElementById('convSelInfo').textContent = 'CNPJ: ' + fmtCnpj(cnpj) + (fantasia ? ' | ' + fantasia : '') + (limite ? ' | Limite: ' + fmtMoeda(limite) : '');
-  document.getElementById('convClienteSel').classList.remove('hidden');
-  document.getElementById('convResultados').innerHTML = '';
-  document.getElementById('convBusca').value = nome;
 }
 
 async function criarConvite() {
@@ -1827,7 +1776,7 @@ async function criarConvite() {
       <div style="font-size:12px;color:#718096;margin-bottom:16px">Envie este link para <strong>${email}</strong>. O cliente ira definir sua senha e acessar o Hub.</div>
       <div class="form-actions">
         <button class="btn btn-outline btn-sm" onclick="copiarLinkConvite('${token}')">Copiar link</button>
-        <button class="btn btn-primary" onclick="closeModal();loadConvites()">Fechar</button>
+        <button class="btn btn-primary" onclick="closeModal();loadClientes()">Fechar</button>
       </div>
     `);
   } catch (e) {
@@ -2174,7 +2123,7 @@ async function cancelarConvite(id) {
   try {
     await sb('/hub_convites?id=eq.' + id, 'PATCH', { status: 'cancelado' });
     toast('Convite cancelado');
-    await loadConvites();
+    await loadClientes();
   } catch (e) {
     toast('Erro: ' + e.message, 'error');
   }

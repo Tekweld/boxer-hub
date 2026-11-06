@@ -248,7 +248,8 @@ function renderFinanceiro() {
     if (ate && (dataRef || '') > ate) return false;
     if (!termo) return true;
     return filtroTexto(l.numero_nf, termo) || filtroTexto(l.numero_titulo, termo)
-      || filtroTexto(l.hub_pedidos?.numero, termo) || filtroTexto(l.hub_clientes?.razao_social, termo)
+      || filtroTexto(l.hub_pedidos?.numero, termo) || filtroTexto(l.erp_pedido_id, termo)
+      || filtroTexto(l.hub_clientes?.razao_social, termo)
       || filtroTexto(l.chave_acesso, termo);
   });
 
@@ -262,7 +263,9 @@ function renderFinanceiro() {
       const assunto = (ehNf ? 'NF ' + String(l.numero_nf || '') : 'Titulo ' + String(l.numero_titulo || '')).replace(/'/g, "\\'");
       return `<tr>
       <td>${l.hub_clientes?.razao_social || '—'}</td>
-      <td>${l.hub_pedidos?.numero || '—'}</td>
+      <td>${l.hub_pedidos?.numero
+          ? `<strong>${l.hub_pedidos.numero}</strong>`
+          : (l.erp_pedido_id ? `<span style="color:#718096" title="Venda ${l.erp_pedido_id} no ZEN -- nao nasceu no Hub">Venda ${l.erp_pedido_id}</span>` : '—')}</td>
       <td>${ehNf ? `<strong>${l.numero_nf}</strong>` : `<span style="color:#a0aec0" title="Titulo ainda sem NF sincronizada">Titulo ${l.numero_titulo}</span>`}</td>
       <td>${fmtData(ehNf ? l.data_emissao : l.data_vencimento)}</td>
       <td class="num">${fmtMoeda(ehNf ? l.valor_total : l.valor_original)}</td>

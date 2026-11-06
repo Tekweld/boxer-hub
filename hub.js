@@ -679,6 +679,7 @@ function renderTopbar(titulo) {
                </span>`
             : `<span class="atuando-chip atuando-vazio" onclick="abrirSeletorCliente()">Selecionar revenda</span>`
         ) : ''}
+        <span id="topCartBadge"></span>
         <span class="notif-badge" id="notifBadge" style="display:none" title="Notificacoes pendentes"></span>
         <span class="user-badge" id="userBadgeDesktop"><strong id="userName"></strong></span>
         <span class="logout-btn" id="logoutDesktop" onclick="doLogout()">Sair</span>
@@ -703,6 +704,8 @@ function renderTopbar(titulo) {
       .atuando-prospect strong{color:#fff}
       @media(max-width:768px){.atuando-chip{max-width:150px;font-size:11px;padding:4px 9px}}
       .hub-menu-btn{display:none;background:none;border:1px solid rgba(255,255,255,.3);color:#fff;font-size:20px;padding:4px 10px;border-radius:6px;cursor:pointer;font-family:Outfit;line-height:1}
+      .top-cart-badge{background:#e30613;color:#fff;font-size:12px;font-weight:600;padding:6px 12px;border-radius:14px;cursor:pointer;white-space:nowrap}
+      .top-cart-badge:hover{background:#c20410}
       .hub-mobile-user{display:none}
       @media(max-width:768px){
         .topbar h1{font-size:15px}
@@ -721,6 +724,29 @@ function renderTopbar(titulo) {
   const nameEl = document.getElementById('userName');
   if (nameEl) nameEl.textContent = getUserNome();
   loadNotifCount();
+  atualizarCartBadgeTopo();
+}
+
+// Carrinho visivel em QUALQUER pagina enquanto nao foi cancelado nem
+// confirmado (pedido do Andre, 2026-11-06: "o carrinho tem que aparecer"),
+// nao so dentro de catalogo.html como era antes (badge la era local, cada
+// pagina tinha que reimplementar). Le a MESMA chave de sessionStorage que
+// catalogo.html/pedidos.html usam (cartKey()), sem depender do getCart()
+// local de cada pagina -- hub.js carrega antes do script de cada pagina,
+// entao nao pode chamar uma funcao que ainda nao existe.
+function lerCartResumo() {
+  try { return JSON.parse(sessionStorage.getItem(cartKey()) || '[]'); } catch { return []; }
+}
+
+function atualizarCartBadgeTopo() {
+  const el = document.getElementById('topCartBadge');
+  if (!el) return;
+  const cart = lerCartResumo();
+  if (!cart.length) { el.innerHTML = ''; return; }
+  const totalQtd = cart.reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
+  el.innerHTML = `<span class="top-cart-badge" onclick="location.href='pedidos.html'" title="Ver carrinho">
+    🛒 ${cart.length} ${cart.length === 1 ? 'item' : 'itens'} · ${totalQtd} un
+  </span>`;
 }
 
 async function loadNotifCount() {

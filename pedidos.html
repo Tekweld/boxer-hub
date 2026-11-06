@@ -117,6 +117,12 @@ textarea:focus{border-color:#25bbee}
 .cart-item-subtotal{font-size:14px;font-weight:700;color:#1d327b;min-width:80px;text-align:right}
 .cart-item-remove{background:none;border:none;color:#dc2626;cursor:pointer;font-size:16px;padding:4px 8px}
 .cart-item-remove:hover{background:#fef2f2;border-radius:4px}
+.cart-item-grade{display:flex;gap:6px;flex-shrink:0}
+.grade-tabela{background:#1d327b;color:#fff;font-weight:700;font-size:11px;border:none;border-radius:6px;padding:0 8px;text-align:center;text-align-last:center;cursor:pointer;width:74px;height:40px;font-family:Outfit}
+.grade-tabela option{color:#1a202c;font-weight:400;background:#fff}
+.grade-desconto-box{background:#ea580c;border-radius:6px;padding:3px 6px;display:flex;flex-direction:column;align-items:center;justify-content:center;width:74px;height:40px}
+.grade-desconto-box label{color:#fff;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;line-height:1.2}
+.grade-desconto-box input{width:40px;border:none;border-radius:4px;text-align:center;font-weight:700;font-size:12px;padding:1px;font-family:Outfit}
 .cart-summary{display:flex;align-items:center;justify-content:space-between;padding:16px 0;margin-top:8px;border-top:2px solid #1d327b}
 .cart-total-label{font-size:14px;color:#4a5568;font-weight:500}
 .cart-total-valor{font-size:22px;font-weight:700;color:#1d327b}
@@ -191,15 +197,21 @@ function showTab(n, el) {
   if (bar) bar.style.display = n === 'novo' ? '' : 'none';
 }
 
+// Decidir a aba inicial e a PRIMEIRA coisa, antes de qualquer await: getCart()
+// e sincrono (sessionStorage), entao isso roda antes de qualquer rede. Andre
+// notou a "esquisitice" de ver Meus Pedidos carregar e so depois trocar pra
+// Novo Pedido -- a troca so acontecia DEPOIS de loadPedidos() (rede), tarde
+// demais pra evitar o flash. Resolvido fazendo a escolha de aba logo no
+// inicio, antes do primeiro load de qualquer coisa (2026-11-06).
+if (getCart().length > 0) {
+  showTab('novo', document.querySelectorAll('.tab')[0]);
+}
+
 (async () => {
   await loadPerfil();
   renderTopbar('Pedidos');
   await loadPedidos();
   renderCarrinho();
-  const cart = getCart();
-  if (cart.length > 0) {
-    showTab('novo', document.querySelectorAll('.tab')[0]);
-  }
 })();
 
 // === CARRINHO ===
@@ -210,6 +222,7 @@ function getCart() {
 
 function saveCart(cart) {
   sessionStorage.setItem(cartKey(), JSON.stringify(cart));
+  atualizarCartBadgeTopo();
   stockMap = {};
   // O cliente mexeu no carrinho: as violacoes da tentativa anterior podem nao
   // valer mais. Some com elas em vez de deixar alerta velho na tela.
@@ -337,80 +350,30 @@ function siglaDoItemGrade(item) {
   return sigla ? sigla + item.classeOverride : '';
 }
 
-function abrirGradeItem(idx) {
-  const cart = getCart();
-  const item = cart[idx];
-  if (!item) return;
-  const siglaAtual = siglaDoItemGrade(item);
-  openModal(`
-    <h3 style="font-size:16px;color:#1d327b;margin-bottom:4px">Ajustar tabela e desconto</h3>
-    <div style="font-size:12px;color:#718096;margin-bottom:16px">${esc(item.sku)} — ${esc(item.nome || '')}</div>
-    <div class="form-row-inline">
-      <div class="form-row">
-        <label>Tabela de preco</label>
-        <select id="gradeTabela" onchange="previewGradeItem(${idx})">
-          <option value="">Padrao (preco da revenda)</option>
-          ${TABELAS_GRADE.map(t => `<option value="${t}" ${siglaAtual === t ? 'selected' : ''}>${t}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-row">
-        <label>% desconto adicional</label>
-        <input id="gradeDesconto" type="number" min="0" max="100" step="0.01"
-               value="${item.descontoOverride != null ? item.descontoOverride : ''}" placeholder="0"
-               oninput="previewGradeItem(${idx})">
-      </div>
-    </div>
-    <div id="gradePreview" style="font-size:13px;color:#4a5568;margin:4px 0 4px;min-height:18px">&nbsp;</div>
-    <div class="form-actions">
-      <button class="btn btn-outline" onclick="closeModal()">Cancelar</button>
-      <button class="btn btn-primary" id="btnAplicarGrade" onclick="aplicarGradeItem(${idx})">Aplicar</button>
-    </div>
-  `);
-  previewGradeItem(idx);
+// Inline, sem modal (Andre achou a modal pouco funcional, 2026-11-06 2a
+// rodada): o select de tabela aplica na hora; o input de desconto tem
+// debounce curto pra nao recalcular a cada tecla digitada.
+let _gradeInlineTimer = {};
+function debounceGradeItemInline(idx) {
+  clearTimeout(_gradeInlineTimer[idx]);
+  _gradeInlineTimer[idx] = setTimeout(() => atualizarGradeItemInline(idx), 600);
 }
 
-async function previewGradeItem(idx) {
-  const prev = document.getElementById('gradePreview');
-  if (!prev) return;
+async function atualizarGradeItemInline(idx) {
   const cart = getCart();
   const item = cart[idx];
   const clienteId = getClienteAtivo();
-  if (!item || !clienteId) { prev.textContent = 'Disponivel so para revenda com cadastro.'; return; }
-  const sigla = document.getElementById('gradeTabela').value;
-  const desconto = parseFloat(document.getElementById('gradeDesconto').value) || 0;
-  prev.textContent = 'Calculando...';
-  try {
-    const params = {
-      p_cliente_id: clienteId, p_produto_id: item.produto_id, p_quantidade: item.quantidade,
-      p_segmento_override: sigla ? SIGLA_PARA_SEGMENTO_GRADE[sigla[0]] : null,
-      p_classe_override: sigla ? Number(sigla[1]) : null,
-      p_desconto_pct: desconto || null
-    };
-    const r = await sbRpc('hub_fn_calcular_preco_item', params);
-    if (!r.ok) { prev.textContent = r.erro || 'Nao foi possivel calcular.'; return; }
-    prev.innerHTML = `Preco unitario: <strong>${fmtMoeda(r.preco_final)}</strong> &middot; subtotal ${fmtMoeda(r.subtotal)}`;
-  } catch (e) {
-    prev.textContent = 'Erro ao calcular: ' + erroLegivel(e);
-  }
-}
-
-async function aplicarGradeItem(idx) {
-  const cart = getCart();
-  const item = cart[idx];
-  const clienteId = getClienteAtivo();
-  if (!item || !clienteId) { closeModal(); return; }
-  const sigla = document.getElementById('gradeTabela').value;
-  const desconto = parseFloat(document.getElementById('gradeDesconto').value) || 0;
+  const selTabela = document.getElementById('gradeTabela_' + idx);
+  const inpDesconto = document.getElementById('gradeDesconto_' + idx);
+  if (!item || !clienteId || !selTabela || !inpDesconto) return;
+  const sigla = selTabela.value;
+  const desconto = parseFloat(inpDesconto.value) || 0;
 
   if (!sigla && !desconto) {
     delete item.classeOverride; delete item.segmentoOverride; delete item.descontoOverride; delete item.precoManual;
     saveCart(cart);
-    closeModal();
     return;
   }
-
-  const btn = document.getElementById('btnAplicarGrade');
-  btn.disabled = true; btn.textContent = 'Aplicando...';
   try {
     const r = await sbRpc('hub_fn_calcular_preco_item', {
       p_cliente_id: clienteId, p_produto_id: item.produto_id, p_quantidade: item.quantidade,
@@ -424,11 +387,8 @@ async function aplicarGradeItem(idx) {
     item.descontoOverride = desconto || null;
     item.precoManual = r.preco_final;
     saveCart(cart);
-    closeModal();
   } catch (e) {
     toast('Erro ao aplicar: ' + erroLegivel(e), 'error');
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Aplicar'; }
   }
 }
 
@@ -583,7 +543,7 @@ async function renderCarrinho() {
   } catch {}
 
   wrap.innerHTML = `
-    ${podeEditarPreco ? '<div class="cart-preco-hint">Clique no preço de um item para ajustar manualmente — vale só para o orçamento enviado ao cliente; o pedido confirmado sempre usa o preço real calculado pelo sistema.</div>' : ''}
+    ${podeEditarPreco ? '<div class="cart-preco-hint">Clique no preço para um ajuste pontual, ou use TABELA/Desconto por item — vale tanto para o orçamento quanto para o pedido confirmado.</div>' : ''}
     <div>
       ${cart.map((item, idx) => {
         const st = stockMap[item.produto_id];
@@ -608,18 +568,33 @@ async function renderCarrinho() {
         const precoHtml = podeEditarPreco
           ? `<span id="cartPreco_${idx}" data-base="${basePreco}" onclick="editarPrecoCarrinho(${idx})" style="cursor:pointer;border-bottom:1px dotted #a0aec0" title="Clique para ajustar o preço deste item">${fmtMoeda(unit)}</span>${item.precoManual != null ? ` · <a href="javascript:void(0)" onclick="restaurarPrecoCarrinho(${idx})" style="color:#718096;font-size:11px">restaurar</a>` : ''}`
           : fmtMoeda(unit);
-        const gradeHtml = podeEditarPreco
-          ? `<div style="margin-top:2px">${siglaGrade ? `<span class="etapa-badge" style="background:#eef2ff;color:#3730a3;margin-right:6px">${siglaGrade}${item.descontoOverride ? ' -' + item.descontoOverride + '%' : ''}</span>` : ''}<a href="javascript:void(0)" onclick="abrirGradeItem(${idx})" style="color:#25bbee;font-size:11px">tabela / desconto</a></div>`
-          : '';
+        // Grade granular inline (pedido do Andre, 2026-11-06, segunda rodada):
+        // o link que abria modal foi trocado por duas caixas sempre visiveis
+        // na propria linha -- ele achou a modal pouco funcional ("ter que
+        // abrir outra tela" pra um ajuste simples). Mudanca aplica na hora
+        // (select) ou com debounce curto enquanto digita (input de %).
+        const gradeHtml = podeEditarPreco ? `
+          <div class="cart-item-grade">
+            <select id="gradeTabela_${idx}" class="grade-tabela" title="Tabela de preco" onchange="atualizarGradeItemInline(${idx})">
+              <option value="">TABELA</option>
+              ${TABELAS_GRADE.map(t => `<option value="${t}" ${siglaGrade === t ? 'selected' : ''}>${t}</option>`).join('')}
+            </select>
+            <div class="grade-desconto-box">
+              <label>Desconto</label>
+              <input id="gradeDesconto_${idx}" type="number" min="0" max="100" step="0.01"
+                     value="${item.descontoOverride != null ? item.descontoOverride : ''}" placeholder="0%"
+                     title="% desconto adicional" oninput="debounceGradeItemInline(${idx})">
+            </div>
+          </div>` : '';
         return `
         <div class="cart-item">
           <div class="cart-item-info">
             <div class="cart-item-sku">${esc(item.sku)}</div>
             <div class="cart-item-nome">${esc(item.nome || item.sku)}</div>
             <div class="cart-item-preco">${riscadoHtml}${precoHtml} un</div>
-            ${gradeHtml}
             ${badgeEstoque}
           </div>
+          ${gradeHtml}
           <div class="cart-item-qty">
             <label>Qtd</label>
             <input type="number" value="${item.quantidade}" min="1" max="999" onchange="updateCartQty(${idx}, this.value)">
@@ -1443,6 +1418,7 @@ function removeCartItem(idx) {
 function clearCart() {
   sessionStorage.removeItem(cartKey());
   sessionStorage.removeItem(detalhesKey());
+  atualizarCartBadgeTopo();
   // Esvaziar o carrinho encerra a edicao: o proximo envio e um pedido novo.
   // O rascunho antigo continua no historico, para retomar ou descartar de la.
   clearPedidoEmEdicao();

@@ -186,22 +186,23 @@ module.exports = async function handler(req, res) {
     const resultado = { processadas: 0, atualizadas: 0 };
     try {
       const rNf = await fetch(HUB_URL +
-        '/rest/v1/hub_notas_fiscais?pedido_id=is.null&erp_nf_id=not.is.null&ativo=eq.true' +
+        '/rest/v1/hub_notas_fiscais?or=(pedido_id.is.null,erp_pedido_id.is.null)&erp_nf_id=not.is.null&ativo=eq.true' +
         '&select=id,erp_nf_id&order=erp_nf_id.asc&offset=' + offset + '&limit=' + PASSO,
         { headers: hubH('GET') });
       const lote = rNf.ok ? await rNf.json() : [];
       if (lote.length) {
         resultado.processadas = lote.length;
         const invoiceIds = lote.map((n) => n.erp_nf_id);
-        const [mapaDfe, mapaPedido] = await Promise.all([
+        const [mapaDfe, { porInvoice: mapaPedido, saleIdPorInvoice }] = await Promise.all([
           zenBuscarDfeInfoPorInvoiceIds(invoiceIds),
-          resolverPedidoIdsPorInvoice(invoiceIds, hubH)
+          resolverVendaEPedidoPorInvoice(invoiceIds, hubH)
         ]);
         const patches = await Promise.all(lote.map(async (n) => {
           const patch = {};
           const chave = mapaDfe[n.erp_nf_id]?.chNFe;
           if (chave) patch.chave_acesso = chave.slice(0, 50);
           if (mapaPedido[n.erp_nf_id]) patch.pedido_id = mapaPedido[n.erp_nf_id];
+          if (saleIdPorInvoice[n.erp_nf_id]) patch.erp_pedido_id = String(saleIdPorInvoice[n.erp_nf_id]).slice(0, 30);
           if (!Object.keys(patch).length) return false;
           const pr = await fetch(HUB_URL + '/rest/v1/hub_notas_fiscais?id=eq.' + n.id, {
             method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify(patch)
@@ -344,9 +345,20 @@ async function carregarMapaClientes(hubH) {
 // invoice 74838). Venda sem origem no Hub (sem erp_pedido_id gravado)
 // simplesmente nao aparece no mapa -- pedido_id fica null, esperado.
 async function resolverPedidoIdsPorInvoice(invoiceIds, hubH) {
+  const { porInvoice } = await resolverVendaEPedidoPorInvoice(invoiceIds, hubH);
+  return porInvoice;
+}
+
+// Mesma resolucao de resolverPedidoIdsPorInvoice, mas tambem devolve o
+// sale.id cru do Zen por invoice -- pedido do Andre (2026-11-06): a coluna
+// "Pedido" do financeiro so mostrava o numero HUB-2026-XXXXX, que so existe
+// pra venda que nasceu no proprio Hub (raro -- quase tudo e venda nativa do
+// Zen). Guardar o sale.id do Zen tambem (erp_pedido_id em hub_notas_fiscais)
+// deixa a coluna preenchida pra praticamente toda NF, nao so a minoria.
+async function resolverVendaEPedidoPorInvoice(invoiceIds, hubH) {
   const mapaSale = await zenBuscarVendasPorInvoiceIds(invoiceIds);
   const saleIds = [...new Set(Object.values(mapaSale))];
-  if (!saleIds.length) return {};
+  if (!saleIds.length) return { porInvoice: {}, saleIdPorInvoice: mapaSale };
 
   const mapaPedido = {};
   for (let i = 0; i < saleIds.length; i += 200) {
@@ -359,11 +371,11 @@ async function resolverPedidoIdsPorInvoice(invoiceIds, hubH) {
     for (const p of (await resp.json())) mapaPedido[p.erp_pedido_id] = p.id;
   }
 
-  const resultado = {};
+  const porInvoice = {};
   for (const [invoiceId, saleId] of Object.entries(mapaSale)) {
-    if (mapaPedido[saleId]) resultado[invoiceId] = mapaPedido[saleId];
+    if (mapaPedido[saleId]) porInvoice[invoiceId] = mapaPedido[saleId];
   }
-  return resultado;
+  return { porInvoice, saleIdPorInvoice: mapaSale };
 }
 
 // Resolve invoice.id (Zen) -> hub_notas_fiscais.id (uuid Hub), em lote.

@@ -20,7 +20,7 @@ module.exports = async function criarUsuarioInterno(req, res) {
 
   const { tipo, representante_id, nome, email, telefone, role, area } = req.body || {};
   if (!tipo || !['representante', 'funcionario', 'admin'].includes(tipo)) {
-    return res.status(400).json({ error: 'tipo deve ser representante, funcionario ou admin. Cliente usa a aba Convites/Onboarding.' });
+    return res.status(400).json({ error: 'tipo deve ser representante, funcionario ou admin. Cliente usa o botao Convidar em Admin > Clientes, ou Onboarding se for cadastro novo.' });
   }
   // Lista espelha a CHECK constraint de hub_perfis.role -- sem isto, um
   // valor invalido so falhava la na gravacao, com erro cru de constraint em

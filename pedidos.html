@@ -144,8 +144,8 @@ textarea:focus{border-color:#25bbee}
 </div>
 
 <div class="tabs">
+  <div class="tab" onclick="showTab('novo',this)">Novo Pedido / Orçamento</div>
   <div class="tab active" onclick="showTab('lista',this)">Meus Pedidos</div>
-  <div class="tab" onclick="showTab('novo',this)">Novo Pedido</div>
 </div>
 <div class="panel">
   <div class="panel-content" id="tab-lista">
@@ -198,7 +198,7 @@ function showTab(n, el) {
   renderCarrinho();
   const cart = getCart();
   if (cart.length > 0) {
-    showTab('novo', document.querySelectorAll('.tab')[1]);
+    showTab('novo', document.querySelectorAll('.tab')[0]);
   }
 })();
 
@@ -350,36 +350,36 @@ async function carregarPrecosCarrinho(cart) {
   const prospect = getProspectAtivo();
   if (!cart.length || (!clienteId && !prospect)) return {};
 
-  // CNPJ novo (prospect) nao tem politica comercial cadastrada -- o preco so
-  // existe se o representante escolheu UF/Segmento/Classe no catalogo
-  // (restaurarAjustePolitica ja semeia um padrao na primeira vez).
-  if (prospect && !clienteId) {
-    const override = lerOverridePolitica();
-    if (!override) return {};
+  // Simulacao de politica comercial (UF/Segmento/Classe escolhidos a mao no
+  // catalogo) tem PRIORIDADE sempre que existir -- antes de 2026-11-06 so
+  // valia pra CNPJ novo (prospect); pra cliente real o carrinho ignorava
+  // completamente o override e recalculava do zero com a politica real do
+  // cliente, causando a revenda ver um preco no catalogo (simulado) e outro
+  // no carrinho (real) -- achado pelo Andre com o DURAMAX630. Override fixa
+  // a classe de proposito: quem escolheu uma politica no catalogo decidiu o
+  // cenario, nao quer que o carrinho mude sozinho por causa do valor total.
+  const override = lerOverridePolitica();
+  if (override) {
     try {
       const linhas = await sbRpc('hub_fn_precos_parametro', { p_uf: override.uf, p_segmento: override.segmento, p_classe: override.classe });
       const out = {};
       linhas.forEach(l => { out[l.produto_id] = l; });
       return out;
     } catch (e) {
-      console.error('[preco] falha ao recalcular carrinho (prospect):', e);
+      console.error('[preco] falha ao recalcular carrinho (override):', e);
       return {};
     }
   }
+  if (prospect && !clienteId) return {}; // prospect sem override: sem politica comercial cadastrada, nao ha preco
 
+  // Sem override: preco real do cliente. p_valor_pedido so importava pra
+  // progressao de classe por valor, desligada a pedido do Andre
+  // (hub_politica_parametros.progressao_classe_ativa=0, 2026-11-06) -- uma
+  // chamada so basta agora, a classe nao muda mais com o total do carrinho.
   try {
-    const base = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: 0 });
-    const porId = {};
-    base.forEach(l => { porId[l.produto_id] = l; });
-
-    const subtotalTabela = cart.reduce(
-      (s, i) => s + (+(porId[i.produto_id]?.preco_tabela || 0) * i.quantidade), 0);
-
-    const finais = await sbRpc('hub_fn_precos_cliente', {
-      p_cliente_id: clienteId, p_valor_pedido: subtotalTabela
-    });
+    const linhas = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: 0 });
     const out = {};
-    finais.forEach(l => { out[l.produto_id] = l; });
+    linhas.forEach(l => { out[l.produto_id] = l; });
     return out;
   } catch (e) {
     console.error('[preco] falha ao recalcular carrinho:', e);
@@ -390,7 +390,7 @@ async function carregarPrecosCarrinho(cart) {
 async function renderCarrinho() {
   const wrap = document.getElementById('carrinhoWrap');
   const cart = getCart();
-  const tabNovo = document.querySelectorAll('.tab')[1];
+  const tabNovo = document.querySelectorAll('.tab')[0];
   const totalQty = cart.reduce((s, i) => s + i.quantidade, 0);
 
   if (cart.length > 0) {
@@ -789,6 +789,18 @@ async function _enviarPedidoInterno() {
          '&order=padrao.desc,tipo.asc&limit=1').then(r => r[0] || null)
     ]);
 
+    // Classe/segmento/UF efetivamente usados pra precificar este carrinho --
+    // vem de `precos` (ja calculado acima), nao de `politica` (que so valida
+    // regras, nao carrega a politica de preco). Registrado no pedido na
+    // confirmacao (ver confirmarEnvio) pra ficar rastreavel depois -- pedido
+    // do Andre, 2026-11-06.
+    const precoRef = Object.values(precos)[0];
+    if (precoRef) {
+      politica.classe_aplicada = precoRef.classe;
+      politica.segmento_aplicado = precoRef.segmento;
+      politica.uf_aplicada = precoRef.uf;
+    }
+
     abrirRevisao(pedido.id, politica, cliente, endereco);
   } catch (e) {
     toast('Erro: ' + erroLegivel(e), 'error');
@@ -884,7 +896,12 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
   const saldo = disponivel - total;
   const detalhes = getDetalhesPedido();
 
-  _revisao = { pedidoId, subtotal, valorFrete, total, frete, cliente };
+  _revisao = {
+    pedidoId, subtotal, valorFrete, total, frete, cliente,
+    classeAplicada: politica.classe_aplicada ?? null,
+    segmentoAplicado: politica.segmento_aplicado ?? null,
+    ufAplicada: politica.uf_aplicada ?? null
+  };
 
   const violacoes = politica.violacoes || [];
   const bloqueado = violacoes.length > 0;
@@ -1105,7 +1122,7 @@ function mostrarOrcamentoCriado(j) {
       <button class="btn btn-outline" id="btnEmailOrc_${j.id}" onclick="enviarEmailOrcamento('${j.id}', this)">Enviar por E-mail</button>
       ${j.zen && !j.zen.ok ? `<div style="margin-top:12px;padding:8px;background:#fff4e5;color:#9a5b00;border-radius:6px;font-size:12px;text-align:left">${esc(j.zen.erro || '')}</div>` : ''}
       ${(j.avisos || []).length ? `<div style="margin-top:10px;text-align:left;font-size:12px;color:#92400e">${j.avisos.map(a => '<div>⚠ ' + esc(a) + '</div>').join('')}</div>` : ''}
-      <div style="margin-top:18px"><button class="btn btn-outline" onclick="closeModal();document.querySelectorAll('.tab')[0].click();loadPedidos()">Fechar</button></div>
+      <div style="margin-top:18px"><button class="btn btn-outline" onclick="closeModal();document.querySelectorAll('.tab')[1].click();loadPedidos()">Fechar</button></div>
     </div>
   `);
 }
@@ -1126,11 +1143,26 @@ async function enviarEmailOrcamento(id, btn) {
 }
 
 // Quando ha alternativa real (pedido abaixo do minimo de frete gratis, ou UF
-// FOB), o cliente escolhe. Quando nao ha -- CIF gratuito -- nao se pergunta.
+// FOB), o cliente escolhe por radio (sempre um dos dois, pedido obriga).
+// Quando nao ha -- CIF gratuito, caso mais comum -- nao se obriga escolha
+// nenhuma, mas o Andre pediu (2026-11-06) uma forma leve de SINALIZAR uma
+// excecao pontual: cliente com transportadora propria que, so neste pedido,
+// quer usar ela mesmo com o CIF gratuito valendo -- sem mexer no cadastro
+// geral da conta. Dropdown em vez de radio de proposito: e opcional, "se
+// for necessario", nao uma decisao que a tela força a cada pedido.
 function renderOpcoesFrete(frete, valorFrete) {
   const podeRetirar = frete.retirada_disponivel === true;
   const podeEnviar = frete.envio_disponivel === true;
-  if (!podeRetirar) return ''; // so ha envio: nada a escolher
+
+  if (!podeRetirar) {
+    return `<div class="form-row" style="margin-top:10px;margin-bottom:0">
+      <label>Excecao de frete (opcional)</label>
+      <select id="revFreteExcecao">
+        <option value="">Padrao -- conforme acima</option>
+        <option value="retirada">Cliente vai usar transportadora propria neste pedido</option>
+      </select>
+    </div>`;
+  }
 
   return `<div class="rev-opcoes">
     ${podeEnviar ? `<label class="rev-opcao">
@@ -1157,7 +1189,9 @@ async function confirmarEnvio() {
     // desenha radio nenhum -- sem isso, modalidade ficava null e o Zen
     // recebia freightType=NONE mesmo com frete real definido. Mesma logica
     // de podeRetirar/podeEnviar de renderOpcoesFrete, espelhada aqui.
-    let modalidade = document.querySelector('input[name="revFrete"]:checked')?.value || null;
+    let modalidade = document.querySelector('input[name="revFrete"]:checked')?.value
+      || document.getElementById('revFreteExcecao')?.value
+      || null;
     if (!modalidade && _revisao.frete) {
       modalidade = _revisao.frete.envio_disponivel ? 'envio'
                  : _revisao.frete.retirada_disponivel ? 'retirada' : null;
@@ -1169,7 +1203,10 @@ async function confirmarEnvio() {
       observacoes: (detalhes.observacoes || '').trim() || null,
       forma_pagamento: detalhes.forma_pagamento || 'boleto',
       parcelas: +detalhes.parcelas || 1,
-      frete_modalidade: modalidade
+      frete_modalidade: modalidade,
+      classe_comercial_aplicada: _revisao.classeAplicada ?? null,
+      segmento_aplicado: _revisao.segmentoAplicado ?? null,
+      uf_aplicada: _revisao.ufAplicada ?? null
     });
 
     const resultado = await sbRpc('hub_fn_submeter_pedido', { p_pedido_id: _revisao.pedidoId });
@@ -1204,7 +1241,7 @@ async function confirmarEnvio() {
     closeModal();
     clearCart();
     toast('Pedido ' + resultado.numero + ' enviado!');
-    showTab('lista', document.querySelectorAll('.tab')[0]);
+    showTab('lista', document.querySelectorAll('.tab')[1]);
 
     // Espelha no ERP sem prender o cliente: o pedido JA passou pelo portao e ja
     // esta submetido: se o Zen estiver fora do ar, isso e problema nosso, nao
@@ -1624,6 +1661,8 @@ async function openPedido(id) {
         </div>
       </div>
       ${pedido.ordem_compra ? `<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding:8px 10px;background:#f0f7ff;border-radius:6px"><strong>OC do cliente:</strong> ${esc(pedido.ordem_compra)}</div>` : ''}
+      ${pedido.frete_modalidade === 'retirada' ? `<div style="font-size:13px;color:#92400e;margin-bottom:12px;padding:8px 10px;background:#fff7ed;border-radius:6px"><strong>Frete:</strong> cliente vai usar transportadora propria neste pedido (excecao sinalizada na criacao).</div>` : ''}
+      ${pedido.classe_comercial_aplicada ? `<div style="font-size:12px;color:#718096;margin-bottom:12px">Precificado em <strong>${esc(pedido.segmento_aplicado || '')}/${esc(pedido.uf_aplicada || '')} — classe ${pedido.classe_comercial_aplicada}</strong> no momento do envio.</div>` : ''}
       ${renderTimeline(pedido, eventos)}
       ${itens.length ? `<div style="overflow-x:auto"><table>
         <thead><tr><th>SKU</th><th>Produto</th><th>Qtd</th><th>Preco Unit.</th><th>Subtotal</th></tr></thead>
@@ -1802,7 +1841,7 @@ async function itensParaCarrinho(pedidoId) {
 
 function irParaCarrinho() {
   closeModal();
-  showTab('novo', document.querySelectorAll('.tab')[1]);
+  showTab('novo', document.querySelectorAll('.tab')[0]);
 }
 
 // Mensagem de erro util em vez de generica: um "Erro ao reverter pedido" seco

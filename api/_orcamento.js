@@ -453,11 +453,19 @@ async function montarVendaZen(o, orc, itens) {
     'Frete: ' + (o.frete_tipo || 'a combinar') + (o.frete_valor ? ' (' + brl(o.frete_valor) + ')' : ''),
     o.observacoes ? 'Observações: ' + o.observacoes : null
   ].filter(Boolean).join('\n');
+  // Mesma tag de classe aplicada que push-pedido.js grava -- "tabelavel de
+  // facil acesso" no proprio ZEN (RSQL tags==...), pedido do Andre, 2026-11-06.
+  // segmento/classe vivem em `o` (a linha de comercial.orcamentos, ver `row`
+  // em cima), nao em `orc` -- `orc` as vezes e so {codigo} (dry-run).
+  const SIGLA_SEGMENTO_ORC = { 'Física': 'F', 'Hibrido': 'H', 'Ecommerce': 'E' };
+  const tagClasseOrc = (o.segmento && o.classe)
+    ? ',' + (SIGLA_SEGMENTO_ORC[o.segmento] || o.segmento[0]) + o.classe
+    : '';
   const sale = {
     company: { id: ZEN_COMPANY_ID },
     person: { id: Number(o.zen_person_id) },
     saleProfile: { id: ZEN_PERFIL_ORCAMENTO },
-    tags: 'ORCAMENTO,' + orc.codigo,
+    tags: 'ORCAMENTO,' + orc.codigo + tagClasseOrc,
     freightType: o.frete_tipo === 'CIF' ? 'ISSUER' : (o.frete_tipo === 'FOB' ? 'RECIPIENT' : 'NONE'),
     properties: { comments: comentarios }
   };

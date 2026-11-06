@@ -200,10 +200,24 @@ select,input,textarea{font-family:Outfit,sans-serif}
   </div>
   <div class="panel-content hidden" id="tab-regras">
     <div class="page-header"><h2 class="page-title">Regras Comerciais</h2></div>
+
+    <div class="page-header" style="margin-top:4px">
+      <h3 style="font-size:15px;color:#1d327b">Parametros Comerciais</h3>
+    </div>
     <div class="panel-hint">
-      Motor de exceções: pedido minimo, faixas de desconto por volume, elegibilidade a boleto/duplicata, frete gratis por UF/valor, etc.
+      Valores que o motor de preco/credito/frete usa direto do banco -- mudar aqui vale na hora, sem deploy.
+      <b>So admin edita</b> (campos ficam travados pra manager/analyst/financial).
+    </div>
+    <div id="parametrosList"></div>
+
+    <div class="page-header" style="margin-top:28px">
+      <h3 style="font-size:15px;color:#1d327b">Motor de Excecoes</h3>
+    </div>
+    <div class="panel-hint">
+      Pedido minimo, faixas de desconto por volume, elegibilidade a boleto/duplicata, frete gratis por UF/valor, etc.
       Cada regra tem <em>condicao</em> (ex: cliente da regiao X, valor acima de Y) e <em>acao</em> (ex: aplicar desconto de Z%).
       O servidor avalia todas as regras vigentes ao validar o pedido -- se algo bloqueia, o cliente ve o motivo.
+      <em>Ainda nao construido nesta tela.</em>
     </div>
     <div id="regrasList"></div>
   </div>
@@ -315,6 +329,47 @@ function showTab(n, el) {
   if (n === 'catalogo') loadCatalogo();
   if (n === 'clientes') loadClientes();
   if (n === 'solicitacoes') loadSolicitacoesAdmin();
+  if (n === 'regras') loadParametrosComerciais();
+}
+
+// Pedido do Andre, 2026-11-06: onde ajustar coisas como "progressao de
+// classe desligada" sem precisar pedir uma migration toda vez. Edita
+// direto hub_politica_parametros (mesma tabela que hub_fn_classe,
+// hub_fn_faixa_proxima etc ja leem na hora, sem redeploy). So admin edita
+// de proposito -- manager/analyst/financial veem os valores mas nao mexem,
+// porque isso afeta preco/credito/frete pra toda a base de clientes.
+async function loadParametrosComerciais() {
+  const wrap = document.getElementById('parametrosList');
+  const souAdmin = getUserRole() === 'admin';
+  try {
+    const params = await sb('/hub_politica_parametros?order=chave.asc&select=*');
+    if (!params.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhum parametro cadastrado</h3></div>'; return; }
+    wrap.innerHTML = `<div style="overflow-x:auto"><table>
+      <thead><tr><th>Chave</th><th>Descricao</th><th>Valor</th><th></th></tr></thead>
+      <tbody>${params.map(p => `<tr>
+        <td><code style="font-size:12px">${escSol(p.chave)}</code></td>
+        <td style="font-size:12px;color:#718096;max-width:380px">${escSol(p.descricao || '')}</td>
+        <td><input id="param_${escSol(p.chave)}" value="${escSol(p.valor)}" ${souAdmin ? '' : 'disabled'} style="width:120px;text-align:right;font-variant-numeric:tabular-nums"></td>
+        <td>${souAdmin ? `<button class="btn btn-outline btn-sm" onclick="salvarParametro('${p.chave}')">Salvar</button>` : ''}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  } catch (e) {
+    wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar parametros</h3></div>';
+  }
+}
+
+async function salvarParametro(chave) {
+  const input = document.getElementById('param_' + chave);
+  const valor = parseFloat(input.value);
+  if (isNaN(valor)) { toast('Valor invalido', 'error'); return; }
+  try {
+    await sb('/hub_politica_parametros?chave=eq.' + encodeURIComponent(chave), 'PATCH', {
+      valor, atualizado_em: new Date().toISOString()
+    });
+    toast('Parametro atualizado');
+  } catch (e) {
+    toast('Erro ao salvar: ' + e.message, 'error');
+  }
 }
 
 async function loadSolicitacoesAdmin() {

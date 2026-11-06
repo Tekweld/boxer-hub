@@ -77,6 +77,7 @@ module.exports = async function handler(req, res) {
       HUB_URL + '/rest/v1/hub_pedidos?id=eq.' + pedido_id +
         '&select=id,numero,status,valor_total,cliente_id,representante_id,erp_pedido_id,' +
         'forma_pagamento,parcelas,observacoes,ordem_compra,frete_modalidade,' +
+        'classe_comercial_aplicada,segmento_aplicado,' +
         'hub_clientes(erp_cliente_id,razao_social,representante_id),hub_pedido_itens(sku,quantidade,preco_final)',
       { headers: hubH('GET') }
     );
@@ -180,11 +181,22 @@ module.exports = async function handler(req, res) {
                        : pedido.frete_modalidade === 'retirada' ? 'RECIPIENT'
                        : 'NONE';
 
+    // Classe de preco aplicada -- nao ha campo proprio em sale.Sale (so 14
+    // campos no nivel raiz, ver nota acima), mas `tags` e padrao e
+    // filtravel no ZEN (RSQL `tags==...`), mesmo mecanismo que `blocked` ja
+    // usa em Person. Pedido do Andre, 2026-11-06: "tabelavel de facil
+    // acesso" -- F3/H2/E1, sigla do segmento + classe, bate com o jeito que
+    // ele proprio ja nomeia as classes.
+    const SIGLA_SEGMENTO = { 'Física': 'F', 'Hibrido': 'H', 'Ecommerce': 'E' };
+    const tagClasse = (pedido.segmento_aplicado && pedido.classe_comercial_aplicada)
+      ? ',' + (SIGLA_SEGMENTO[pedido.segmento_aplicado] || pedido.segmento_aplicado[0]) + pedido.classe_comercial_aplicada
+      : '';
+
     const saleBody = {
       company: { id: ZEN_COMPANY_ID },
       person: { id: Number(erpClienteId) },
       saleProfile: { id: ZEN_SALE_PROFILE_ID },
-      tags: 'HUB,' + pedido.numero + (testTag ? ',' + testTag : ''),
+      tags: 'HUB,' + pedido.numero + tagClasse + (testTag ? ',' + testTag : ''),
       freightType
     };
     if (personAddressShippingId) saleBody.personAddressShipping = { id: personAddressShippingId };

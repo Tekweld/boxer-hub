@@ -475,7 +475,7 @@ async function loadClientes() {
 }
 
 async function liberarCliente(clienteId) {
-  if (!confirm('Liberar o acesso deste cliente ao portal?')) return;
+  if (!(await confirmModal('Liberar o acesso deste cliente ao portal?', { textoBotao: 'Liberar', perigo: false }))) return;
   try {
     const r = await sb('/rpc/hub_fn_liberar_cliente', 'POST', { p_cliente_id: clienteId });
     const resultado = Array.isArray(r) ? r[0] : r;
@@ -488,7 +488,7 @@ async function liberarCliente(clienteId) {
 }
 
 async function syncZenClientes() {
-  if (!confirm('Importar/atualizar todos os clientes dos canais Hibrido, Ecommerce e Varejo a partir do Zen? Isso pode levar alguns minutos.')) return;
+  if (!(await confirmModal('Importar/atualizar todos os clientes dos canais Hibrido, Ecommerce e Varejo a partir do Zen? Isso pode levar alguns minutos.', { textoBotao: 'Importar', perigo: false }))) return;
   const btn = document.getElementById('btnSyncZen');
   const status = document.getElementById('zenSyncStatus');
   btn.disabled = true;
@@ -697,12 +697,72 @@ async function salvarUsuario() {
   }
 }
 
+// Botao existia desde a criacao da aba Usuarios mas so mostrava "em
+// desenvolvimento" -- achado em auditoria, 2026-11-04. Edicao minima e
+// deliberada: nome/telefone/area/ativo. Nao mexe em tipo/role/vinculo
+// (cliente_id/representante_id) aqui -- trocar isso e recriar o usuario
+// (api/_criar_usuario.js ja cobre o caminho de criacao com as validacoes
+// certas por tipo; editar esses campos por fora arrisca um perfil
+// inconsistente com o que a RLS espera).
 async function editUsuario(id) {
-  toast('Edicao de usuario em desenvolvimento');
+  try {
+    const [u] = await sb('/hub_perfis?id=eq.' + id + '&select=*');
+    if (!u) { toast('Usuario nao encontrado', 'error'); return; }
+    openModal(`
+      <h3 style="font-size:18px;margin-bottom:4px;color:#1d327b">Editar Usuario</h3>
+      <div style="font-size:12px;color:#718096;margin-bottom:16px">${u.email} — ${u.tipo} / ${u.role}</div>
+      <div class="form-row"><label>Nome</label><input id="editUNome" value="${escSol(u.nome || '')}"></div>
+      <div class="form-row"><label>Telefone</label><input id="editUTel" value="${escSol(u.telefone || '')}"></div>
+      ${u.tipo === 'funcionario' ? `
+      <div class="form-row">
+        <label>Area</label>
+        <select id="editUArea">
+          <option value="">Selecione...</option>
+          <option value="vendas_adm"${u.area==='vendas_adm'?' selected':''}>Comercial / ADM de Vendas</option>
+          <option value="financeiro"${u.area==='financeiro'?' selected':''}>Financeiro</option>
+          <option value="operacoes"${u.area==='operacoes'?' selected':''}>Operacoes</option>
+          <option value="ti"${u.area==='ti'?' selected':''}>TI</option>
+        </select>
+      </div>` : ''}
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#4a5568;margin-top:4px">
+        <input type="checkbox" id="editUAtivo" ${u.ativo ? 'checked' : ''} style="width:auto"> Usuario ativo
+      </label>
+      <div class="form-actions">
+        <button class="btn btn-outline" onclick="closeModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="salvarEdicaoUsuario('${id}')">Salvar</button>
+      </div>
+    `);
+  } catch (e) {
+    toast('Erro ao abrir usuario: ' + e.message, 'error');
+  }
 }
 
+async function salvarEdicaoUsuario(id) {
+  const patch = {
+    nome: document.getElementById('editUNome').value.trim(),
+    telefone: document.getElementById('editUTel').value.trim() || null,
+    ativo: document.getElementById('editUAtivo').checked
+  };
+  const areaEl = document.getElementById('editUArea');
+  if (areaEl) patch.area = areaEl.value || null;
+  if (!patch.nome) { toast('Nome obrigatorio', 'error'); return; }
+  try {
+    await sb('/hub_perfis?id=eq.' + id, 'PATCH', patch);
+    toast('Usuario atualizado');
+    closeModal();
+    loadUsuarios();
+  } catch (e) {
+    toast('Erro ao salvar: ' + e.message, 'error');
+  }
+}
+
+// "Nova campanha" ainda nao foi construido (precisa de hub_campanhas +
+// hub_campanha_produtos, tela propria) -- deixar o botao honesto em vez de
+// fingir funcionar foi o pedido mais rapido de atender por ora (achado em
+// auditoria, 2026-11-04). Construir de verdade fica pra quando a pauta de
+// campanhas entrar na fila.
 function openNovaCampanha() {
-  toast('Campanhas em desenvolvimento');
+  toast('Campanhas promocionais ainda nao foram construidas nesta tela — fora do escopo atual', 'error');
 }
 
 // === ONBOARDING ===
@@ -913,7 +973,7 @@ function buildOnbActions(o) {
           ${cancelBtn}
           <button class="btn btn-danger btn-sm" onclick="abrirRejeicao('${o.id}')">Reprovar</button>
           <span style="font-size:12px;color:#718096;flex:1;text-align:right">MVP: validacao manual (IA futura)</span>
-          <button class="btn btn-success btn-sm" onclick="avancarOnb('${o.id}','aprovacao_adm',{aprovador_docs_id:getUserId(),aprovador_docs_observacoes:document.getElementById('onbObsIA').value,docs_status:'aprovado',docs_aprovado_em:new Date().toISOString()},{titulo:'Dados e documentos aprovados',mensagem:'Seguiu para aprovacao da ADM de Vendas.'})">Aprovar Dados + Docs</button>
+          <button class="btn btn-success btn-sm" onclick="avancarOnb('${o.id}','aprovacao_adm',{aprovador_docs_id:getUserId(),aprovador_docs_observacoes:document.getElementById('onbObsIA').value,docs_status:'aprovado',docs_aprovado_em:new Date().toISOString()},{titulo:'Dados e documentos aprovados',mensagem:'Seguiu para aprovacao da ADM de Vendas.'},'vendas_adm')">Aprovar Dados + Docs</button>
         </div>`;
     }
   }
@@ -925,7 +985,7 @@ function buildOnbActions(o) {
         <div class="action-bar">
           ${cancelBtn}
           <button class="btn btn-danger btn-sm" onclick="abrirRejeicao('${o.id}')">Rejeitar</button>
-          <button class="btn btn-success btn-sm" onclick="avancarOnb('${o.id}','analise_credito',{aprovador_docs_observacoes:(document.getElementById('onbObsAdm').value||'')},{titulo:'Cadastro aprovado pela ADM de Vendas',mensagem:'Agora em analise de credito.'})">Aprovar Cadastro</button>
+          <button class="btn btn-success btn-sm" onclick="avancarOnb('${o.id}','analise_credito',{aprovador_docs_observacoes:(document.getElementById('onbObsAdm').value||'')},{titulo:'Cadastro aprovado pela ADM de Vendas',mensagem:'Agora em analise de credito.'},'financeiro')">Aprovar Cadastro</button>
         </div>`;
     }
   }
@@ -1045,13 +1105,38 @@ async function notificarRepresentante(o, { titulo, mensagem, cor }) {
   }
 }
 
-async function avancarOnb(id, novaEtapa, extraFields, notif) {
+// Avisa quem precisa agir na PROXIMA etapa (ADM Vendas/Financeiro/admin) --
+// achado em 2026-11-06, pedido do Andre: antes so existia um email fixo pro
+// Andre em "novo cadastro", ninguem da area era avisado nas etapas
+// seguintes. Mesma logica de area do canal de resolucao (hub_perfis.area).
+// Fire-and-forget, igual notificarRepresentante -- nunca trava o fluxo.
+async function notificarEquipeOnboarding(o, area, novaEtapa) {
+  try {
+    fetch('/api/email', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tipo: 'onboarding_equipe',
+        dados: {
+          area: area || null, etapa: etapaLabel(novaEtapa),
+          titulo: 'Cadastro aguardando: ' + etapaLabel(novaEtapa),
+          mensagem: 'Avancou para a etapa "' + etapaLabel(novaEtapa) + '".',
+          razao_social: o.razao_social, cnpj: o.cnpj, onboarding_id: o.id
+        }
+      })
+    }).catch(() => {});
+  } catch (e) {
+    console.warn('Falha ao notificar equipe:', e.message);
+  }
+}
+
+async function avancarOnb(id, novaEtapa, extraFields, notif, equipeArea) {
   try {
     const o = allOnboardings.find(x => x.id === id);
     const body = { etapa_atual: novaEtapa, atualizado_em: new Date().toISOString() };
     if (extraFields) Object.assign(body, extraFields);
     await sb('/hub_onboarding?id=eq.' + id, 'PATCH', body);
     if (o && notif) notificarRepresentante(o, notif);
+    if (o && equipeArea) notificarEquipeOnboarding(o, equipeArea, novaEtapa);
     toast('Cadastro avancado para: ' + etapaLabel(novaEtapa));
     closeModal();
     await loadOnboardings();
@@ -1139,10 +1224,13 @@ async function aprovarCredito(id) {
       aprovador_credito_observacoes: obs,
       atualizado_em: new Date().toISOString()
     });
-    if (o) notificarRepresentante(o, {
-      titulo: 'Limite de credito sugerido', cor: 'ok',
-      mensagem: 'Limite sugerido: R$ ' + limite.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) + '. Aguardando aprovacao do Financeiro.'
-    });
+    if (o) {
+      notificarRepresentante(o, {
+        titulo: 'Limite de credito sugerido', cor: 'ok',
+        mensagem: 'Limite sugerido: R$ ' + limite.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) + '. Aguardando aprovacao do Financeiro.'
+      });
+      notificarEquipeOnboarding(o, 'financeiro', 'aprovacao_financeiro');
+    }
     toast('Enviado para aprovacao do Financeiro — limite sugerido R$ ' + limite.toLocaleString('pt-BR', {minimumFractionDigits:2}));
     closeModal();
     await loadOnboardings();
@@ -1166,10 +1254,15 @@ async function aprovarFinanceiro(id) {
       credito_aprovado_em: new Date().toISOString(),
       atualizado_em: new Date().toISOString()
     });
-    if (o) notificarRepresentante(o, {
-      titulo: 'Credito aprovado', cor: 'ok',
-      mensagem: 'Limite aprovado: R$ ' + limite.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) + '. Cadastro pronto para ativacao.'
-    });
+    if (o) {
+      notificarRepresentante(o, {
+        titulo: 'Credito aprovado', cor: 'ok',
+        mensagem: 'Limite aprovado: R$ ' + limite.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) + '. Cadastro pronto para ativacao.'
+      });
+      // Ativacao so pode ser feita por admin (checagem em api/ativar.js) --
+      // sem area especifica, so role admin/manager.
+      notificarEquipeOnboarding(o, null, 'ativacao');
+    }
     toast('Credito aprovado — R$ ' + limite.toLocaleString('pt-BR', {minimumFractionDigits:2}));
     closeModal();
     await loadOnboardings();
@@ -1793,7 +1886,7 @@ function resizeImage(file, maxDim) {
 }
 
 async function deleteFoto(anexoId, produtoId) {
-  if (!confirm('Remover esta foto?')) return;
+  if (!(await confirmModal('Remover esta foto?', { textoBotao: 'Remover' }))) return;
   try {
     const r = await fetch('/api/upload', {
       method: 'POST',
@@ -1874,7 +1967,7 @@ async function syncEstoque() {
 }
 
 async function cancelarConvite(id) {
-  if (!confirm('Cancelar este convite?')) return;
+  if (!(await confirmModal('Cancelar este convite?', { textoBotao: 'Cancelar convite' }))) return;
   try {
     await sb('/hub_convites?id=eq.' + id, 'PATCH', { status: 'cancelado' });
     toast('Convite cancelado');

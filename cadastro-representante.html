@@ -969,15 +969,11 @@ async function submitOnboarding() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        tipo: 'onboarding_novo',
+        tipo: 'onboarding_equipe',
         dados: {
-          razao_social: gi('fRazao'),
-          cnpj: gi('fCnpj'),
-          nome_fantasia: gi('fFantasia'),
-          contato_email: gi('fEmail'),
-          contato_telefone: gi('fTelefone'),
-          classificacao: getClassification(),
-          regiao: gi('fUf')
+          area: 'vendas_adm', etapa: 'Validacao', titulo: 'Novo cadastro aguardando validacao',
+          mensagem: 'Cadastrado pelo representante ' + (getUserNome() || '') + ', pronto para a primeira validacao.',
+          razao_social: gi('fRazao'), cnpj: gi('fCnpj')
         }
       })
     }).catch(() => {});

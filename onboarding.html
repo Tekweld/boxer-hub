@@ -952,19 +952,18 @@ async function submitOnboarding() {
     document.querySelectorAll('.step-content').forEach(el => el.classList.add('hidden'));
     document.getElementById('stepSuccess').classList.remove('hidden');
 
+    // Avisa a ADM de Vendas (area vendas_adm) + admin/manager -- achado em
+    // 2026-11-06: antes so o Andre recebia esse email, ninguem da area era
+    // avisado de verdade.
     fetch('/api/email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        tipo: 'onboarding_novo',
+        tipo: 'onboarding_equipe',
         dados: {
-          razao_social: gi('fRazao'),
-          cnpj: gi('fCnpj'),
-          nome_fantasia: gi('fFantasia'),
-          contato_email: gi('fEmail'),
-          contato_telefone: gi('fTelefone'),
-          classificacao: getClassification(),
-          regiao: gi('fUf')
+          area: 'vendas_adm', etapa: 'Validacao', titulo: 'Novo cadastro aguardando validacao',
+          mensagem: 'Formulario publico preenchido, pronto para a primeira validacao.',
+          razao_social: gi('fRazao'), cnpj: gi('fCnpj')
         }
       })
     }).catch(() => {});

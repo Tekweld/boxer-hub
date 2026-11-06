@@ -22,6 +22,22 @@ module.exports = async function handler(req, res) {
   const { tipo, dados } = req.body || {};
   if (!tipo || !dados) return res.status(400).json({ error: 'tipo e dados obrigatorios' });
 
+  // Avisa a equipe interna (area_responsavel do canal de resolucao + admin/
+  // manager) quando um cadastro de onboarding entra numa etapa que depende
+  // de alguem de la agir -- achado em 2026-11-06: ate aqui so existia um
+  // email fixo pro Andre em "novo cadastro"; ninguem era avisado nas etapas
+  // seguintes (ADM Vendas aprovar, financeiro analisar/aprovar credito).
+  // Rota separada da logica normal de buildEmail porque precisa consultar
+  // hub_perfis antes de montar o email (lista de destinatarios dinamica).
+  if (tipo === 'onboarding_equipe') {
+    try {
+      return res.status(200).json(await notificarEquipeOnboarding(dados));
+    } catch (e) {
+      console.error('Erro ao notificar equipe onboarding:', e);
+      return res.status(200).json({ ok: true, enviado: false, motivo: e.message });
+    }
+  }
+
   try {
     const email = buildEmail(tipo, dados);
     if (!email) return res.status(400).json({ error: 'Tipo de email desconhecido: ' + tipo });
@@ -183,6 +199,75 @@ function buildEmail(tipo, d) {
     default:
       return null;
   }
+}
+
+// Avisa quem precisa agir num cadastro de onboarding: funcionarios da
+// `area` informada (vendas_adm/financeiro/etc, mesmo conceito do canal de
+// resolucao) + admin/manager (enxergam tudo) + Andre sempre, como rede de
+// seguranca (hoje nenhum hub_perfis tem email dele -- sem isso ele para de
+// ser avisado assim que a rota passa a depender so de area/role).
+const SB_URL_INT = 'https://bmepxcnrsofofoswubuu.supabase.co';
+const ANDRE_FALLBACK = 'andre.coelho@boxersoldas.com.br';
+
+async function notificarEquipeOnboarding(d) {
+  const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
+  if (!SB_SERVICE) return { ok: true, enviado: false, motivo: 'SUPABASE_SERVICE_KEY nao configurada' };
+
+  const H = {
+    'Content-Type': 'application/json', apikey: SB_SERVICE, Authorization: 'Bearer ' + SB_SERVICE,
+    'Accept-Profile': 'comercial', 'Content-Profile': 'comercial'
+  };
+
+  const filtroOr = d.area
+    ? 'or=(area.eq.' + encodeURIComponent(d.area) + ',role.in.(admin,manager))'
+    : 'role=in.(admin,manager)';
+  const perfis = await fetch(
+    SB_URL_INT + '/rest/v1/hub_perfis?ativo=eq.true&tipo=neq.cliente&' + filtroOr + '&select=user_id,email,nome',
+    { headers: H }
+  ).then(r => r.ok ? r.json() : []).catch(() => []);
+
+  const emails = new Set([ANDRE_FALLBACK]);
+  for (const p of perfis) if (p.email) emails.add(p.email);
+
+  // Notificacao dentro do Hub so pra quem tem login de fato (user_id) --
+  // o fallback do Andre e so por email, nao gera notificacao fantasma se
+  // ele nao tiver hub_perfis.
+  const comLogin = perfis.filter(p => p.user_id);
+  if (comLogin.length) {
+    await fetch(SB_URL_INT + '/rest/v1/hub_notificacoes', {
+      method: 'POST', headers: { ...H, Prefer: 'return=minimal' },
+      body: JSON.stringify(comLogin.map(p => ({
+        usuario_id: p.user_id, tipo: 'aprovacao_pendente', titulo: d.titulo,
+        mensagem: (d.razao_social || '') + ' — ' + d.mensagem,
+        referencia_tipo: 'onboarding', referencia_id: d.onboarding_id || null, lida: false
+      })))
+    }).catch(() => {});
+  }
+
+  const RESEND_KEY = process.env.RESEND_API_KEY;
+  if (!RESEND_KEY) return { ok: true, enviado: false, motivo: 'RESEND_API_KEY nao configurada', notificados_hub: comLogin.length };
+
+  const subject = 'Onboarding aguardando acao — ' + (d.razao_social || 'cadastro') + ' — ' + d.titulo;
+  const body = `
+    <p>Um cadastro de revendedor no <strong>Boxer Hub</strong> esta aguardando a sua acao.</p>
+    ${infoBox([
+      ['Empresa', d.razao_social],
+      ['CNPJ', d.cnpj],
+      ['Etapa', d.etapa],
+      ['Status', d.titulo]
+    ])}
+    ${d.mensagem ? '<p style="font-size:13px;color:#4a5568">' + d.mensagem + '</p>' : ''}
+    ${btnLink(HUB_URL + '/admin.html', 'Abrir no Admin')}
+  `;
+
+  const r = await fetch(RESEND_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + RESEND_KEY },
+    body: JSON.stringify({ from: FROM_DEFAULT, to: Array.from(emails), subject, html: wrapHtml(subject, body) })
+  });
+  const result = await r.json();
+  if (!r.ok) return { ok: true, enviado: false, motivo: result.message || 'Erro Resend', notificados_hub: comLogin.length };
+  return { ok: true, enviado: true, id: result.id, notificados_email: emails.size, notificados_hub: comLogin.length };
 }
 
 function infoBox(rows) {

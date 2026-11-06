@@ -22,7 +22,13 @@ module.exports = async function criarUsuarioInterno(req, res) {
   if (!tipo || !['representante', 'funcionario', 'admin'].includes(tipo)) {
     return res.status(400).json({ error: 'tipo deve ser representante, funcionario ou admin. Cliente usa a aba Convites/Onboarding.' });
   }
-  if (!role) return res.status(400).json({ error: 'role obrigatorio' });
+  // Lista espelha a CHECK constraint de hub_perfis.role -- sem isto, um
+  // valor invalido so falhava la na gravacao, com erro cru de constraint em
+  // vez de mensagem clara (achado em auditoria, 2026-11-04).
+  const ROLES_VALIDOS = ['dealer', 'rep', 'analyst', 'manager', 'financial', 'admin'];
+  if (!role || !ROLES_VALIDOS.includes(role)) {
+    return res.status(400).json({ error: 'role invalido. Use: ' + ROLES_VALIDOS.join(', ') });
+  }
   if (tipo === 'representante' && !representante_id) {
     return res.status(400).json({ error: 'Selecione um representante ja sincronizado do ZEN' });
   }

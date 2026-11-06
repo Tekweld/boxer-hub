@@ -345,6 +345,17 @@ module.exports = async function handler(req, res) {
 
     console.log(`[ZEN] ${pessoas.length} pessoas nos canais ${CANAIS.join(', ')}`);
 
+    // Clientes com "Liberar acesso" aplicado manualmente (hub_fn_liberar_cliente)
+    // -- achado em 2026-11-04: o ZEN nao aceita update de Person, entao a tag
+    // 'blocked' continua la para sempre; sem isto, o proximo sync desfazia a
+    // liberacao sozinho. So respeita enquanto o ZEN ainda mandar a tag --
+    // some sozinho quando o ZEN de verdade parar de mandar 'blocked'.
+    const liberadosManualmente = new Set();
+    {
+      const r = await fetch(HUB_URL + '/rest/v1/hub_clientes?bloqueio_liberado_manualmente=eq.true&select=erp_cliente_id', { headers: hubH('GET') });
+      if (r.ok) for (const c of await r.json()) liberadosManualmente.add(c.erp_cliente_id);
+    }
+
     // 2 — Montar os registros do Hub
     const semDoc = [];
     const bodies = [];
@@ -386,9 +397,14 @@ module.exports = async function handler(req, res) {
         cidade: p.city?.name || null,
         uf: p.city?.state?.code || null,
         tags,
-        bloqueado: tags.includes('blocked'),
-        // bloqueado no Zen entra suspenso; os demais, ativos
-        status_cadastro: tags.includes('blocked') ? 'suspenso' : 'ativo',
+        // Override de "Liberar acesso": enquanto o ZEN ainda mandar a tag
+        // 'blocked' (nunca vai parar sozinho, Person nao aceita update), o
+        // Hub respeita a decisao manual do admin em vez de reaplicar o
+        // bloqueio. Some sozinho (liberadosManualmente so tem quem a tag
+        // ainda bate) quando o ZEN realmente deixar de mandar 'blocked'.
+        bloqueado: liberadosManualmente.has(String(p.id)) ? false : tags.includes('blocked'),
+        status_cadastro: liberadosManualmente.has(String(p.id)) ? 'ativo' : (tags.includes('blocked') ? 'suspenso' : 'ativo'),
+        bloqueio_liberado_manualmente: liberadosManualmente.has(String(p.id)) && tags.includes('blocked'),
         ativo: true,
         sincronizado_em: new Date().toISOString(),
         _repErpId: rep?.id ? String(rep.id) : null

@@ -772,6 +772,28 @@ function closeModal() {
   if (ov) ov.classList.remove('show');
 }
 
+// Substitui o confirm() nativo do navegador -- achado em auditoria de UX
+// (2026-11-04): a caixa cinza do sistema operacional no meio de uma tela
+// com acabamento proprio e o que mais acusa "parece prototipo". Mesmo
+// overlay/modal de sempre, so com os dois botoes resolvendo uma Promise.
+// Uso: if (!(await confirmModal('Cancelar este pedido?'))) return;
+function confirmModal(mensagem, opcoes = {}) {
+  return new Promise(resolve => {
+    const titulo = opcoes.titulo || 'Confirmar';
+    const textoBotao = opcoes.textoBotao || 'Confirmar';
+    const perigo = opcoes.perigo !== false; // maioria dos confirm() substituidos e acao de risco
+    window._confirmModalResolve = (v) => { resolve(v); closeModal(); };
+    openModal(`
+      <h3 style="font-size:18px;margin-bottom:12px;color:#1d327b">${titulo}</h3>
+      <p style="font-size:14px;color:#4a5568;line-height:1.5;white-space:pre-line;margin-bottom:4px">${mensagem}</p>
+      <div class="form-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0">
+        <button class="btn btn-outline" onclick="_confirmModalResolve(false)">Cancelar</button>
+        <button class="btn ${perigo ? 'btn-danger' : 'btn-primary'}" onclick="_confirmModalResolve(true)">${textoBotao}</button>
+      </div>
+    `);
+  });
+}
+
 // === MOBILE MENU ===
 
 function toggleMobileMenu() {

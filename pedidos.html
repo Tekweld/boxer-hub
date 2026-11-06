@@ -61,10 +61,10 @@ tbody tr:hover{background:#f0f7ff}
 .rev-total .v{font-size:19px;font-weight:700;color:#1d327b;font-variant-numeric:tabular-nums}
 .rev-credito{padding:12px 14px;border-radius:8px;border:1px solid #d0d8e8;background:#f7fafc}
 .rev-credito.ok{border-color:#bbf7d0;background:#f0fdf4}
-.rev-credito.ruim{border-color:#fecaca;background:#fef2f2}
+.rev-credito.ruim{border:2px solid #e30613;background:#fef2f2;box-shadow:0 0 0 3px #fee2e2}
 .rev-credito .saldo{font-size:13px;font-weight:600;margin-top:6px;padding-top:6px;border-top:1px dashed #cbd5e0}
 .rev-credito.ok .saldo{color:#166534}
-.rev-credito.ruim .saldo{color:#991b1b}
+.rev-credito.ruim .saldo{color:#991b1b;font-size:14px}
 .rev-frete{padding:12px 14px;border-radius:8px;border:1px solid #d0d8e8;background:#f7fafc;font-size:13px;color:#4a5568}
 .rev-opcoes{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 .rev-opcao{display:flex;gap:8px;align-items:flex-start;padding:10px;border:1px solid #c3cfe2;border-radius:8px;background:#fff;cursor:pointer;font-size:13px}
@@ -899,13 +899,13 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
       ${violacoes.map(v => `<strong>${esc(rotuloRegra(v.regra))}</strong><p>${esc(v.mensagem || '')}</p>`).join('<hr>')}
     </div>` : ''}
 
-    <div class="rev-sec">
-      <h4>Resumo</h4>
-      <div class="rev-linha"><span>${politica.itens || 0} item(ns)</span><span class="v">${fmtMoeda(subtotal)}</span></div>
-      <div class="rev-linha"><span>Frete</span><span class="v">${valorFrete > 0 ? fmtMoeda(valorFrete) : 'Sem custo'}</span></div>
-      <div class="rev-total"><span>Total</span><span class="v">${fmtMoeda(total)}</span></div>
-    </div>
-
+    ${(() => {
+      // Credito sem saldo vem PRIMEIRO e com destaque forte -- e a informacao
+      // que mais importa pra decisao de B2B, e antes ficava enterrada no
+      // meio da lista com o mesmo peso visual de "Frete" (achado em
+      // auditoria de UX, 2026-11-04). Com saldo ok, mantem a ordem original
+      // (Resumo primeiro) -- nao ha urgencia pra chamar atencao.
+      const blocoCredito = `
     <div class="rev-sec">
       <h4>Limite de credito</h4>
       <div class="rev-credito ${saldo >= 0 ? 'ok' : 'ruim'}">
@@ -916,7 +916,16 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
           ? 'Sobra ' + fmtMoeda(saldo) + ' de limite apos este pedido.'
           : 'Faltam ' + fmtMoeda(Math.abs(saldo)) + '. Reduza o pedido ou <a href="financeiro.html#solicitar-credito" style="color:#1d327b;font-weight:600">solicite aumento de limite</a>.'}</div>
       </div>
-    </div>
+    </div>`;
+      const blocoResumo = `
+    <div class="rev-sec">
+      <h4>Resumo</h4>
+      <div class="rev-linha"><span>${politica.itens || 0} item(ns)</span><span class="v">${fmtMoeda(subtotal)}</span></div>
+      <div class="rev-linha"><span>Frete</span><span class="v">${valorFrete > 0 ? fmtMoeda(valorFrete) : 'Sem custo'}</span></div>
+      <div class="rev-total"><span>Total</span><span class="v">${fmtMoeda(total)}</span></div>
+    </div>`;
+      return saldo < 0 ? blocoCredito + blocoResumo : blocoResumo + blocoCredito;
+    })()}
 
     <div class="rev-sec">
       <h4>Endereco de entrega</h4>
@@ -1447,7 +1456,7 @@ function abrirOrcamentoDetalhe(id) {
     ${o.zen_erro && o.zen_status !== 'sem_cliente_zen' ? `<div style="font-size:12px;color:#9a3412;background:#fff4e5;padding:8px;border-radius:6px;margin-bottom:10px">${esc(o.zen_erro)}</div>` : ''}
     ${o.zen_status === 'sem_cliente_zen' ? `<div style="font-size:12px;color:#92400e;background:#fff7ed;border:1px solid #fed7aa;padding:10px 12px;border-radius:8px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
       <span>Cliente ainda não cadastrado no ZEN — assim que o cadastro existir, o pedido real entra sozinho.</span>
-      <button class="btn btn-warn btn-sm" id="btnVerificarCadastro_${o.id}" onclick="verificarCadastroOrcamento('${o.id}')">Verificar cadastro agora</button>
+      <button class="btn btn-outline btn-sm" id="btnVerificarCadastro_${o.id}" onclick="verificarCadastroOrcamento('${o.id}')">Verificar cadastro agora</button>
     </div>` : ''}
     <div style="display:flex;gap:6px;margin:14px 0">
       <input readonly value="${esc(o.link)}" style="flex:1;font-size:12px;padding:8px" onclick="this.select()">
@@ -1491,7 +1500,7 @@ async function verificarCadastroOrcamento(id) {
 }
 
 async function aprovarOrcamento(id) {
-  if (!confirm('Confirmar este orçamento? A venda vira pedido de verdade no Zen.')) return;
+  if (!(await confirmModal('Confirmar este orçamento? A venda vira pedido de verdade no Zen.', { textoBotao: 'Confirmar pedido', perigo: false }))) return;
   const o = _orcamentosCache[id];
   try {
     const r = await chamarOrcamentoApi('aprovar', { id });
@@ -1554,7 +1563,7 @@ async function espelharOrcamentoComoPedido(o, zenSaleId) {
 }
 
 async function cancelarOrcamento(id) {
-  if (!confirm('Cancelar este orçamento?')) return;
+  if (!(await confirmModal('Cancelar este orçamento?', { textoBotao: 'Cancelar orçamento' }))) return;
   try {
     await chamarOrcamentoApi('cancelar', { id });
     toast('Orçamento cancelado');
@@ -1760,15 +1769,15 @@ function acoesPedido(p) {
 // sem avisar e pedir confusao: o preco final e a politica valem para a revenda
 // ATIVA, nao para a dona do pedido original. Nao bloqueia -- ha caso legitimo
 // de usar um pedido como modelo -- mas exige confirmacao explicita.
-function confirmaTrocaDeRevenda(clienteDoPedido) {
+async function confirmaTrocaDeRevenda(clienteDoPedido) {
   const ativo = getClienteAtivo();
   if (!clienteDoPedido || !ativo || clienteDoPedido === ativo) return true;
   const nome = getClienteAtivoNome() || 'a revenda ativa';
-  return confirm(
+  return confirmModal(
     'Este pedido e de OUTRA revenda.\n\n' +
     'Os itens vao para o carrinho de ' + nome + ', e serao reprecificados ' +
-    'pela tabela e politica dessa revenda — os valores podem mudar.\n\n' +
-    'Continuar?'
+    'pela tabela e politica dessa revenda — os valores podem mudar.',
+    { titulo: 'Pedido de outra revenda', textoBotao: 'Continuar', perigo: false }
   );
 }
 
@@ -1817,7 +1826,7 @@ function marcarEdicao(id, clienteDoPedido) {
 }
 
 async function retomarPedido(id, clienteDoPedido) {
-  if (!confirmaTrocaDeRevenda(clienteDoPedido)) return;
+  if (!(await confirmaTrocaDeRevenda(clienteDoPedido))) return;
   try {
     if (!await itensParaCarrinho(id)) return;
     marcarEdicao(id, clienteDoPedido);
@@ -1829,7 +1838,7 @@ async function retomarPedido(id, clienteDoPedido) {
 }
 
 async function repetirPedido(id, clienteDoPedido) {
-  if (!confirmaTrocaDeRevenda(clienteDoPedido)) return;
+  if (!(await confirmaTrocaDeRevenda(clienteDoPedido))) return;
   try {
     if (!await itensParaCarrinho(id)) return;
     clearPedidoEmEdicao(); // copia gera pedido novo, nunca reescreve o original
@@ -1841,7 +1850,7 @@ async function repetirPedido(id, clienteDoPedido) {
 }
 
 async function reverterPedido(id, clienteDoPedido) {
-  if (!confirm('Voltar este pedido para rascunho? O valor volta para o limite de credito e o pedido podera ser editado e reenviado.')) return;
+  if (!(await confirmModal('Voltar este pedido para rascunho? O valor volta para o limite de credito e o pedido podera ser editado e reenviado.', { textoBotao: 'Voltar para rascunho' }))) return;
   try {
     const r = await sbRpc('hub_fn_reverter_pedido', { p_pedido_id: id });
     if (!r?.ok) { toast(r?.erro || 'Nao foi possivel reverter', 'error'); return; }
@@ -1849,7 +1858,7 @@ async function reverterPedido(id, clienteDoPedido) {
     // Reverteu no banco. Levar pro carrinho e opcional: se for de outra
     // revenda e o usuario recusar, o pedido ja esta salvo como rascunho e
     // pode ser retomado depois pela propria revenda dona.
-    if (confirmaTrocaDeRevenda(clienteDoPedido) && await itensParaCarrinho(id)) {
+    if (await confirmaTrocaDeRevenda(clienteDoPedido) && await itensParaCarrinho(id)) {
       marcarEdicao(id, clienteDoPedido);
       irParaCarrinho();
     } else {
@@ -1862,7 +1871,7 @@ async function reverterPedido(id, clienteDoPedido) {
 }
 
 async function descartarRascunho(id) {
-  if (!confirm('Descartar este rascunho? Os itens serao perdidos.')) return;
+  if (!(await confirmModal('Descartar este rascunho? Os itens serao perdidos.', { textoBotao: 'Descartar' }))) return;
   try {
     await sb('/hub_pedidos?id=eq.' + id, 'PATCH', { ativo: false });
     closeModal();

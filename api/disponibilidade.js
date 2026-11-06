@@ -268,7 +268,7 @@ async function acessoTabela(req, res) {
       const uid = await fetch(HUB_URL + '/rest/v1/rpc/auth_id_por_email', { method: 'POST', headers: H, body: JSON.stringify({ p: email }) }).then(r => r.json()).catch(() => null);
       if (typeof uid !== 'string') return res.status(400).json({ error: 'pessoa ainda sem usuario: salve o perfil Admin ou Editor primeiro' });
       const pf = await fetch(HUB_URL + '/rest/v1/perfis?id=eq.' + uid + '&select=permissao', { headers: H }).then(r => r.json()).catch(() => []);
-      if (!Array.isArray(pf) || !pf[0] || !['admin', 'editor', 'marketing'].includes(pf[0].permissao)) return res.status(400).json({ error: 'a pessoa nao tem perfil Admin ou Editor' });
+      if (!Array.isArray(pf) || !pf[0] || pf[0].permissao !== 'admin') return res.status(400).json({ error: 'link de senha e so para administradores: editores entram por codigo' });
       const lk = await fetch(HUB_URL + '/auth/v1/admin/generate_link', { method: 'POST', headers: H, body: JSON.stringify({ type: 'recovery', email, redirect_to: 'https://app.boxersoldas.com.br/admin_supabase.html' }) });
       const lkj = await lk.json().catch(() => ({}));
       const link = lkj && lkj.action_link;
@@ -276,7 +276,7 @@ async function acessoTabela(req, res) {
       const nomeP = String(body.nome || '').trim().slice(0, 120);
       const ok = await resendEnviar(email, 'Defina a senha do painel admin — Tabela de Preços Boxer',
         emailShell('<p style="font-size:15px;color:#1a202c;margin:0 0 12px">Olá' + (nomeP ? ', <strong>' + escHtml(nomeP) + '</strong>' : '') + '!</p>' +
-          '<p style="font-size:14px;color:#4a5568;margin:0 0 14px">Você recebeu acesso ao <strong>painel admin</strong> da Tabela de Preços Boxer. O painel exige e-mail e senha: clique abaixo para criar a sua.</p>' +
+          '<p style="font-size:14px;color:#4a5568;margin:0 0 14px">Você recebeu acesso de <strong>administrador</strong> ao painel da Tabela de Preços Boxer. Administradores entram somente com e-mail e senha: clique abaixo para criar a sua.</p>' +
           '<p style="text-align:center;margin:18px 0"><a href="' + link + '" style="background:#1d327b;color:#fff;text-decoration:none;padding:11px 24px;border-radius:8px;font-size:14px;font-weight:600">Definir minha senha</a></p>' +
           '<p style="font-size:12px;color:#718096;margin:0">O link vale por pouco tempo e só pode ser usado uma vez. Se expirar, peça outro a um administrador. Não reconhece este pedido? Ignore este e-mail.</p>'));
       if (!ok) return res.status(502).json({ error: 'nao foi possivel enviar o e-mail' });

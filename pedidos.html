@@ -311,7 +311,125 @@ function confirmarPrecoCarrinho(idx, el) {
 
 function restaurarPrecoCarrinho(idx) {
   const cart = getCart();
-  if (cart[idx]) { delete cart[idx].precoManual; saveCart(cart); }
+  if (cart[idx]) {
+    delete cart[idx].precoManual;
+    delete cart[idx].classeOverride;
+    delete cart[idx].segmentoOverride;
+    delete cart[idx].descontoOverride;
+    saveCart(cart);
+  }
+}
+
+// Grade granular por item (pedido do Andre, 2026-11-06): alem do preco solto
+// que editarPrecoCarrinho ja permite, deixa escolher uma TABELA especifica
+// (F1-E3, mesma sigla usada no Zen/push-pedido) e/ou um % de desconto
+// adicional, item a item -- inspirado na ferramenta antiga do representante.
+// O preco calculado vira o precoManual do item (mesmo mecanismo ja existente,
+// usado pra exibicao e pro orcamento), e classeOverride/segmentoOverride/
+// descontoOverride sao gravados em hub_pedido_itens pra hub_fn_submeter_pedido
+// reprecificar igual no envio real (ver hub_fn_calcular_preco_item).
+const SIGLA_PARA_SEGMENTO_GRADE = { F: 'Física', H: 'Hibrido', E: 'Ecommerce' };
+const TABELAS_GRADE = ['F1', 'F2', 'F3', 'H1', 'H2', 'H3', 'E1', 'E2', 'E3'];
+
+function siglaDoItemGrade(item) {
+  if (!item.classeOverride || !item.segmentoOverride) return '';
+  const sigla = Object.entries(SIGLA_PARA_SEGMENTO_GRADE).find(([, v]) => v === item.segmentoOverride)?.[0];
+  return sigla ? sigla + item.classeOverride : '';
+}
+
+function abrirGradeItem(idx) {
+  const cart = getCart();
+  const item = cart[idx];
+  if (!item) return;
+  const siglaAtual = siglaDoItemGrade(item);
+  openModal(`
+    <h3 style="font-size:16px;color:#1d327b;margin-bottom:4px">Ajustar tabela e desconto</h3>
+    <div style="font-size:12px;color:#718096;margin-bottom:16px">${esc(item.sku)} — ${esc(item.nome || '')}</div>
+    <div class="form-row-inline">
+      <div class="form-row">
+        <label>Tabela de preco</label>
+        <select id="gradeTabela" onchange="previewGradeItem(${idx})">
+          <option value="">Padrao (preco da revenda)</option>
+          ${TABELAS_GRADE.map(t => `<option value="${t}" ${siglaAtual === t ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row">
+        <label>% desconto adicional</label>
+        <input id="gradeDesconto" type="number" min="0" max="100" step="0.01"
+               value="${item.descontoOverride != null ? item.descontoOverride : ''}" placeholder="0"
+               oninput="previewGradeItem(${idx})">
+      </div>
+    </div>
+    <div id="gradePreview" style="font-size:13px;color:#4a5568;margin:4px 0 4px;min-height:18px">&nbsp;</div>
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" id="btnAplicarGrade" onclick="aplicarGradeItem(${idx})">Aplicar</button>
+    </div>
+  `);
+  previewGradeItem(idx);
+}
+
+async function previewGradeItem(idx) {
+  const prev = document.getElementById('gradePreview');
+  if (!prev) return;
+  const cart = getCart();
+  const item = cart[idx];
+  const clienteId = getClienteAtivo();
+  if (!item || !clienteId) { prev.textContent = 'Disponivel so para revenda com cadastro.'; return; }
+  const sigla = document.getElementById('gradeTabela').value;
+  const desconto = parseFloat(document.getElementById('gradeDesconto').value) || 0;
+  prev.textContent = 'Calculando...';
+  try {
+    const params = {
+      p_cliente_id: clienteId, p_produto_id: item.produto_id, p_quantidade: item.quantidade,
+      p_segmento_override: sigla ? SIGLA_PARA_SEGMENTO_GRADE[sigla[0]] : null,
+      p_classe_override: sigla ? Number(sigla[1]) : null,
+      p_desconto_pct: desconto || null
+    };
+    const r = await sbRpc('hub_fn_calcular_preco_item', params);
+    if (!r.ok) { prev.textContent = r.erro || 'Nao foi possivel calcular.'; return; }
+    prev.innerHTML = `Preco unitario: <strong>${fmtMoeda(r.preco_final)}</strong> &middot; subtotal ${fmtMoeda(r.subtotal)}`;
+  } catch (e) {
+    prev.textContent = 'Erro ao calcular: ' + erroLegivel(e);
+  }
+}
+
+async function aplicarGradeItem(idx) {
+  const cart = getCart();
+  const item = cart[idx];
+  const clienteId = getClienteAtivo();
+  if (!item || !clienteId) { closeModal(); return; }
+  const sigla = document.getElementById('gradeTabela').value;
+  const desconto = parseFloat(document.getElementById('gradeDesconto').value) || 0;
+
+  if (!sigla && !desconto) {
+    delete item.classeOverride; delete item.segmentoOverride; delete item.descontoOverride; delete item.precoManual;
+    saveCart(cart);
+    closeModal();
+    return;
+  }
+
+  const btn = document.getElementById('btnAplicarGrade');
+  btn.disabled = true; btn.textContent = 'Aplicando...';
+  try {
+    const r = await sbRpc('hub_fn_calcular_preco_item', {
+      p_cliente_id: clienteId, p_produto_id: item.produto_id, p_quantidade: item.quantidade,
+      p_segmento_override: sigla ? SIGLA_PARA_SEGMENTO_GRADE[sigla[0]] : null,
+      p_classe_override: sigla ? Number(sigla[1]) : null,
+      p_desconto_pct: desconto || null
+    });
+    if (!r.ok) { toast(r.erro || 'Nao foi possivel aplicar', 'error'); return; }
+    item.classeOverride = sigla ? Number(sigla[1]) : null;
+    item.segmentoOverride = sigla ? SIGLA_PARA_SEGMENTO_GRADE[sigla[0]] : null;
+    item.descontoOverride = desconto || null;
+    item.precoManual = r.preco_final;
+    saveCart(cart);
+    closeModal();
+  } catch (e) {
+    toast('Erro ao aplicar: ' + erroLegivel(e), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Aplicar'; }
+  }
 }
 
 function pedidoEdicaoKey() { return 'hub_pedido_edicao_' + getUserId() + '_' + (getClienteAtivo() || 'self'); }
@@ -486,15 +604,20 @@ async function renderCarrinho() {
         const tabela = +(precos[item.produto_id]?.preco_tabela || 0);
         const riscadoHtml = tabela > 0 && Math.abs(tabela - unit) > 0.01
           ? `<s style="color:#a0aec0;font-size:11px;margin-right:4px">${fmtMoeda(tabela)}</s>` : '';
+        const siglaGrade = siglaDoItemGrade(item);
         const precoHtml = podeEditarPreco
           ? `<span id="cartPreco_${idx}" data-base="${basePreco}" onclick="editarPrecoCarrinho(${idx})" style="cursor:pointer;border-bottom:1px dotted #a0aec0" title="Clique para ajustar o preço deste item">${fmtMoeda(unit)}</span>${item.precoManual != null ? ` · <a href="javascript:void(0)" onclick="restaurarPrecoCarrinho(${idx})" style="color:#718096;font-size:11px">restaurar</a>` : ''}`
           : fmtMoeda(unit);
+        const gradeHtml = podeEditarPreco
+          ? `<div style="margin-top:2px">${siglaGrade ? `<span class="etapa-badge" style="background:#eef2ff;color:#3730a3;margin-right:6px">${siglaGrade}${item.descontoOverride ? ' -' + item.descontoOverride + '%' : ''}</span>` : ''}<a href="javascript:void(0)" onclick="abrirGradeItem(${idx})" style="color:#25bbee;font-size:11px">tabela / desconto</a></div>`
+          : '';
         return `
         <div class="cart-item">
           <div class="cart-item-info">
             <div class="cart-item-sku">${esc(item.sku)}</div>
             <div class="cart-item-nome">${esc(item.nome || item.sku)}</div>
             <div class="cart-item-preco">${riscadoHtml}${precoHtml} un</div>
+            ${gradeHtml}
             ${badgeEstoque}
           </div>
           <div class="cart-item-qty">
@@ -761,7 +884,7 @@ async function _enviarPedidoInterno() {
 
     await sb('/hub_pedido_itens', 'POST', cart.map(i => {
       const p = precos[i.produto_id];
-      const unit = +(p?.preco_final ?? i.preco_base ?? 0);
+      const unit = i.precoManual != null ? i.precoManual : +(p?.preco_final ?? i.preco_base ?? 0);
       return {
         pedido_id: pedido.id,
         produto_id: i.produto_id,
@@ -770,7 +893,16 @@ async function _enviarPedidoInterno() {
         quantidade: i.quantidade,
         preco_unitario: +(p?.preco_tabela ?? unit),
         preco_final: unit,
-        subtotal_item: +(unit * i.quantidade).toFixed(2)
+        subtotal_item: +(unit * i.quantidade).toFixed(2),
+        // Grade granular por item (pedido do Andre, 2026-11-06): quando o
+        // representante/admin escolheu uma tabela ou desconto especifico so
+        // para este item, grava aqui -- hub_fn_submeter_pedido reprecifica
+        // de novo no envio usando esses campos (hub_fn_calcular_preco_item),
+        // entao o preco acima e so pra exibicao ate la, a fonte de verdade
+        // do valor final e sempre o override gravado.
+        classe_override: i.classeOverride ?? null,
+        segmento_override: i.segmentoOverride ?? null,
+        desconto_item_percentual: i.descontoOverride ?? null
       };
     }));
 

@@ -168,11 +168,21 @@ select,input,textarea{font-family:Outfit,sans-serif}
         <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px">Canais</div>
       </div>
     </div>
-    <div style="margin-bottom:12px">
-      <select id="clientesFiltro" onchange="loadClientes()" style="padding:6px 10px;border:1px solid #c3cfe2;border-radius:6px;font-family:Outfit;font-size:12px">
+    <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+      <input id="clientesBusca" placeholder="Buscar por nome ou CNPJ..." style="flex:1;min-width:220px" oninput="debounceClientes()">
+      <select id="clientesFiltro" onchange="loadClientes()">
         <option value="bloqueados" selected>Somente bloqueados</option>
         <option value="ativos">Somente nao bloqueados</option>
         <option value="">Todos</option>
+      </select>
+      <select id="clientesCanal" onchange="loadClientes()">
+        <option value="">Todos os canais</option>
+        <option value="Varejo">Varejo</option>
+        <option value="Hibrido">Hibrido</option>
+        <option value="Ecommerce">Ecommerce</option>
+      </select>
+      <select id="clientesRepresentante" onchange="loadClientes()" style="min-width:200px">
+        <option value="">Todos os representantes</option>
       </select>
     </div>
     <div id="clientesList"></div>
@@ -311,6 +321,19 @@ select,input,textarea{font-family:Outfit,sans-serif}
       Historico do que mudou e quem mudou: aprovacao de documento, aprovacao de credito, envio de pedido, reversao para rascunho, etc.
       Serve para responder <em>"quem fez isso e quando?"</em>. Nao apagar linhas -- e prova em caso de duvida.
     </div>
+    <div id="logsIndicadores" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px"></div>
+    <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      <input id="logsBusca" placeholder="Buscar por email, tabela ou registro..." style="flex:1;min-width:220px" oninput="debounceLogs()">
+      <select id="logsTabela" onchange="loadLogs()" style="min-width:160px">
+        <option value="">Todas as tabelas</option>
+      </select>
+      <select id="logsAcao" onchange="loadLogs()" style="min-width:140px">
+        <option value="">Todas as acoes</option>
+      </select>
+      <input id="logsDe" type="date" onchange="loadLogs()" title="De">
+      <input id="logsAte" type="date" onchange="loadLogs()" title="Ate">
+      <button class="btn btn-outline btn-sm" onclick="loadLogs()">Atualizar</button>
+    </div>
     <div id="logsList"></div>
   </div>
 </div>
@@ -330,6 +353,7 @@ function showTab(n, el) {
   if (n === 'clientes') loadClientes();
   if (n === 'solicitacoes') loadSolicitacoesAdmin();
   if (n === 'regras') loadParametrosComerciais();
+  if (n === 'logs') loadLogs();
 }
 
 // Pedido do Andre, 2026-11-06: onde ajustar coisas como "progressao de
@@ -486,9 +510,16 @@ async function loadUsuarios() {
   } catch (e) { wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar usuarios</h3></div>'; }
 }
 
+let _clientesBuscaTimer = null;
+function debounceClientes() { clearTimeout(_clientesBuscaTimer); _clientesBuscaTimer = setTimeout(loadClientes, 350); }
+
 async function loadClientes() {
   const wrap = document.getElementById('clientesList');
   const modo = document.getElementById('clientesFiltro').value; // '' | 'bloqueados' | 'ativos'
+  const busca = (document.getElementById('clientesBusca')?.value || '').trim();
+  const canal = document.getElementById('clientesCanal')?.value || '';
+  const repSel = document.getElementById('clientesRepresentante');
+  const representanteId = repSel?.value || '';
   try {
     const [totais, bloqueados, comGrupo, canaisPorNome] = await Promise.all([
       sbCount('/hub_clientes?select=id&ativo=eq.true'),
@@ -503,8 +534,30 @@ async function loadClientes() {
     document.getElementById('statClientesCanais').textContent =
       canaisPorNome.map(([c, n]) => c + ': ' + n).join(' / ');
 
-    const filtro = modo === 'bloqueados' ? '&bloqueado=eq.true'
-                 : modo === 'ativos' ? '&bloqueado=eq.false' : '';
+    // Popula o dropdown de representantes uma unica vez.
+    if (repSel && repSel.options.length <= 1) {
+      try {
+        const reps = await sb('/hub_representantes?ativo=eq.true&order=nome.asc&select=id,nome');
+        repSel.innerHTML = '<option value="">Todos os representantes</option>' +
+          reps.map(r => `<option value="${r.id}">${esc(r.nome)}</option>`).join('');
+        repSel.value = representanteId;
+      } catch (_) {}
+    }
+
+    let filtro = modo === 'bloqueados' ? '&bloqueado=eq.true'
+               : modo === 'ativos' ? '&bloqueado=eq.false' : '';
+    if (canal) filtro += '&canal=eq.' + encodeURIComponent(canal);
+    if (representanteId) filtro += '&representante_id=eq.' + representanteId;
+    if (busca) {
+      // Mesma regra de seguranca de buscarClientes (hub.js): remover chars
+      // especiais do RSQL (`(), *`) do termo digitado antes de montar o
+      // or=(), senao o proprio usuario quebra o agrupamento do filtro.
+      const seguro = busca.replace(/[(),*]/g, '');
+      const buscaCnpj = busca.replace(/\D/g, '');
+      filtro += buscaCnpj.length >= 3
+        ? '&or=(nome_exibicao.ilike.*' + seguro + '*,razao_social.ilike.*' + seguro + '*,cnpj.ilike.*' + buscaCnpj + '*)'
+        : '&or=(nome_exibicao.ilike.*' + seguro + '*,razao_social.ilike.*' + seguro + '*)';
+    }
     const LIMITE = 500;
     const clientes = await sb('/hub_clientes?ativo=eq.true' + filtro +
       '&order=nome_exibicao.asc&select=id,nome_exibicao,cnpj,canal,grupo_nome,status_cadastro,bloqueado,tags&limit=' + LIMITE);
@@ -1532,6 +1585,101 @@ function copiarCredenciais(email, senha, limite, razao) {
 // === CONVITES ===
 
 let allConvites = [];
+
+let _logsBuscaTimer = null;
+function debounceLogs() { clearTimeout(_logsBuscaTimer); _logsBuscaTimer = setTimeout(loadLogs, 350); }
+
+const ACAO_LABEL = { aprovar: 'Aprovou', rejeitar: 'Rejeitou', criar: 'Criou', editar: 'Editou', excluir: 'Excluiu', enviar: 'Enviou', reverter: 'Reverteu', cancelar: 'Cancelou' };
+
+function logCard(valor, label) {
+  return `<div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px">
+    <div style="font-size:20px;font-weight:700;color:#1d327b">${esc(String(valor))}</div>
+    <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-top:2px">${esc(label)}</div>
+  </div>`;
+}
+
+async function loadLogsIndicadores() {
+  const wrap = document.getElementById('logsIndicadores');
+  try {
+    const desde30 = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+    const recentes = await sb('/hub_log_alteracoes?select=acao,usuario_email,criado_em&criado_em=gte.' + desde30 + '&limit=5000');
+    const hojeStr = new Date().toISOString().slice(0, 10);
+    const hoje = recentes.filter(l => (l.criado_em || '').slice(0, 10) === hojeStr).length;
+    const contagemUsuario = {};
+    recentes.forEach(l => { if (l.usuario_email) contagemUsuario[l.usuario_email] = (contagemUsuario[l.usuario_email] || 0) + 1; });
+    const topUsuario = Object.entries(contagemUsuario).sort((a, b) => b[1] - a[1])[0];
+    const contagemAcao = {};
+    recentes.forEach(l => { if (l.acao) contagemAcao[l.acao] = (contagemAcao[l.acao] || 0) + 1; });
+    const topAcao = Object.entries(contagemAcao).sort((a, b) => b[1] - a[1])[0];
+    wrap.innerHTML =
+      logCard(hoje, 'Acoes hoje') +
+      logCard(recentes.length, 'Ultimos 30 dias') +
+      logCard(topUsuario ? topUsuario[0].split('@')[0] + ' (' + topUsuario[1] + ')' : '—', 'Mais ativo (30d)') +
+      logCard(topAcao ? (ACAO_LABEL[topAcao[0]] || topAcao[0]) + ' (' + topAcao[1] + ')' : '—', 'Acao mais comum (30d)');
+  } catch (e) {
+    wrap.innerHTML = '';
+  }
+}
+
+async function loadLogs() {
+  const wrap = document.getElementById('logsList');
+  const busca = (document.getElementById('logsBusca')?.value || '').trim();
+  const tabelaSel = document.getElementById('logsTabela');
+  const acaoSel = document.getElementById('logsAcao');
+  const tabelaFiltro = tabelaSel?.value || '';
+  const acaoFiltro = acaoSel?.value || '';
+  const de = document.getElementById('logsDe')?.value || '';
+  const ate = document.getElementById('logsAte')?.value || '';
+  wrap.innerHTML = '<div class="empty-state"><p>Carregando...</p></div>';
+  loadLogsIndicadores();
+  try {
+    let url = '/hub_log_alteracoes?order=criado_em.desc&limit=300';
+    if (tabelaFiltro) url += '&tabela_ref=eq.' + encodeURIComponent(tabelaFiltro);
+    if (acaoFiltro) url += '&acao=eq.' + encodeURIComponent(acaoFiltro);
+    if (de) url += '&criado_em=gte.' + de + 'T00:00:00';
+    if (ate) url += '&criado_em=lte.' + ate + 'T23:59:59';
+    if (busca) {
+      // Mesma regra de seguranca de buscarClientes (hub.js): remover chars
+      // especiais do RSQL antes de montar o or(), senao o usuario quebra o
+      // agrupamento do filtro.
+      const seguro = busca.replace(/[(),*]/g, '');
+      url += '&or=(usuario_email.ilike.*' + seguro + '*,tabela_ref.ilike.*' + seguro + '*,registro_id.ilike.*' + seguro + '*,acao.ilike.*' + seguro + '*)';
+    }
+    const logs = await sb(url);
+
+    // Popula os dropdowns uma unica vez, com os valores que de fato aparecem no log.
+    if (tabelaSel && tabelaSel.options.length <= 1) {
+      const todas = await sb('/hub_log_alteracoes?select=tabela_ref,acao&limit=5000');
+      const unicasTabela = [...new Set(todas.map(l => l.tabela_ref).filter(Boolean))].sort();
+      tabelaSel.innerHTML = '<option value="">Todas as tabelas</option>' + unicasTabela.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+      tabelaSel.value = tabelaFiltro;
+      const unicasAcao = [...new Set(todas.map(l => l.acao).filter(Boolean))].sort();
+      acaoSel.innerHTML = '<option value="">Todas as acoes</option>' + unicasAcao.map(a => `<option value="${esc(a)}">${esc(ACAO_LABEL[a] || a)}</option>`).join('');
+      acaoSel.value = acaoFiltro;
+    }
+
+    if (!logs.length) {
+      wrap.innerHTML = '<div class="empty-state"><h3>Nenhum registro encontrado</h3><p style="margin-top:8px;font-size:13px">Ajuste a busca ou o filtro de tabela.</p></div>';
+      return;
+    }
+    wrap.innerHTML = `<div style="overflow-x:auto"><table>
+      <thead><tr><th>Quando</th><th>Quem</th><th>Acao</th><th>Tabela</th><th>Registro</th><th>Campo</th><th>De</th><th>Para</th></tr></thead>
+      <tbody>${logs.map(l => `<tr>
+        <td style="white-space:nowrap;font-size:12px">${fmtData(l.criado_em)} ${new Date(l.criado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</td>
+        <td style="font-size:12px">${esc(l.usuario_email || '—')}</td>
+        <td><span class="etapa-badge" style="background:#eef2ff;color:#3730a3">${esc(ACAO_LABEL[l.acao] || l.acao || '—')}</span></td>
+        <td style="font-size:12px">${esc(l.tabela_ref || '—')}</td>
+        <td style="font-size:11px;color:#718096;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.registro_id || '')}">${esc(l.registro_id || '—')}</td>
+        <td style="font-size:12px">${esc(l.campo || '—')}</td>
+        <td style="font-size:12px;color:#991b1b;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.valor_anterior || '')}">${esc(l.valor_anterior || '—')}</td>
+        <td style="font-size:12px;color:#166534;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.valor_novo || '')}">${esc(l.valor_novo || '—')}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+    ${logs.length === 300 ? '<div style="font-size:11px;color:#718096;margin-top:8px">Mostrando os 300 mais recentes -- refine a busca para ver outros.</div>' : ''}`;
+  } catch (e) {
+    wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar logs</h3><p>' + e.message + '</p></div>';
+  }
+}
 
 async function loadConvites() {
   const wrap = document.getElementById('convitesList');

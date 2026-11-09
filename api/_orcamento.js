@@ -67,6 +67,8 @@ module.exports = async function orcamento(req, res) {
       case 'criar': return res.status(200).json(await criar(ctx, user, body));
       case 'listar': return res.status(200).json(await listar(ctx, user, body.leve === true));
       case 'aprovar': return res.status(200).json(await aprovar(ctx, user, body.id));
+      case 'liberar_teto': return res.status(200).json(await liberarTeto(ctx, user, body.id));
+      case 'pendentes_teto': return res.status(200).json(await pendentesTeto(ctx, user));
       case 'editar': return res.status(200).json(await editar(ctx, user, body));
       case 'cancelar': return res.status(200).json(await cancelar(ctx, user, body.id));
       case 'arquivar': return res.status(200).json(await arquivar(ctx, user, body.id, body.arquivar !== false));
@@ -115,6 +117,7 @@ async function autenticar(req) {
   if (!a.ok) return null;
   const acesso = await a.json();
   if (!acesso || !acesso.permitido) return null;
+  if (acesso.teste === false) return null; // quem usa o Hub nao usa a tabela teste
   return { id: caller.id, email: caller.email, nome: acesso.nome || caller.email, role: acesso.role, empresa: acesso.empresa || null };
 }
 
@@ -167,13 +170,14 @@ async function buscarCliente(ctx, cnpjIn, user) {
     try {
       r.ultimo = (await sbGet(ctx, '/orcamentos?user_id=eq.' + user.id + '&cliente_cnpj=eq.' + soDigitos(cnpjIn) + '&status=neq.cancelado&order=criado_em.desc&limit=1&select=codigo,classe,segmento,uf,criado_em,total_final', 'comercial'))[0] || null;
     } catch (_) { r.ultimo = null; }
+    try { r.consumo_mes = await consumoMesGrupo(ctx, soDigitos(cnpjIn), null, ['enviado', 'visualizado', 'aceito_cliente', 'aprovado']); } catch (_) { r.consumo_mes = null; }
   }
   return r;
 }
 async function buscarClienteBase(ctx, cnpjIn) {
   const cnpj = soDigitos(cnpjIn);
   if (cnpj.length !== 14 && cnpj.length !== 11) throw erro(400, 'Informe um CNPJ (14 digitos) ou CPF (11)');
-  const rows = await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=razao_social,nome_fantasia,nome_exibicao,inscricao_estadual,email_principal,telefone,cidade,uf,erp_cliente_id,bloqueado&limit=1', 'comercial');
+  const rows = await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=razao_social,nome_fantasia,nome_exibicao,inscricao_estadual,email_principal,telefone,cidade,uf,erp_cliente_id,bloqueado,canal&limit=1', 'comercial');
   const c = rows[0];
   if (!c) {
     // fora do cadastro do ZEN: tenta os dados publicos da Receita (BrasilAPI) para preencher razao social e endereco
@@ -197,7 +201,7 @@ async function buscarClienteBase(ctx, cnpjIn) {
     encontrado: true, cnpj,
     razao_social: c.razao_social, nome_fantasia: c.nome_fantasia || c.nome_exibicao || '',
     ie: c.inscricao_estadual || '', email: c.email_principal || '', telefone: c.telefone || '',
-    cidade: c.cidade || '', uf: c.uf || '', bloqueado: !!c.bloqueado, no_zen: !!c.erp_cliente_id
+    cidade: c.cidade || '', uf: c.uf || '', bloqueado: !!c.bloqueado, no_zen: !!c.erp_cliente_id, canal: c.canal || ''
   };
 }
 
@@ -224,7 +228,7 @@ async function aplicarEdicao(ctx, o, row, itens, avisos) {
     desconto_vista_pct: row.desconto_vista_pct, frete_tipo: row.frete_tipo, frete_valor: row.frete_valor, observacoes: row.observacoes,
     avisos, itens, total_itens: row.total_itens, total_final: row.total_final,
     cliente_celular: row.cliente_celular, cliente_email: row.cliente_email,
-    lembrete_visto_em: null, lembrete_vence_em: null,
+    lembrete_visto_em: null, lembrete_vence_em: null, teto_excedido: row.teto_excedido || null, liberacao_teto_em: null, liberacao_teto_por: null,
     validade_em: row.validade_em, status: reaceite ? 'visualizado' : o.status, aceito_em: null, aceito_nome: null, atualizado_em: agora
   };
   await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, patch);
@@ -277,18 +281,27 @@ async function criar(ctx, user, b, edit) {
   // precos recalculados no servidor, com a mesma formula da tabela
   const codigos = [...new Set(itensIn.map(i => String(i.codigo)))];
   const lista = codigos.map(c => '"' + c.replace(/"/g, '') + '"').join(',');
-  const [estados, mults, prods, regras, cats] = await Promise.all([
+  const [estados, mults, prods, regras, cats, pmaRows] = await Promise.all([
     sbGet(ctx, '/estados?uf=eq.' + encodeURIComponent(uf) + '&select=uf,mult_4_icms,mult_total'),
     sbGet(ctx, '/multiplicadores?tabela_id=eq.4&segmento=eq.' + encodeURIComponent(seg) + '&classe=eq.' + cls + '&select=porte,categoria_grupo,valor'),
     sbGet(ctx, '/produtos?tabela_id=eq.1&ativo=eq.true&codigo=in.(' + encodeURIComponent(lista) + ')&select=codigo,modelo,pv_sp,porte,icms,ipi,ncm,categoria_id,imagem_url'),
-    sbGet(ctx, '/tabela_regras?tabela_id=eq.1&select=conteudo&order=ordem,id'),
-    sbGet(ctx, '/categorias?tabela_id=eq.1&select=id,nome')
+    sbGet(ctx, '/tabela_regras?tabela_id=eq.4&select=conteudo&order=ordem,id'),
+    sbGet(ctx, '/categorias?tabela_id=eq.1&select=id,nome'),
+    sbGet(ctx, '/tabela_pma_itens?ativo=eq.true&select=codigo,grupo,teto_hibrido,teto_ecommerce')
   ]);
   const st = estados[0];
   if (!st) throw erro(400, 'UF invalida');
   const M = {}; mults.forEach(m => { M[m.porte] = parseFloat(m.valor); });
   if (!Object.keys(M).length) throw erro(400, 'Segmento/classe sem preco na tabela');
   const pby = {}; prods.forEach(p => { pby[p.codigo] = p; });
+  const pma = {}; (pmaRows || []).forEach(r => { pma[r.codigo] = r; });
+  // Ecommerce compra somente itens do PMA e nao compra maquinas Grandes
+  if (seg === 'Ecommerce') {
+    for (const i of itensIn) {
+      const p = pby[String(i.codigo)];
+      if (p && (!pma[p.codigo] || p.porte === 'Grandes')) throw erro(400, 'Ecommerce compra somente itens do PMA e nao compra maquinas Grandes: remova ' + (p.modelo || p.codigo));
+    }
+  }
   const catNome = {}; cats.forEach(c => { catNome[c.id] = c.nome; });
   const { cond, linhas } = lerRegras(regras);
 
@@ -331,7 +344,7 @@ async function criar(ctx, user, b, edit) {
       ? 'A tabela de precos mudou desde a criacao offline (' + mudou.length + (mudou.length > 1 ? ' itens' : ' item') + '); mantidos os precos que o cliente viu: ' + mudou.slice(0, 5).join(', ')
       : 'Rascunho com mais de 7 dias: precos atualizados pela tabela de hoje (' + mudou.length + (mudou.length > 1 ? ' itens mudaram' : ' item mudou') + ')');
   }
-  if (seg === 'Física') {
+  if (seg === 'Física' || seg === 'BMax') {
     let ind = null;
     for (const [c, min] of CLASSES_VALOR_FISICA) {
       let t = 0; let ok = true;
@@ -347,7 +360,7 @@ async function criar(ctx, user, b, edit) {
   }
   const nSem = itens.filter(x => x.estoque === 'sem').length;
   if (nSem) avisos.push(nSem + (nSem > 1 ? ' itens' : ' item') + ' sem previsao de estoque incluido(s) no orcamento');
-  if (totalItens < cond.pedMin) avisos.push('Abaixo do pedido minimo de ' + brl(cond.pedMin));
+  if (totalItens < cond.pedMin && seg !== 'Híbrido' && seg !== 'Ecommerce') avisos.push('Abaixo do pedido minimo de ' + brl(cond.pedMin));
   const fr = freteDaUF(linhas, uf);
   let freteTipo = fr ? fr.tipo : null, freteValor = 0;
   if (fr && fr.tipo === 'CIF' && fr.min && totalItens < fr.min) {
@@ -357,9 +370,19 @@ async function criar(ctx, user, b, edit) {
   if (!avista && parcelas > 1 && totalItens / parcelas < cond.dupMin) avisos.push('Parcela abaixo do minimo de ' + brl(cond.dupMin) + ' por duplicata');
 
   // cliente no ZEN (cadastro sincronizado no Hub)
-  const hc = (await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=erp_cliente_id,bloqueado,representante_id&limit=1', 'comercial'))[0];
+  const hc = (await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=erp_cliente_id,bloqueado,representante_id,canal&limit=1', 'comercial'))[0];
   const zenPerson = hc && hc.erp_cliente_id ? Number(hc.erp_cliente_id) : null;
   if (hc && hc.bloqueado) avisos.push('Cliente bloqueado no ZEN');
+  // segmento escolhido x canal do cadastro (o segmento deve vir do cadastro; troca so por excecao aprovada)
+  const canalSeg = { varejo: 'Física', hibrido: 'Híbrido', ecommerce: 'Ecommerce' }[String((hc && hc.canal) || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+  if (canalSeg && seg !== 'BMax' && canalSeg !== seg) avisos.push('Segmento ' + seg + ' escolhido, mas o cadastro do cliente indica ' + canalSeg + ': troca de segmento depende de aprovacao do gerente comercial');
+  // teto mensal por item do PMA (Hibrido e Ecommerce): o pedido segue, o faturamento do excedente depende de liberacao do gerente
+  let tetoEx = [];
+  if (seg === 'Híbrido' || seg === 'Ecommerce') {
+    try { tetoEx = await calcularTeto(ctx, { seg, cls, cnpj, itens, pma, excluirId: edit ? edit.id : null, status: ['enviado', 'visualizado', 'aceito_cliente', 'aprovado'] }); }
+    catch (e) { avisos.push('Nao foi possivel conferir o teto mensal agora: ' + String(e.message).slice(0, 100)); }
+    if (tetoEx.length) avisos.push(textoTeto(tetoEx));
+  }
   // Vendedor no ZEN e campo real da venda (sale.Sale.personSalesperson, confirmado
   // em 2026-11-03 via /platform/openapi.json -- nao e so texto em comentario).
   // Fonte: o representante DONO da conta no Hub, nao quem esta logado montando o
@@ -389,7 +412,7 @@ async function criar(ctx, user, b, edit) {
     pagamento_tipo: avista ? 'avista' : 'boleto', parcelas, desconto_vista_pct: avista ? cond.vista : 0,
     frete_tipo: freteTipo, frete_valor: freteValor,
     observacoes: b.observacoes ? String(b.observacoes).slice(0, 1500) : null,
-    avisos, itens, total_itens: totalItens, total_final: r2(totalItens + freteValor),
+    avisos, itens, total_itens: totalItens, total_final: r2(totalItens + freteValor), teto_excedido: tetoEx.length ? tetoEx : null,
     validade_em: new Date(Date.now() + VALIDADE_DIAS * 86400000).toISOString()
   };
 
@@ -401,7 +424,7 @@ async function criar(ctx, user, b, edit) {
   }
 
   const [orc] = await orcWrite(ctx, 'POST', '/orcamentos', row);
-  const out = { ok: true, id: orc.id, codigo: orc.codigo, link: LINK_ORCAMENTO + orc.token, validade_em: orc.validade_em, avisos, total_final: orc.total_final };
+  const out = { ok: true, id: orc.id, codigo: orc.codigo, link: LINK_ORCAMENTO + orc.token, validade_em: orc.validade_em, avisos, total_final: orc.total_final, teto_excedido: row.teto_excedido || null };
 
   // a venda no ZEN nasce em PREPARING (so "orcamento": nao entra na fila do time)
   if (!zenPerson) {
@@ -502,7 +525,7 @@ async function criarVendaZen(o, orc, itens) {
 // ---------- listar (reconcilia com o ZEN) ----------
 // O que o ZEN diz manda: venda removida/cancelada la encerra o orcamento aqui; venda movida para o
 // perfil "Venda padrao" (aprovada direto no ZEN) vira "aprovado"; itens/valores ajustados la voltam para ca.
-const CAMPOS_LISTA = 'id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,cliente_celular,cliente_email,cliente_contato,cliente_cidade,avisos,pagamento_tipo,parcelas,desconto_vista_pct,uf,segmento,classe,observacoes,itens';
+const CAMPOS_LISTA = 'teto_excedido,liberacao_teto_em,liberacao_teto_por,id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,cliente_celular,cliente_email,cliente_contato,cliente_cidade,avisos,pagamento_tipo,parcelas,desconto_vista_pct,uf,segmento,classe,observacoes,itens';
 async function listar(ctx, user, leve) {
   const rows = await sbGet(ctx, '/orcamentos?user_id=eq.' + user.id + '&ativo=eq.true&order=criado_em.desc&limit=150&select=' + CAMPOS_LISTA, 'comercial');
   let aviso_sync = null;
@@ -643,6 +666,18 @@ async function aprovar(ctx, user, id) {
     ? 'Cliente nao cadastrado no ZEN: cadastre o cliente e peca a Boxer para vincular a venda.'
     : 'Este orcamento nao tem venda no ZEN.');
 
+  if (o.segmento === 'Híbrido' || o.segmento === 'Ecommerce') {
+    let ex = [];
+    try {
+      const pm = await sbGet(ctx, '/tabela_pma_itens?ativo=eq.true&select=codigo,grupo,teto_hibrido,teto_ecommerce');
+      const pmaMap = {}; pm.forEach(r => { pmaMap[r.codigo] = r; });
+      ex = await calcularTeto(ctx, { seg: o.segmento, cls: o.classe, cnpj: o.cliente_cnpj, itens: o.itens || [], pma: pmaMap, excluirId: o.id, status: ['aprovado'] });
+    } catch (e) { throw erro(503, 'Nao foi possivel conferir o teto mensal agora. Tente novamente em instantes.'); }
+    if (ex.length && !o.liberacao_teto_em) {
+      await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { teto_excedido: ex });
+      throw erro(409, 'Pedido acima do teto mensal (' + textoTeto(ex, true) + '): o faturamento do excedente aguarda a liberacao do gerente comercial.');
+    }
+  }
   const sid = o.zen_sale_id;
   const passos = [];
   try {
@@ -952,4 +987,74 @@ async function painel(ctx, user, b) {
     representantes: Object.values(reps).map(a => Object.assign({ nome: a.nome, empresa: a.empresa }, fim(a))).sort((x, y) => y.valor_enviado - x.valor_enviado),
     produtos: Object.values(prods).filter(p => p.ref > 0 && Math.abs(p.prat - p.ref) / p.ref > 0.0005).map(p => ({ codigo: p.codigo, modelo: p.modelo, qtd: p.qtd, ajuste_pct: r2((p.prat - p.ref) / p.ref * 100), diferenca: r2(p.prat - p.ref) })).sort((x, y) => Math.abs(y.diferenca) - Math.abs(x.diferenca)).slice(0, 10)
   };
+}
+
+// ---------- teto mensal por item do PMA (Hibrido e Ecommerce) ----------
+// Teto de classe 1 vem de tabela_pma_itens; classe 2 = metade (arredondada para cima).
+// Soma por grupo economico (CNPJs do mesmo grupo no cadastro do Hub) e por mes calendario (America/Sao_Paulo).
+function inicioDoMesSP() {
+  const sp = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  return new Date(Date.UTC(sp.getFullYear(), sp.getMonth(), 1, 3, 0, 0)).toISOString();
+}
+async function cnpjsDoGrupo(ctx, cnpj) {
+  const hc = (await sbGet(ctx, '/hub_clientes?cnpj=eq.' + cnpj + '&select=grupo_erp_id&limit=1', 'comercial'))[0];
+  if (!hc || !hc.grupo_erp_id) return [cnpj];
+  const rows = await sbGet(ctx, '/hub_clientes?grupo_erp_id=eq.' + encodeURIComponent(hc.grupo_erp_id) + '&select=cnpj&limit=500', 'comercial');
+  return [...new Set(rows.map(r => r.cnpj).filter(Boolean).concat(cnpj))];
+}
+async function consumoMesGrupo(ctx, cnpj, excluirId, status) {
+  const cnpjs = await cnpjsDoGrupo(ctx, cnpj);
+  const rows = await sbGet(ctx, '/orcamentos?ativo=eq.true&cliente_cnpj=in.(' + cnpjs.join(',') + ')&status=in.(' + status.join(',') + ')&criado_em=gte.' + encodeURIComponent(inicioDoMesSP()) + '&select=id,itens,status,validade_em&limit=1000', 'comercial');
+  const agora = Date.now(), soma = {};
+  for (const r of rows) {
+    if (excluirId && r.id === excluirId) continue;
+    if (['enviado', 'visualizado'].includes(r.status) && Date.parse(r.validade_em) < agora) continue; // orcamento vencido nao reserva teto
+    for (const i of (r.itens || [])) soma[i.codigo] = (soma[i.codigo] || 0) + (Number(i.qtd) || 0);
+  }
+  return soma;
+}
+function tetoDoItem(pmaItem, seg, cls) {
+  if (!pmaItem) return null;
+  const base = seg === 'Híbrido' ? pmaItem.teto_hibrido : pmaItem.teto_ecommerce;
+  if (base == null) return null;
+  return Number(cls) === 2 ? Math.ceil(base / 2) : base;
+}
+async function calcularTeto(ctx, { seg, cls, cnpj, itens, pma, excluirId, status }) {
+  const consumo = await consumoMesGrupo(ctx, cnpj, excluirId, status);
+  const out = [];
+  for (const it of itens) {
+    const teto = tetoDoItem(pma[it.codigo], seg, cls);
+    if (teto == null) continue;
+    const acum = consumo[it.codigo] || 0, q = Number(it.qtd) || 0;
+    const exc = Math.min(q, Math.max(0, acum + q - teto));
+    if (exc > 0) out.push({ codigo: it.codigo, modelo: it.modelo || it.codigo, grupo: pma[it.codigo].grupo, teto, acumulado_mes: acum, qtd: q, excedente: exc });
+  }
+  return out;
+}
+function textoTeto(ex, curto) {
+  const l = ex.map(x => (x.modelo || x.codigo) + ': teto ' + x.teto + '/mes, ja ' + x.acumulado_mes + ' no mes, este pedido ' + x.qtd + ' (excedente ' + x.excedente + ')');
+  return curto ? l.join('; ') : 'Acima do teto mensal do PMA em ' + ex.length + (ex.length > 1 ? ' itens' : ' item') + ' (' + l.join('; ') + '). O pedido pode seguir, mas o faturamento do excedente depende da liberacao do gerente comercial.';
+}
+async function pendentesTeto(ctx, user) {
+  if (String(user.role || '').toLowerCase() !== 'admin') throw erro(403, 'Somente o gerente comercial (admin)');
+  const rows = await sbGet(ctx, '/orcamentos?ativo=eq.true&teto_excedido=not.is.null&liberacao_teto_em=is.null&status=in.(enviado,visualizado,aceito_cliente)&order=criado_em.desc&limit=100&select=id,codigo,vendedor_nome,cliente_nome,cliente_cnpj,segmento,classe,total_final,status,criado_em,teto_excedido', 'comercial');
+  return { ok: true, pendentes: rows };
+}
+async function liberarTeto(ctx, user, id) {
+  if (String(user.role || '').toLowerCase() !== 'admin') throw erro(403, 'Somente o gerente comercial (admin) libera o faturamento acima do teto');
+  if (!id) throw erro(400, 'id obrigatorio');
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&select=id,codigo,vendedor_email,vendedor_nome,cliente_nome,teto_excedido,liberacao_teto_em,status', 'comercial'))[0];
+  if (!o) throw erro(404, 'Orcamento nao encontrado');
+  if (!o.teto_excedido) throw erro(409, 'Este orcamento nao esta acima do teto');
+  if (o.liberacao_teto_em) return { ok: true, ja_liberado: true };
+  await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { liberacao_teto_em: new Date().toISOString(), liberacao_teto_por: user.email, atualizado_em: new Date().toISOString() });
+  const key = process.env.RESEND_API_KEY;
+  if (key && o.vendedor_email) {
+    const corpo = `<p>Olá${o.vendedor_nome ? ', <strong>' + esc(o.vendedor_nome) + '</strong>' : ''}!</p><p>O faturamento acima do teto mensal do orçamento <strong>${esc(o.codigo)}</strong> (${esc(o.cliente_nome)}) foi <strong>liberado</strong> pela gerência comercial. Abra <b>Meus orçamentos</b> e confirme o envio ao ZEN.</p>`;
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({ from: 'Boxer Orçamentos <noreply@boxersoldas.com.br>', to: [o.vendedor_email], subject: 'Faturamento liberado — ' + o.codigo, html: '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#f0f4f8;font-family:Arial,sans-serif"><div style="max-width:560px;margin:0 auto;padding:24px"><div style="background:#fff;border:1px solid #d0d8e8;border-radius:12px;padding:28px">' + corpo + '</div></div></body></html>' })
+    }).catch(() => {});
+  }
+  return { ok: true };
 }

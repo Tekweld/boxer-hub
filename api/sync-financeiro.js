@@ -193,8 +193,17 @@ module.exports = async function handler(req, res) {
     const offset = Number(req.query.offset) || 0;
     const resultado = { processadas: 0, atualizadas: 0 };
     try {
+      // So erp_pedido_id, nao `or=(pedido_id.is.null,erp_pedido_id.is.null)`:
+      // pedido_id fica null pra SEMPRE em venda que nao nasceu no Hub (a
+      // imensa maioria, nativa do Zen -- ver comentario de
+      // resolverVendaEPedidoPorInvoice) e nunca vai deixar de bater nesse
+      // filtro. Com o OR, a rotina reprocessava as ~7.300 NFs inteiras TODO
+      // dia pra sempre, mesmo ja tendo resolvido tudo que da pra resolver
+      // (achado 2026-11-09, apos 1a correcao de timeout: run completou e
+      // a seguinte reprocessou quase o mesmo total, confirmado que so ~1.000
+      // ainda estavam de fato sem erp_pedido_id contra 7.305 selecionadas).
       const rNf = await fetch(HUB_URL +
-        '/rest/v1/hub_notas_fiscais?or=(pedido_id.is.null,erp_pedido_id.is.null)&erp_nf_id=not.is.null&ativo=eq.true' +
+        '/rest/v1/hub_notas_fiscais?erp_pedido_id=is.null&erp_nf_id=not.is.null&ativo=eq.true' +
         '&select=id,erp_nf_id&order=erp_nf_id.asc&offset=' + offset + '&limit=' + PASSO,
         { headers: hubH('GET') });
       const lote = rNf.ok ? await rNf.json() : [];

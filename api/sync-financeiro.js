@@ -181,7 +181,15 @@ module.exports = async function handler(req, res) {
   // "processadas: 0" -- bug visto ao vivo em 2026-10-29.
   if (req.query?.backfill_pedido_nf) {
     const ORCAMENTO_MS_BF = 45000;
-    const PASSO = 50;
+    // Era 50: travava sempre no MESMO offset em producao (2026-11-07/08/09,
+    // sempre offset 1100, retry nao ajudava -- nao e flutuacao, e esse
+    // intervalo de invoice.id que o Zen responde devagar o bastante pra
+    // zenBuscarVendasPorInvoiceIds + zenBuscarDfeInfoPorInvoiceIds (2 chunks
+    // de ate 40 ids cada, ZEN_TIMEOUT_MS=20s por chamada, ver _zen.js)
+    // somarem mais que o maxDuration de 60s da function. Com 50 ids da pra
+    // precisar de 2 chunks (40+10); com 25, sempre cabe num chunk so por
+    // chamada -- corta o pior caso pela metade.
+    const PASSO = 25;
     const offset = Number(req.query.offset) || 0;
     const resultado = { processadas: 0, atualizadas: 0 };
     try {

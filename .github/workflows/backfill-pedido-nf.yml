@@ -76,9 +76,11 @@ jobs:
           total_atualizadas=0
           rodada=0
           sem_avanco=0
-          # ~7.300 pendentes em 2026-11-06, 50 por rodada -> ~150 rodadas.
-          # Teto com folga generosa; se precisar de mais que isso o backlog
-          # cresceu muito e vale investigar, nao so aumentar o numero.
+          # ~7.300 pendentes em 2026-11-06, 25 por rodada (PASSO reduzido de
+          # 50 pra 25 em sync-financeiro.js -- ver comentario la, achado
+          # 2026-11-09) -> ~300 rodadas. Teto com folga; se precisar de mais
+          # que isso o backlog cresceu muito e vale investigar, nao so
+          # aumentar o numero.
           TETO_RODADAS=400
 
           while [ "$rodada" -lt "$TETO_RODADAS" ]; do

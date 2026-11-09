@@ -27,6 +27,15 @@
 # falha pra quem observa o repositorio -- o mesmo mecanismo que ja protege
 # sync-financeiro.yml e os outros crons deste projeto. Nao preenche
 # silenciosamente: ou termina com `concluido:true` ou falha de forma visivel.
+#
+# Achado em producao (2026-11-07 e 2026-11-08): as duas primeiras execucoes
+# noturnas falharam, as duas no MESMO offset (1100), com HTTP 500 "operation
+# was aborted due to timeout" -- um lote especifico que demora mais pra
+# resolver no Zen, nao um bug de logica. Como cada execucao agendada recomeça
+# do offset 0, isso travava o backlog sempre no mesmo lugar, repetindo
+# trabalho sem nunca passar daquele ponto. Corrigido com retry de poucas
+# tentativas no MESMO offset antes de desistir (rede 4, abaixo) -- cobre
+# timeout transitorio sem mascarar falha persistente real.
 name: Backfill pedido/venda em notas fiscais
 
 on:
@@ -76,23 +85,40 @@ jobs:
             rodada=$((rodada + 1))
             url="https://hub.boxersoldas.com.br/api/sync-financeiro?backfill_pedido_nf=1&offset=${offset}"
 
-            corpo=$(mktemp)
-            codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
-              -X POST "$url" \
-              -H "x-cron-secret: $CRON_SECRET" \
-              --max-time 120)
+            # Rede 4: retry no MESMO offset pra timeout/erro transitorio --
+            # ate 3 tentativas com espera curta antes de tratar como falha
+            # de verdade. Ver comentario do topo (achado 2026-11-07/08).
+            tentativa_http=0
+            codigo=""
+            corpo=""
+            while [ "$tentativa_http" -lt 3 ]; do
+              tentativa_http=$((tentativa_http + 1))
+              corpo=$(mktemp)
+              codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+                -X POST "$url" \
+                -H "x-cron-secret: $CRON_SECRET" \
+                --max-time 120)
 
-            echo "--- rodada $rodada (offset $offset) -> HTTP $codigo"
-            jq . "$corpo" 2>/dev/null || cat "$corpo"; echo
+              echo "--- rodada $rodada (offset $offset, tentativa $tentativa_http/3) -> HTTP $codigo"
+              jq . "$corpo" 2>/dev/null || cat "$corpo"; echo
+
+              if [ "$codigo" = "200" ] && [ "$(jq -r '.ok // false' "$corpo")" = "true" ]; then
+                break
+              fi
+              if [ "$tentativa_http" -lt 3 ]; then
+                echo "aviso: falhou (HTTP $codigo), tentando de novo no mesmo offset em 5s"
+                sleep 5
+              fi
+            done
 
             if [ "$codigo" != "200" ]; then
-              echo "::error::backfill_pedido_nf respondeu $codigo no offset $offset"
+              echo "::error::backfill_pedido_nf respondeu $codigo no offset $offset apos 3 tentativas"
               exit 1
             fi
 
             ok=$(jq -r '.ok // false' "$corpo")
             if [ "$ok" != "true" ]; then
-              echo "::error::backfill_pedido_nf devolveu ok=false no offset $offset"
+              echo "::error::backfill_pedido_nf devolveu ok=false no offset $offset apos 3 tentativas"
               exit 1
             fi
 

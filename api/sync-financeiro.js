@@ -233,6 +233,21 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // DEBUG TEMPORARIO: amostra crua de registros reais do Zen (so pra achar o
+  // campo de "ordem de compra" dentro do bag "properties", que a spec nao
+  // descreve por ser objeto generico). path ex: "sale/sale".
+  if (req.query?.debug_zen_amostra) {
+    try {
+      const { zenGet } = require('./_zen');
+      const path = '/' + String(req.query.debug_zen_amostra).replace(/^\/+/, '');
+      const q = req.query.debug_zen_q ? String(req.query.debug_zen_q) : null;
+      const amostra = await zenGet(path, { q, max: 5, limite: 5, order: 'id desc' });
+      return res.status(200).json({ ok: true, path, total: amostra.length, amostra });
+    } catch (e) {
+      return res.status(500).json({ ok: false, erro: e.message });
+    }
+  }
+
   // Backfill de pedido_id/chave_acesso para linhas gravadas ANTES desta
   // correcao (2026-10-29: chave_acesso vinha de campo inexistente em
   // outgoingInvoice, e pedido_id nunca foi resolvido). Paginado com

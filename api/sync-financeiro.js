@@ -241,7 +241,7 @@ module.exports = async function handler(req, res) {
       const { zenGet } = require('./_zen');
       const path = '/' + String(req.query.debug_zen_amostra).replace(/^\/+/, '');
       const q = req.query.debug_zen_q ? String(req.query.debug_zen_q) : null;
-      const amostra = await zenGet(path, { q, max: 5, limite: 5, order: 'id desc' });
+      const amostra = await zenGet(path, { q, max: 5, limite: 5 });
       return res.status(200).json({ ok: true, path, total: amostra.length, amostra });
     } catch (e) {
       return res.status(500).json({ ok: false, erro: e.message });

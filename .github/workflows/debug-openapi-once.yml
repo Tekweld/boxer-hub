@@ -7,18 +7,26 @@ on:
   workflow_dispatch:
     inputs:
       termos:
-        description: 'Termos de busca (separados por virgula)'
-        required: true
+        description: 'Termos de busca (separados por virgula) -- deixe vazio se usar schema'
+        required: false
+      schema:
+        description: 'Nome do schema pra dump cru (ex: sale.Sale) -- deixe vazio se usar termos'
+        required: false
 
 jobs:
   buscar:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Consultar debug_openapi_busca
+      - name: Consultar debug_openapi_busca ou debug_openapi_schema
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          TERMOS: ${{ github.event.inputs.termos }}
+          SCHEMA: ${{ github.event.inputs.schema }}
         run: |
-          curl -sS -X POST \
-            "https://hub.boxersoldas.com.br/api/sync-financeiro?debug_openapi_busca=${{ github.event.inputs.termos }}" \
-            -H "x-cron-secret: $CRON_SECRET" | jq .
+          if [ -n "$SCHEMA" ]; then
+            url="https://hub.boxersoldas.com.br/api/sync-financeiro?debug_openapi_schema=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$SCHEMA")"
+          else
+            url="https://hub.boxersoldas.com.br/api/sync-financeiro?debug_openapi_busca=${TERMOS}"
+          fi
+          curl -sS -X POST "$url" -H "x-cron-secret: $CRON_SECRET" | jq .

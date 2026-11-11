@@ -201,6 +201,24 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // DEBUG TEMPORARIO: dump cru das propriedades de um schema especifico (ex:
+  // sale.Sale) -- mesma regra de auth/remocao do bloco acima.
+  if (req.query?.debug_openapi_schema) {
+    try {
+      const { zenAuth, ZEN_BASE } = require('./_zen');
+      const headers = await zenAuth();
+      const r = await fetch(`${ZEN_BASE}/platform/openapi.json`, { headers });
+      if (!r.ok) return res.status(502).json({ ok: false, erro: 'spec ' + r.status });
+      const spec = await r.json();
+      const nome = String(req.query.debug_openapi_schema);
+      const def = spec.components?.schemas?.[nome];
+      if (!def) return res.status(404).json({ ok: false, erro: 'schema nao encontrado: ' + nome });
+      return res.status(200).json({ ok: true, schema: nome, properties: def.properties || {} });
+    } catch (e) {
+      return res.status(500).json({ ok: false, erro: e.message });
+    }
+  }
+
   // Backfill de pedido_id/chave_acesso para linhas gravadas ANTES desta
   // correcao (2026-10-29: chave_acesso vinha de campo inexistente em
   // outgoingInvoice, e pedido_id nunca foi resolvido). Paginado com

@@ -171,6 +171,36 @@ module.exports = async function handler(req, res) {
     return res.status(401).json({ error: 'Autenticacao necessaria' });
   }
 
+  // DEBUG TEMPORARIO (2026-11-09): descobrir o campo de "ordem de compra"
+  // (numero do pedido do CLIENTE, ja existe no Zen segundo o Andre) sem
+  // sondar endpoint por adivinhacao -- le o /platform/openapi.json de
+  // verdade e procura por nome de campo candidato nos schemas. So admin/
+  // manager chega aqui (gate de auth logo acima). REMOVER depois de usar.
+  if (req.query?.debug_openapi_busca) {
+    try {
+      const { zenAuth, ZEN_BASE } = require('./_zen');
+      const headers = await zenAuth();
+      const r = await fetch(`${ZEN_BASE}/platform/openapi.json`, { headers });
+      if (!r.ok) return res.status(502).json({ ok: false, erro: 'spec ' + r.status });
+      const spec = await r.json();
+      const termos = String(req.query.debug_openapi_busca).toLowerCase().split(',');
+      const achados = [];
+      const schemas = spec.components?.schemas || {};
+      for (const [nomeSchema, def] of Object.entries(schemas)) {
+        const props = def.properties || {};
+        for (const nomeCampo of Object.keys(props)) {
+          const alvo = nomeCampo.toLowerCase();
+          if (termos.some((t) => alvo.includes(t))) {
+            achados.push({ schema: nomeSchema, campo: nomeCampo, tipo: props[nomeCampo].type || props[nomeCampo].$ref || null });
+          }
+        }
+      }
+      return res.status(200).json({ ok: true, total_schemas: Object.keys(schemas).length, achados });
+    } catch (e) {
+      return res.status(500).json({ ok: false, erro: e.message });
+    }
+  }
+
   // Backfill de pedido_id/chave_acesso para linhas gravadas ANTES desta
   // correcao (2026-10-29: chave_acesso vinha de campo inexistente em
   // outgoingInvoice, e pedido_id nunca foi resolvido). Paginado com

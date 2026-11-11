@@ -1,0 +1,24 @@
+# TEMPORARIO -- so pra descobrir o campo de "ordem de compra" no Zen sem
+# adivinhar (ver CLAUDE.md: "nao sondar endpoint por adivinhacao"). Apagar
+# depois de usar, junto com o branch debug_openapi_busca em sync-financeiro.js.
+name: Debug busca openapi (temporario)
+
+on:
+  workflow_dispatch:
+    inputs:
+      termos:
+        description: 'Termos de busca (separados por virgula)'
+        required: true
+
+jobs:
+  buscar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Consultar debug_openapi_busca
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS -X POST \
+            "https://hub.boxersoldas.com.br/api/sync-financeiro?debug_openapi_busca=${{ github.event.inputs.termos }}" \
+            -H "x-cron-secret: $CRON_SECRET" | jq .

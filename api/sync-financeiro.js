@@ -213,7 +213,21 @@ module.exports = async function handler(req, res) {
       const nome = String(req.query.debug_openapi_schema);
       const def = spec.components?.schemas?.[nome];
       if (!def) return res.status(404).json({ ok: false, erro: 'schema nao encontrado: ' + nome });
-      return res.status(200).json({ ok: true, schema: nome, properties: def.properties || {} });
+      // allOf: segue as refs (heranca) e junta todas as properties.
+      let props = { ...(def.properties || {}) };
+      const refsSeguidas = [];
+      if (Array.isArray(def.allOf)) {
+        for (const parte of def.allOf) {
+          if (parte.properties) props = { ...props, ...parte.properties };
+          if (parte.$ref) {
+            const refNome = parte.$ref.replace('#/components/schemas/', '');
+            refsSeguidas.push(refNome);
+            const refDef = spec.components?.schemas?.[refNome];
+            if (refDef?.properties) props = { ...props, ...refDef.properties };
+          }
+        }
+      }
+      return res.status(200).json({ ok: true, schema: nome, raw_keys: Object.keys(def), allOf_refs: refsSeguidas, properties: props });
     } catch (e) {
       return res.status(500).json({ ok: false, erro: e.message });
     }

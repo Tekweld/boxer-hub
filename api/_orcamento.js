@@ -283,9 +283,9 @@ async function criar(ctx, user, b, edit) {
   const lista = codigos.map(c => '"' + c.replace(/"/g, '') + '"').join(',');
   const [estados, mults, prods, regras, cats, pmaRows] = await Promise.all([
     sbGet(ctx, '/estados?uf=eq.' + encodeURIComponent(uf) + '&select=uf,mult_4_icms,mult_total'),
-    sbGet(ctx, '/multiplicadores?tabela_id=eq.4&segmento=eq.' + encodeURIComponent(seg) + '&classe=eq.' + cls + '&select=porte,categoria_grupo,valor'),
+    sbGet(ctx, '/multiplicadores?tabela_id=eq.1&segmento=eq.' + encodeURIComponent(seg) + '&classe=eq.' + cls + '&select=porte,categoria_grupo,valor'),
     sbGet(ctx, '/produtos?tabela_id=eq.1&ativo=eq.true&codigo=in.(' + encodeURIComponent(lista) + ')&select=codigo,modelo,pv_sp,porte,icms,ipi,ncm,categoria_id,imagem_url'),
-    sbGet(ctx, '/tabela_regras?tabela_id=eq.4&select=conteudo&order=ordem,id'),
+    sbGet(ctx, '/tabela_regras?tabela_id=eq.1&select=conteudo&order=ordem,id'),
     sbGet(ctx, '/categorias?tabela_id=eq.1&select=id,nome'),
     sbGet(ctx, '/tabela_pma_itens?ativo=eq.true&select=codigo,grupo,teto_hibrido,teto_ecommerce')
   ]);
@@ -447,7 +447,7 @@ const _multCache = {};
 async function classeMult(ctx, seg, cls, porte) {
   const k = seg + '|' + cls;
   if (!_multCache[k]) {
-    const r = await sbGet(ctx, '/multiplicadores?tabela_id=eq.4&segmento=eq.' + encodeURIComponent(seg) + '&classe=eq.' + cls + '&select=porte,valor');
+    const r = await sbGet(ctx, '/multiplicadores?tabela_id=eq.1&segmento=eq.' + encodeURIComponent(seg) + '&classe=eq.' + cls + '&select=porte,valor');
     const m = {}; r.forEach(x => { m[x.porte] = parseFloat(x.valor); });
     _multCache[k] = m;
   }

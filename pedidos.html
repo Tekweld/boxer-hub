@@ -537,8 +537,14 @@ async function renderCarrinho() {
       // pedido" (que ja grava rascunho no banco). Mostrar aqui e so leitura,
       // sem custo de escrita, e evita o cliente descobrir tarde que falta
       // limite. A checagem que vale de verdade continua no servidor.
-      const cli = await sb('/hub_clientes?id=eq.' + clienteId + '&select=limite_credito,limite_disponivel').then(r => r[0] || null);
-      if (cli) creditoInfo = cli;
+      // Credito por grupo empresarial (Diafer/Dutra etc.): ler via
+      // hub_fn_validar_credito, que ja soma certo por grupo_erp_id -- ler
+      // direto de hub_clientes aqui mostrava R$0,00 em qualquer filial que
+      // nao fosse a que concentra o limite no ZEN (bug visto 2026-11-16).
+      const credRpc = await sbRpc('hub_fn_validar_credito', { p_cliente_id: clienteId, p_valor: totalVal });
+      if (credRpc && credRpc.limite_total !== undefined) {
+        creditoInfo = { limite_credito: credRpc.limite_total, limite_disponivel: credRpc.disponivel };
+      }
     }
   } catch {}
 
@@ -883,10 +889,26 @@ async function _enviarPedidoInterno() {
 
     // Ate aqui o pedido esta salvo como rascunho, com itens e precos do
     // servidor. Nada foi submetido: o proximo passo e a revisao.
+    const totalPedido = cart.reduce((s, i) => {
+      const p = precos[i.produto_id];
+      const unit = i.precoManual != null ? i.precoManual : +(p?.preco_final ?? i.preco_base ?? 0);
+      return s + unit * i.quantidade;
+    }, 0);
     const [politica, cliente, endereco] = await Promise.all([
       sbRpc('hub_fn_validar_politica', { p_pedido_id: pedido.id }),
       sb('/hub_clientes?id=eq.' + clienteId + '&select=limite_credito,limite_disponivel,uf,razao_social,nome_fantasia,cnpj,email_principal,telefone,canal')
-        .then(r => r[0] || {}),
+        .then(r => r[0] || {})
+        // Credito por grupo empresarial: sobrescreve limite/disponivel da
+        // filial pelo valor agregado do grupo (hub_fn_validar_credito),
+        // mesma correcao aplicada no carrinho acima.
+        .then(async c => {
+          const cred = await sbRpc('hub_fn_validar_credito', { p_cliente_id: clienteId, p_valor: totalPedido });
+          if (cred && cred.limite_total !== undefined) {
+            c.limite_credito = cred.limite_total;
+            c.limite_disponivel = cred.disponivel;
+          }
+          return c;
+        }),
       // Endereco de entrega. Regra: o pedido usa o endereco do cadastro, sem
       // opcao de editar na tela -- alteracao vira solicitacao que muda
       // primeiro no Zen e reflete depois no Hub. `padrao=true` prefere o

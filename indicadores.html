@@ -127,7 +127,9 @@ function render() {
   document.getElementById('tituloRevenda').textContent = 'Indicadores — ' + (cliente.nome_fantasia || cliente.razao_social);
   document.getElementById('subRevenda').textContent = cliente.cnpj;
 
+  const podeVerGeral = ['admin', 'manager', 'analyst', 'financial'].includes(getUserRole());
   document.getElementById('acoesExport').innerHTML = `
+    ${podeVerGeral ? `<button class="btn btn-outline btn-sm" onclick="carregarIndicadoresGeral()">Visão geral (todas as revendas)</button>` : ''}
     <button class="btn btn-outline btn-sm" onclick="window.print()">Exportar PDF</button>
     <button class="btn btn-outline btn-sm" onclick="exportarExcel()">Exportar Excel</button>`;
 
@@ -136,13 +138,16 @@ function render() {
   const wrap = document.getElementById('corpoIndicadores');
   wrap.innerHTML = `
     <div class="kpi-row">
-      <div class="kpi-card destaque"><div class="kpi-label">Orcamentos Gerados</div><div class="kpi-value">${kpis.orcamentos_gerados}</div></div>
-      <div class="kpi-card"><div class="kpi-label">Pedidos Confirmados</div><div class="kpi-value">${kpis.pedidos_confirmados}</div></div>
-      <div class="kpi-card"><div class="kpi-label">Faturamento Realizado</div><div class="kpi-value">${fmtMoeda(kpis.faturamento_realizado)}</div></div>
+      <div class="kpi-card destaque"><div class="kpi-label">Orcamentos Gerados</div><div class="kpi-value">${kpis.orcamentos_gerados}</div><div class="kpi-sub">${fmtMoeda(kpis.orcamentos_gerados_valor)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Pedidos Confirmados</div><div class="kpi-value">${kpis.pedidos_confirmados}</div><div class="kpi-sub">${fmtMoeda(kpis.pedidos_confirmados_valor)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Faturamento Realizado</div><div class="kpi-value">${fmtMoeda(kpis.faturamento_realizado)}</div><div class="kpi-sub">${kpis.faturamento_realizado_qtd} nota(s)</div></div>
+      <div class="kpi-card"><div class="kpi-label">Pendente a Faturar</div><div class="kpi-value">${kpis.pendente_faturar_qtd}</div><div class="kpi-sub">${fmtMoeda(kpis.pendente_faturar_valor)}</div></div>
       <div class="kpi-card"><div class="kpi-label">Taxa de Conversao</div><div class="kpi-value">${taxaPct}</div><div class="kpi-sub">orcamento &rarr; pedido aprovado</div></div>
       <div class="kpi-card"><div class="kpi-label">Ticket Medio</div><div class="kpi-value">${fmtMoeda(kpis.ticket_medio_pedido)}</div></div>
       <div class="kpi-card${kpis.titulos_vencidos > 0 ? ' alerta' : ''}"><div class="kpi-label">Titulos Vencidos</div><div class="kpi-value ${kpis.titulos_vencidos > 0 ? 'danger' : ''}">${fmtMoeda(kpis.titulos_vencidos)}</div></div>
     </div>
+
+    ${renderFunilMensal(DADOS.por_mes)}
 
     <div class="card">
       <div class="card-header"><h3>Ultimos orcamentos</h3></div>
@@ -182,6 +187,54 @@ function render() {
       </div>
     </div>
   `;
+}
+
+// Tabela de funil por mes (qtd + R$ em cada etapa) -- usada tanto na visao
+// por revenda quanto na visao geral (item 8, Andre 2026-11-16).
+function renderFunilMensal(porMes) {
+  if (!porMes || !porMes.length) return '';
+  return `<div class="card">
+    <div class="card-header"><h3>Funil por mês</h3></div>
+    <div class="card-body"><table>
+      <thead><tr><th>Mês</th><th class="num">Orçamentos</th><th class="num">R$ Orçado</th><th class="num">Pedidos</th><th class="num">R$ Pedido</th><th class="num">Faturado</th><th class="num">R$ Faturado</th></tr></thead>
+      <tbody>${porMes.map(m => `<tr>
+        <td>${esc(m.mes)}</td>
+        <td class="num">${m.orcamentos_qtd}</td><td class="num">${fmtMoeda(m.orcamentos_valor)}</td>
+        <td class="num">${m.pedidos_qtd}</td><td class="num">${fmtMoeda(m.pedidos_valor)}</td>
+        <td class="num">${m.faturado_qtd}</td><td class="num">${fmtMoeda(m.faturado_valor)}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+  </div>`;
+}
+
+// Visao geral (todas as revendas), so pra staff -- toggle simples que troca
+// o corpo da pagina pelo agregado em vez de ficar numa aba separada.
+async function carregarIndicadoresGeral() {
+  const wrap = document.getElementById('corpoIndicadores');
+  wrap.innerHTML = '<div class="empty-state">Carregando...</div>';
+  try {
+    const r = await fetch('/api/push-pedido?target=indicadores', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (SESSION?.access_token || '') },
+      body: JSON.stringify({ modo: 'geral' })
+    });
+    const j = await r.json();
+    if (!r.ok) { wrap.innerHTML = '<div class="empty-state"><h3>' + esc(j.error || 'Erro ao carregar') + '</h3></div>'; return; }
+    document.getElementById('tituloRevenda').textContent = 'Indicadores — Visão geral';
+    document.getElementById('subRevenda').textContent = 'Todas as revendas';
+    document.getElementById('acoesExport').innerHTML = `<button class="btn btn-outline btn-sm" onclick="carregarIndicadores()">Voltar para a revenda</button>`;
+    wrap.innerHTML = `
+      <div class="kpi-row">
+        <div class="kpi-card destaque"><div class="kpi-label">Orçamentos Gerados</div><div class="kpi-value">${j.totais.orcamentos_qtd}</div><div class="kpi-sub">${fmtMoeda(j.totais.orcamentos_valor)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Pedidos Confirmados</div><div class="kpi-value">${j.totais.pedidos_qtd}</div><div class="kpi-sub">${fmtMoeda(j.totais.pedidos_valor)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Faturado</div><div class="kpi-value">${j.totais.faturado_qtd}</div><div class="kpi-sub">${fmtMoeda(j.totais.faturado_valor)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Pendente a Faturar</div><div class="kpi-value">${j.totais.pendente_qtd}</div><div class="kpi-sub">${fmtMoeda(j.totais.pendente_valor)}</div></div>
+      </div>
+      ${renderFunilMensal(j.por_mes)}
+    `;
+  } catch (e) {
+    wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar visão geral</h3></div>';
+  }
 }
 
 // Exporta o que esta na tela como CSV (abre direto no Excel) -- sem

@@ -157,16 +157,20 @@ textarea:focus{border-color:#25bbee}
   <div class="panel-content" id="tab-lista">
     <div class="page-header">
       <h2 class="page-title">Historico de Pedidos</h2>
-      <select id="filtroStatus" onchange="loadPedidos()" style="padding:6px 10px;border:1px solid #c3cfe2;border-radius:6px;font-family:Outfit;font-size:12px">
-        <option value="">Todos os status</option>
-        <option value="rascunho">Rascunho</option>
-        <option value="submetido">Submetido</option>
-        <option value="em_analise">Em analise</option>
-        <option value="aprovado">Aprovado</option>
-        <option value="faturado">Faturado</option>
-        <option value="enviado">Enviado</option>
-        <option value="entregue">Entregue</option>
-      </select>
+      <div style="display:flex;gap:8px">
+        <select id="filtroPeriodo" onchange="loadPedidos()" style="padding:6px 10px;border:1px solid #c3cfe2;border-radius:6px;font-family:Outfit;font-size:12px"></select>
+        <select id="filtroStatus" onchange="loadPedidos()" style="padding:6px 10px;border:1px solid #c3cfe2;border-radius:6px;font-family:Outfit;font-size:12px">
+          <option value="">Todos os status</option>
+          <option value="rascunho">Rascunho</option>
+          <option value="submetido">Submetido</option>
+          <option value="em_analise">Em analise</option>
+          <option value="aprovado">Aprovado</option>
+          <option value="em_separacao">Em separacao</option>
+          <option value="faturado">Faturado</option>
+          <option value="enviado">Enviado</option>
+          <option value="entregue">Entregue</option>
+        </select>
+      </div>
     </div>
     <div style="margin-bottom:14px">
       <input id="filtroPedidoBusca" oninput="renderPedidosFiltrados()" placeholder="Buscar por numero, OC, numero do pedido no ZEN ou cliente" style="width:100%;padding:8px 12px;border:1px solid #c3cfe2;border-radius:6px;font-family:Outfit;font-size:13px">
@@ -275,19 +279,50 @@ function salvarDetalhesPedido(patch) {
   sessionStorage.setItem(detalhesKey(), JSON.stringify(Object.assign(getDetalhesPedido(), patch)));
 }
 
-// Cartao: 1 a 10x sem juros. Boleto/duplicata: ate 3x (28/56/84 dias).
-// PIX e transferencia: a vista. Espelha hub_politica_parametros -- quem decide
-// de verdade continua sendo hub_fn_validar_politica no envio.
-function atualizarParcelasCarrinho() {
+// Cartao: 1 a 10x sem juros. Credix: 1 a 4x (fintech, avaliacao do ADM de
+// Vendas -- ver hub_fn_submeter_pedido). Boleto/duplicata: plano de prazo em
+// dias (comercial.hub_planos_prazo_boleto), nao mais "Nx parcelas" -- pedido
+// do Andre, 2026-11-16, porque o vencimento real de cada parcela varia
+// (28/56/84 padrao, +112 pra cliente grande/historico, negociacoes pontuais
+// fora desse formato). PIX e transferencia: a vista. Espelha
+// hub_politica_parametros -- quem decide de verdade continua sendo
+// hub_fn_validar_politica no envio.
+let _planosPrazoBoletoCache = null;
+async function carregarPlanosPrazoBoleto() {
+  if (_planosPrazoBoletoCache) return _planosPrazoBoletoCache;
+  try {
+    _planosPrazoBoletoCache = await sb('/hub_planos_prazo_boleto?ativo=eq.true&select=id,nome,dias&order=ordem.asc');
+  } catch { _planosPrazoBoletoCache = []; }
+  return _planosPrazoBoletoCache;
+}
+
+async function atualizarParcelasCarrinho() {
   const forma = document.getElementById('cartPagamento')?.value;
   const sel = document.getElementById('cartParcelas');
   if (!sel) return;
-  const max = forma === 'cartao_credito' ? 10 : forma === 'boleto' ? 3 : 1;
+
+  if (forma === 'boleto') {
+    const planos = await carregarPlanosPrazoBoleto();
+    const diasSalvos = JSON.stringify(getDetalhesPedido().dias_pagamento || null);
+    const idxSalvo = planos.findIndex(p => JSON.stringify(p.dias) === diasSalvos);
+    sel.innerHTML = planos.map((p, i) =>
+      `<option value="${i}" ${i === (idxSalvo >= 0 ? idxSalvo : 0) ? 'selected' : ''}>${esc(p.nome)}</option>`).join('');
+    sel.disabled = planos.length <= 1;
+    sel.onchange = () => {
+      const p = planos[+sel.value];
+      if (p) salvarDetalhesPedido({ parcelas: p.dias.length, dias_pagamento: p.dias });
+    };
+    if (planos.length && idxSalvo < 0) salvarDetalhesPedido({ parcelas: planos[0].dias.length, dias_pagamento: planos[0].dias });
+    return;
+  }
+
+  const max = forma === 'cartao_credito' ? 10 : forma === 'credix' ? 4 : 1;
   const salvas = Math.min(getDetalhesPedido().parcelas || 1, max);
+  sel.onchange = () => salvarDetalhesPedido({ parcelas: +sel.value, dias_pagamento: null });
   sel.innerHTML = Array.from({ length: max }, (_, i) =>
     `<option value="${i + 1}" ${salvas === i + 1 ? 'selected' : ''}>${i + 1}x${max > 1 ? ' sem juros' : ' (a vista)'}</option>`).join('');
   sel.disabled = max === 1;
-  if (max === 1) salvarDetalhesPedido({ parcelas: 1 });
+  if (max === 1) salvarDetalhesPedido({ parcelas: 1, dias_pagamento: null });
 }
 
 // Preco editavel direto no item do carrinho -- mesmo padrao do
@@ -632,11 +667,12 @@ async function renderCarrinho() {
             <option value="cartao_credito" ${detalhes.forma_pagamento === 'cartao_credito' ? 'selected' : ''}>Cartão de crédito</option>
             <option value="pix" ${detalhes.forma_pagamento === 'pix' ? 'selected' : ''}>PIX / à vista</option>
             <option value="transferencia" ${detalhes.forma_pagamento === 'transferencia' ? 'selected' : ''}>Transferência</option>
+            <option value="credix" ${detalhes.forma_pagamento === 'credix' ? 'selected' : ''}>Credix (avaliação ADM de Vendas)</option>
           </select>
         </div>
         <div class="form-row">
           <label>Parcelas</label>
-          <select id="cartParcelas" onchange="salvarDetalhesPedido({parcelas:+this.value})"></select>
+          <select id="cartParcelas"></select>
         </div>
       </div>
     </div>
@@ -948,7 +984,7 @@ let _revisao = null;
 
 // Rotulo legivel da forma de pagamento escolhida na tela do carrinho -- so
 // para recapitular aqui, o campo em si mora em getDetalhesPedido() agora.
-const PAGAMENTO_LABEL = { boleto: 'Boleto / Duplicata a prazo', cartao_credito: 'Cartão de crédito', pix: 'PIX / à vista', transferencia: 'Transferência' };
+const PAGAMENTO_LABEL = { boleto: 'Boleto / Duplicata a prazo', cartao_credito: 'Cartão de crédito', pix: 'PIX / à vista', transferencia: 'Transferência', credix: 'Credix' };
 
 // Revisao do orcamento para CNPJ novo (prospect) -- caminho bem mais curto
 // que abrirRevisao: nao ha rascunho em hub_pedidos, nao ha endereco/credito/
@@ -1332,6 +1368,7 @@ async function confirmarEnvio() {
       observacoes: (detalhes.observacoes || '').trim() || null,
       forma_pagamento: detalhes.forma_pagamento || 'boleto',
       parcelas: +detalhes.parcelas || 1,
+      dias_pagamento: detalhes.dias_pagamento || null,
       frete_modalidade: modalidade,
       classe_comercial_aplicada: _revisao.classeAplicada ?? null,
       segmento_aplicado: _revisao.segmentoAplicado ?? null,
@@ -1491,12 +1528,36 @@ async function carregarOrcamentosParaLista(clienteId) {
 // Cache local das linhas -- filtro de texto so re-renderiza, sem refetch.
 let _linhasPedidosCache = [];
 
+// Opcoes fixas dos ultimos 24 meses -- simples e cobre qualquer pedido real
+// sem precisar consultar o banco so pra saber quais meses existem.
+function popularFiltroPeriodo() {
+  const sel = document.getElementById('filtroPeriodo');
+  if (!sel || sel.options.length) return;
+  const hoje = new Date();
+  let html = '<option value="">Todo o periodo</option>';
+  for (let i = 0; i < 24; i++) {
+    const d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+    const ano = d.getFullYear(), mes = d.getMonth() + 1;
+    const nomeMes = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    html += `<option value="${ano}-${String(mes).padStart(2, '0')}">${nomeMes}</option>`;
+  }
+  sel.innerHTML = html;
+}
+
 async function loadPedidos() {
+  popularFiltroPeriodo();
   const wrap = document.getElementById('pedidosList');
   const status = document.getElementById('filtroStatus').value;
+  const periodo = document.getElementById('filtroPeriodo').value; // 'YYYY-MM' ou ''
 
   let url = '/hub_pedidos?select=id,numero,status,origem,valor_total,criado_em,erp_workflow_status,erp_pedido_id,ordem_compra,hub_clientes(razao_social,nome_fantasia)&order=criado_em.desc&ativo=eq.true';
   if (status) url += '&status=eq.' + status;
+  if (periodo) {
+    const [ano, mes] = periodo.split('-').map(Number);
+    const inicio = new Date(Date.UTC(ano, mes - 1, 1)).toISOString();
+    const fim = new Date(Date.UTC(mes === 12 ? ano + 1 : ano, mes === 12 ? 0 : mes, 1)).toISOString();
+    url += '&criado_em=gte.' + inicio + '&criado_em=lt.' + fim;
+  }
   // Com revenda selecionada (ou dealer logado, que ja e sempre a sua),
   // a lista mostra so os pedidos dela -- antes mostrava tudo que a RLS
   // deixava ver, mesmo com uma revenda especifica em foco no topo.
@@ -1509,7 +1570,8 @@ async function loadPedidos() {
   }
 
   try {
-    const [pedidos, orcamentos] = await Promise.all([sb(url), carregarOrcamentosParaLista(clienteId)]);
+    let [pedidos, orcamentos] = await Promise.all([sb(url), carregarOrcamentosParaLista(clienteId)]);
+    if (periodo) orcamentos = orcamentos.filter(o => String(o.criado_em || '').slice(0, 7) === periodo);
     _orcamentosCache = {};
     orcamentos.forEach(o => { _orcamentosCache[o.id] = o; });
 
@@ -1634,12 +1696,99 @@ function abrirOrcamentoDetalhe(id) {
       <button class="btn btn-outline btn-sm" id="btnEmailOrcDet_${o.id}" onclick="enviarEmailOrcamento('${o.id}', this)">Enviar por E-mail</button>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0">
+      ${aberto && podeEnviarOrcamento() ? `<button class="btn btn-outline" onclick="closeModal();editarOrcamentoCarrinho('${o.id}')">Editar</button>` : ''}
       ${aberto ? `<button class="btn btn-outline" onclick="cancelarOrcamento('${o.id}')">Cancelar orçamento</button>` : ''}
       ${!aberto && o.status !== 'aprovado' ? `<button class="btn btn-outline" onclick="arquivarOrcamento('${o.id}')">Arquivar</button>` : ''}
       ${aberto && o.zen_sale_id ? `<button class="btn btn-primary" onclick="aprovarOrcamento('${o.id}')">${o.status === 'aceito_cliente' ? 'Confirmar e enviar ao ZEN' : 'Cliente confirmou por outro canal: enviar ao ZEN'}</button>` : ''}
       <button class="btn btn-outline" onclick="closeModal()">Fechar</button>
     </div>
   `);
+}
+
+// Edicao de orcamento ja enviado/visualizado/aceito (Andre, 2026-11-16) --
+// o backend ja tinha isso pronto desde sempre (api/_orcamento.js, acao
+// 'editar': reprecifica, atualiza a venda no ZEN, e se o cliente ja tinha
+// aceito volta para 'visualizado' porque o conteudo mudou), so nunca foi
+// ligado a nenhuma tela ("fica para fase 2" dizia o comentario antigo).
+// So representante/funcionario/admin ve o botao (podeEnviarOrcamento) --
+// cliente nunca edita o proprio orcamento.
+let _edicaoOrcamentoItens = [];
+function editarOrcamentoCarrinho(id) {
+  const o = _orcamentosCache[id];
+  if (!o) return;
+  _edicaoOrcamentoItens = (o.itens || []).map(i => Object.assign({}, i));
+  renderModalEdicaoOrcamento(o);
+}
+
+function renderModalEdicaoOrcamento(o) {
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
+      <h3 style="font-size:18px;color:#1d327b">Editar orçamento ${esc(o.codigo)}</h3>
+      <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
+    </div>
+    <div style="font-size:12px;color:#92400e;background:#fff7ed;border:1px solid #fed7aa;padding:10px 12px;border-radius:8px;margin-bottom:14px">
+      Salvar aqui recalcula os preços, atualiza o PDF/link do orçamento e, se já houver venda no ZEN, atualiza ela também.
+      ${o.status === 'aceito_cliente' ? 'Como o cliente já tinha aceito, o orçamento volta para "visualizado" -- ele precisa confirmar de novo.' : ''}
+    </div>
+    <div id="edicaoOrcItens" style="display:flex;flex-direction:column;gap:8px;max-height:30vh;overflow-y:auto;margin-bottom:14px">
+      ${_edicaoOrcamentoItens.map((i, idx) => `
+        <div id="edicaoOrcItem_${idx}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#f7fafc;border-radius:8px">
+          <div style="flex:1;font-size:13px">${esc(i.modelo || i.codigo)}<div style="font-size:11px;color:#718096">${esc(i.codigo)}</div></div>
+          <input type="number" min="1" max="999" value="${i.qtd}" style="width:70px;padding:4px 6px"
+                 onchange="_edicaoOrcamentoItens[${idx}].qtd=+this.value">
+          <span style="cursor:pointer;color:#e30613;font-size:18px" onclick="document.getElementById('edicaoOrcItem_${idx}').remove();_edicaoOrcamentoItens[${idx}]=null">&times;</span>
+        </div>`).join('')}
+    </div>
+    <div class="form-row-inline">
+      <div class="form-row">
+        <label>Pagamento</label>
+        <select id="edicaoOrcPagamento">
+          <option value="avista" ${o.pagamento_tipo === 'avista' ? 'selected' : ''}>À vista</option>
+          <option value="boleto" ${o.pagamento_tipo !== 'avista' ? 'selected' : ''}>Boleto</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Parcelas (se boleto)</label>
+        <input id="edicaoOrcParcelas" type="number" min="1" max="3" value="${o.parcelas || 1}">
+      </div>
+    </div>
+    <div class="form-row">
+      <label>Observações</label>
+      <textarea id="edicaoOrcObs" rows="2">${esc(o.observacoes || '')}</textarea>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" id="btnSalvarEdicaoOrc" onclick="salvarEdicaoOrcamento('${o.id}')">Salvar alterações</button>
+    </div>
+  `);
+}
+
+async function salvarEdicaoOrcamento(id) {
+  const o = _orcamentosCache[id];
+  const btn = document.getElementById('btnSalvarEdicaoOrc');
+  const itens = _edicaoOrcamentoItens.filter(Boolean);
+  if (!itens.length) { toast('O orçamento precisa ter ao menos um item', 'error'); return; }
+  btn.disabled = true; btn.textContent = 'Salvando...';
+  try {
+    const payload = {
+      id,
+      uf: o.uf, segmento: o.segmento, classe: o.classe,
+      itens: itens.map(i => ({ codigo: i.codigo, qtd: i.qtd, disp: i.estoque || 'sem_info', previsao: i.previsao || null })),
+      pagamento: {
+        tipo: document.getElementById('edicaoOrcPagamento').value,
+        parcelas: +document.getElementById('edicaoOrcParcelas').value || 1
+      },
+      observacoes: document.getElementById('edicaoOrcObs').value.trim() || null
+    };
+    const j = await chamarOrcamentoApi('editar', payload);
+    toast('Orçamento ' + j.codigo + ' atualizado' + (j.reaceite ? ' -- cliente precisa aceitar de novo' : ''));
+    closeModal();
+    loadPedidos();
+  } catch (e) {
+    toast('Erro ao editar orçamento: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Salvar alterações'; }
+  }
 }
 
 // "Fundamental" pro Andre (2026-11-03): orcamento de CNPJ novo fica
@@ -1688,6 +1837,12 @@ async function aprovarOrcamento(id) {
 // (Monitor de Pedidos/Zen continuam a fonte de verdade de qualquer jeito).
 async function espelharOrcamentoComoPedido(o, zenSaleId) {
   try {
+    // A partir de 2026-11-16 o cron (api/sync-pedidos-zen.js) tambem espelha
+    // sozinho -- checagem evita duplicar se os dois caminhos rodarem perto
+    // (ha indice unico em hub_pedidos.erp_pedido_id como ultima trava).
+    const jaExiste = await sb('/hub_pedidos?erp_pedido_id=eq.' + zenSaleId + '&select=id&limit=1');
+    if (jaExiste.length) return;
+
     const [cliente] = await sb('/hub_clientes?cnpj=eq.' + o.cliente_cnpj + '&select=id,representante_id&limit=1');
     if (!cliente) { toast('Pedido criado no Zen, mas sem cliente cadastrado no Hub pra espelhar aqui ainda', 'error'); return; }
 
@@ -1703,7 +1858,11 @@ async function espelharOrcamentoComoPedido(o, zenSaleId) {
       // nunca apareceu no Hub). E sempre o representante/staff atuando por
       // uma revenda que confirma o orcamento, nunca o proprio dealer.
       origem: 'proxy_representante',
-      forma_pagamento: o.pagamento_tipo,
+      // orcamentos.pagamento_tipo so conhece 'avista'/'boleto'; hub_pedidos
+      // espera o vocabulario do checkout (pix/boleto/...) -- sem traduzir,
+      // todo orcamento a vista derrubava o INSERT (hub_pedidos_forma_
+      // pagamento_check), achado ao vivo em 2026-11-16 (ORC-00014).
+      forma_pagamento: o.pagamento_tipo === 'avista' ? 'pix' : 'boleto',
       parcelas: o.parcelas,
       valor_frete: o.frete_valor || 0,
       valor_total: o.total_final,
@@ -1876,12 +2035,22 @@ const ETAPA_CLIENTE = {
   'Aguardando importação':  { titulo: 'Reposicao a caminho',        texto: 'Parte dos itens esta em reposicao. Nossa equipe vai confirmar o prazo.' },
   'Pedido aprovado':        { titulo: 'Pedido aprovado',            texto: 'Aprovado e liberado para faturamento.' },
   'Pedido reprovado':       { titulo: 'Pedido nao aprovado',        texto: 'O pedido nao foi aprovado. Nossa equipe entra em contato.' },
-  'Erro ao gravar no ERP':  { titulo: 'Em verificacao',             texto: 'Encontramos uma pendencia tecnica ao processar seu pedido. Nossa equipe ja foi avisada e vai resolver.' }
+  'Erro ao gravar no ERP':  { titulo: 'Em verificacao',             texto: 'Encontramos uma pendencia tecnica ao processar seu pedido. Nossa equipe ja foi avisada e vai resolver.' },
+  // Pos-aprovacao (Andre, 2026-11-16): o workflow do Zen nao tem no depois de
+  // 'Pedido aprovado' -- sync-pedidos-zen.js acompanha a entrega via
+  // sale.SaleItem.servedQuantity e grava aqui como evento proprio.
+  'Em separacao (envio parcial)': { titulo: 'Em separacao',         texto: 'Parte dos itens ja esta sendo preparada/enviada.' },
+  'Entregue':               { titulo: 'Entregue',                   texto: 'Pedido totalmente entregue.' }
 };
 
 // Depois que a venda existe no Zen, quem conta a verdade sobre o pedido e a
-// etapa do workflow, nao o status do Hub (que fica em 'submetido' para sempre).
+// etapa do workflow, nao o status do Hub (que fica em 'submetido' para
+// sempre) -- EXCETO pos-aprovacao: dali em diante o workflow do Zen fica
+// parado em 'Pedido aprovado' e quem avanca e hub_pedidos.status (via
+// servedQuantity, ver sync-pedidos-zen.js), entao o status manda de volta.
 function etapaVisivel(p) {
+  if (p.status === 'em_separacao') return ETAPA_CLIENTE['Em separacao (envio parcial)'].titulo;
+  if (p.status === 'entregue') return ETAPA_CLIENTE['Entregue'].titulo;
   const t = ETAPA_CLIENTE[p.erp_workflow_status];
   if (t) return t.titulo;
   return String(p.status || '').replace('_', ' ');
@@ -1929,8 +2098,65 @@ function acoesPedido(p) {
             <button class="btn btn-primary" onclick="retomarPedido('${p.id}','${dono}')">Continuar este pedido</button>`;
   }
   const podeVoltar = p.status === 'submetido' && !p.erp_pedido_id;
+  // Pedido ja no Zen e ainda nao faturado: hoje isso e resolvido pedindo pro
+  // ADM de Vendas voltar a etapa manualmente no Zen (nao existe endpoint de
+  // reversao de etapa na API -- confirmado em reference-zen-workflow-pedido.md,
+  // so saleOpPrepareRevert enquanto ainda PREPARED). O Hub nao automatiza essa
+  // reversao (seria administracao, que e do Monitor/ZEN) -- so abre o canal
+  // de solicitacao que ja existe, pedido do Andre, 2026-11-16.
+  const podeSolicitarReabertura = !!p.erp_pedido_id && !['faturado', 'enviado', 'entregue', 'cancelado', 'rejeitado'].includes(p.status);
   return `${podeVoltar ? `<button class="btn btn-warn" onclick="reverterPedido('${p.id}','${dono}')">Voltar a editar</button>` : ''}
+          ${podeSolicitarReabertura ? `<button class="btn btn-outline" onclick="abrirSolicitacaoReabertura('${p.id}','${dono}','${esc(p.numero || '')}')">Solicitar alteração</button>` : ''}
           <button class="btn btn-primary" onclick="repetirPedido('${p.id}','${dono}')">Repetir pedido</button>`;
+}
+
+// Canal de resolucao (item 5, Andre 2026-11-16): abre uma solicitacao pro
+// ADM de Vendas pedindo pra voltar o pedido a uma etapa editavel no Zen --
+// o Hub so registra o pedido, quem executa a reversao continua sendo
+// manual no Zen (ver nota acima).
+function abrirSolicitacaoReabertura(pedidoId, clienteId, numero) {
+  openModal(`
+    <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
+      <h3 style="font-size:18px;color:#1d327b">Solicitar alteração — Pedido ${esc(numero)}</h3>
+      <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
+    </div>
+    <div class="form-row">
+      <label>O que precisa mudar?</label>
+      <textarea id="reaberturaMsg" rows="4" placeholder="Ex: trocar quantidade do item X, corrigir endereço de entrega, etc."></textarea>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" id="btnEnviarReabertura" onclick="enviarSolicitacaoReabertura('${pedidoId}','${clienteId}')">Enviar ao ADM de Vendas</button>
+    </div>
+  `);
+}
+
+async function enviarSolicitacaoReabertura(pedidoId, clienteId) {
+  const msg = document.getElementById('reaberturaMsg').value.trim();
+  if (!msg) { toast('Descreva o que precisa mudar', 'error'); return; }
+  const btn = document.getElementById('btnEnviarReabertura');
+  btn.disabled = true; btn.textContent = 'Enviando...';
+  try {
+    const tipo = getUserTipo();
+    const [sol] = await sb('/hub_solicitacoes', 'POST', {
+      cliente_id: clienteId,
+      aberto_por_tipo: tipo === 'cliente' ? 'cliente' : 'representante',
+      categoria: 'alteracao_pedido',
+      referencia_tipo: 'pedido', referencia_id: pedidoId,
+      assunto: 'Pedido ja enviado ao ZEN precisa de alteracao antes do faturamento'
+    });
+    await sb('/hub_solicitacao_mensagens', 'POST', {
+      solicitacao_id: sol.id,
+      autor_tipo: tipo === 'cliente' ? 'cliente' : (tipo === 'representante' ? 'representante' : 'funcionario'),
+      mensagem: msg
+    });
+    toast('Solicitação enviada ao ADM de Vendas');
+    closeModal();
+  } catch (e) {
+    toast('Erro ao enviar solicitação: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Enviar ao ADM de Vendas'; }
+  }
 }
 
 // Representante e admin enxergam pedidos de varias revendas, mas o carrinho

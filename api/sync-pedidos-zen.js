@@ -754,6 +754,90 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    // ---- 1.5. Reconciliar orcamentos aceitos no Zen sem pedido espelhado ----
+    // Ate 2026-11-16 o espelho orcamento->pedido (espelharOrcamentoComoPedido,
+    // em pedidos.html) so rodava no navegador de quem clicava "aprovar" numa
+    // tela especifica -- se ninguem clicasse, ou a chamada falhasse, o pedido
+    // ficava real no Zen e invisivel no Hub para sempre (so um console.error).
+    // Caso pego ao vivo: ORC-00014 (Diafer Eireli), aceito pelo cliente,
+    // zen_sale_id 58793, nunca espelhado. Mesma garantia do passo 1 (quem
+    // garante que chega e o job, nao o navegador), aplicada aqui.
+    r.orcamentos_reconciliados = 0;
+    r.falhas_orcamento = [];
+    try {
+      const orcRes = await fetch(HUB_URL +
+        '/rest/v1/orcamentos?zen_sale_id=not.is.null&status=in.(aceito_cliente,aprovado)' +
+        '&ativo=eq.true&select=id,codigo,cliente_cnpj,zen_sale_id,pagamento_tipo,parcelas,frete_valor,total_final,observacoes,itens' +
+        '&order=criado_em.asc&limit=25', { headers: hubH('GET') });
+      const orcamentos = orcRes.ok ? await orcRes.json() : [];
+
+      for (const o of orcamentos) {
+        try {
+          const jaRes = await fetch(HUB_URL + '/rest/v1/hub_pedidos?erp_pedido_id=eq.' + o.zen_sale_id + '&select=id&limit=1',
+            { headers: hubH('GET') });
+          const ja = jaRes.ok ? await jaRes.json() : [];
+          if (ja.length) continue; // ja espelhado (pelo navegador ou por rodada anterior)
+
+          const cliRes = await fetch(HUB_URL + '/rest/v1/hub_clientes?cnpj=eq.' + encodeURIComponent(o.cliente_cnpj) + '&select=id,representante_id&limit=1',
+            { headers: hubH('GET') });
+          const cliJson = cliRes.ok ? await cliRes.json() : [];
+          const cliente = cliJson[0];
+          if (!cliente) {
+            r.falhas_orcamento.push({ codigo: o.codigo, erro: 'cliente ' + o.cliente_cnpj + ' nao cadastrado no Hub ainda' });
+            continue;
+          }
+
+          const numRes = await fetch(HUB_URL + '/rest/v1/rpc/hub_fn_gerar_numero',
+            { method: 'POST', headers: hubH('POST'), body: JSON.stringify({}) });
+          const numOut = numRes.ok ? await numRes.json() : null;
+          const numero = typeof numOut === 'string' ? numOut : numOut?.numero || null;
+
+          const pedRes = await fetch(HUB_URL + '/rest/v1/hub_pedidos', {
+            method: 'POST', headers: hubH('POST'),
+            body: JSON.stringify({
+              numero, cliente_id: cliente.id, representante_id: cliente.representante_id || null,
+              status: 'submetido', origem: 'proxy_representante',
+              // orcamentos.pagamento_tipo so conhece 'avista'/'boleto';
+              // hub_pedidos espera o vocabulario do checkout (ver mesma
+              // traducao em espelharOrcamentoComoPedido, pedidos.html).
+              forma_pagamento: o.pagamento_tipo === 'avista' ? 'pix' : 'boleto', parcelas: o.parcelas,
+              valor_frete: o.frete_valor || 0, valor_total: o.total_final,
+              observacoes: o.observacoes || null,
+              erp_pedido_id: String(o.zen_sale_id), erp_tipo: 'sale',
+              erp_sincronizado_em: new Date().toISOString()
+            })
+          });
+          const pedJson = pedRes.ok ? await pedRes.json() : [];
+          const pedido = pedJson[0];
+          if (!pedido) {
+            r.falhas_orcamento.push({ codigo: o.codigo, erro: 'falha ao criar hub_pedidos (' + pedRes.status + ')' });
+            continue;
+          }
+
+          const itensBody = [];
+          for (const i of (o.itens || [])) {
+            const prodRes = await fetch(HUB_URL + '/rest/v1/hub_produtos?sku=eq.' + encodeURIComponent(i.codigo) + '&select=id&limit=1',
+              { headers: hubH('GET') });
+            const prodJson = prodRes.ok ? await prodRes.json() : [];
+            itensBody.push({
+              pedido_id: pedido.id, produto_id: prodJson[0]?.id || null, sku: i.codigo, nome_produto: i.modelo,
+              quantidade: i.qtd, preco_unitario: i.unit_tabela ?? i.unit, preco_final: i.unit,
+              subtotal_item: i.subtotal ?? (i.unit * i.qtd)
+            });
+          }
+          if (itensBody.length) {
+            await fetch(HUB_URL + '/rest/v1/hub_pedido_itens', { method: 'POST', headers: hubH('POST'), body: JSON.stringify(itensBody) });
+          }
+          await registrarEvento(pedido.id, 'Orcamento espelhado (reconciliacao automatica)', 'zen', null, hubH);
+          r.orcamentos_reconciliados++;
+        } catch (e) {
+          r.falhas_orcamento.push({ codigo: o.codigo, erro: e.message.slice(0, 200) });
+        }
+      }
+    } catch (e) {
+      r.erros.push({ etapa: 'reconciliar_orcamento', detalhe: e.message.slice(0, 200) });
+    }
+
     // ---- 2. Trazer a etapa do workflow de volta ----
     const acompRes = await fetch(HUB_URL +
       '/rest/v1/hub_pedidos?erp_pedido_id=not.is.null&ativo=eq.true' +
@@ -830,6 +914,75 @@ module.exports = async function handler(req, res) {
       // Pedido no Zen sem instancia de workflow nao e detalhe tecnico: e pedido
       // que ninguem esta tocando. Contar para virar sinal em vez de silencio.
       r.sem_workflow = acompanhar.length - r.etapas_lidas;
+    }
+
+    // ---- 3. Acompanhar entrega pos-aprovacao (Andre, 2026-11-16) ----
+    // O workflow "Venda padrao" nao tem no depois de 'Pedido aprovado' (ver
+    // reference-zen-workflow-pedido.md) -- por isso o passo 2 para de olhar
+    // esses pedidos. Mas o cliente continua sem saber se/quando a mercadoria
+    // sai, que era a dor original. sale.SaleItem.servedQuantity ja modela
+    // nativamente "quanto pediu x quanto ja foi entregue" (achado documentado
+    // em ZEN-ERP-CONHECIMENTO.md, secao de pagamento) -- usa isso pra avancar
+    // hub_pedidos.status pelos valores que ja existem no check constraint
+    // (aprovado -> em_separacao -> entregue) e sumir a hora de "aprovado pra
+    // sempre" que o cliente via antes.
+    // Simplificacao assumida: nao ha como distinguir 'faturado' de 'enviado'
+    // so com servedQuantity -- os dois colapsam em 'em_separacao' ate ter uma
+    // fonte melhor (NF/expedicao, ou o Monitor de Pedidos quando existir).
+    r.entregas_verificadas = 0;
+    r.entregas_mudadas = 0;
+    try {
+      const aprovRes = await fetch(HUB_URL +
+        '/rest/v1/hub_pedidos?erp_workflow_status=eq.Pedido aprovado&erp_pedido_id=not.is.null' +
+        '&status=not.in.(entregue,cancelado,rejeitado)&ativo=eq.true' +
+        '&select=id,numero,status,erp_pedido_id&order=criado_em.desc&limit=100', { headers: hubH('GET') });
+      const aprovados = aprovRes.ok ? await aprovRes.json() : [];
+      r.entregas_verificadas = aprovados.length;
+
+      if (aprovados.length) {
+        const porSale = {};
+        aprovados.forEach(p => { porSale[String(p.erp_pedido_id)] = p; });
+        const saleIds = Object.keys(porSale);
+        const totais = {}; // sale_id -> {qtd, servido}
+
+        for (let i = 0; i < saleIds.length; i += 40) {
+          const lote = saleIds.slice(i, i + 40);
+          const itens = await zenGet('/sale/saleItem', {
+            q: 'sale.id=in=(' + lote.join(',') + ')',
+            max: 500, limite: 1000
+          });
+          itens.forEach(it => {
+            const saleId = String(it.sale?.id || '');
+            if (!saleId) return;
+            const t = totais[saleId] || { qtd: 0, servido: 0 };
+            t.qtd += Number(it.quantity) || 0;
+            t.servido += Number(it.servedQuantity) || 0;
+            totais[saleId] = t;
+          });
+        }
+
+        for (const saleId of Object.keys(totais)) {
+          const pedido = porSale[saleId];
+          const t = totais[saleId];
+          if (!pedido || !t.qtd) continue;
+
+          const novoStatus = t.servido <= 0 ? 'aprovado'
+            : t.servido < t.qtd ? 'em_separacao'
+            : 'entregue';
+          if (novoStatus === pedido.status) continue;
+
+          await fetch(HUB_URL + '/rest/v1/hub_pedidos?id=eq.' + pedido.id, {
+            method: 'PATCH', headers: hubH('PATCH'),
+            body: JSON.stringify({ status: novoStatus, atualizado_em: new Date().toISOString() })
+          });
+          await registrarEvento(pedido.id,
+            novoStatus === 'em_separacao' ? 'Em separacao (envio parcial)' : 'Entregue',
+            'zen', 'servedQuantity ' + t.servido + '/' + t.qtd, hubH);
+          r.entregas_mudadas++;
+        }
+      }
+    } catch (e) {
+      r.erros.push({ etapa: 'entrega_pos_aprovacao', detalhe: e.message.slice(0, 200) });
     }
 
     console.log('[PEDIDOS-ZEN]', JSON.stringify(r));

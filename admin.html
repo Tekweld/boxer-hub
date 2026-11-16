@@ -220,6 +220,21 @@ select,input,textarea{font-family:Outfit,sans-serif}
     <div id="parametrosList"></div>
 
     <div class="page-header" style="margin-top:28px">
+      <h3 style="font-size:15px;color:#1d327b">Planos de Prazo — Boleto/Duplicata</h3>
+    </div>
+    <div class="panel-hint">
+      Cada plano e uma lista de dias ate o vencimento de cada parcela (ex.: 28/56/84). Sem teto fixo hoje -- crie quantos
+      planos precisar (cliente grande/historico, negociacao pontual, etc). O pedido grava o plano escolhido e o ZEN recebe
+      o vencimento exato de cada parcela, sem depender de "Nx parcelas".
+    </div>
+    <div id="planosPrazoList"></div>
+    <div class="form-row-inline" style="margin-top:12px;align-items:end">
+      <div class="form-row"><label>Nome</label><input id="novoPlanoNome" type="text" placeholder="Ex: 28/56/84/112 dias"></div>
+      <div class="form-row"><label>Dias (separados por vírgula)</label><input id="novoPlanoDias" type="text" placeholder="Ex: 28,56,84"></div>
+      <div class="form-row"><button class="btn btn-primary" onclick="criarPlanoPrazoBoleto()">Adicionar plano</button></div>
+    </div>
+
+    <div class="page-header" style="margin-top:28px">
       <h3 style="font-size:15px;color:#1d327b">Motor de Excecoes</h3>
     </div>
     <div class="panel-hint">
@@ -345,7 +360,7 @@ function showTab(n, el) {
   if (n === 'catalogo') loadCatalogo();
   if (n === 'clientes') loadClientes();
   if (n === 'solicitacoes') loadSolicitacoesAdmin();
-  if (n === 'regras') loadParametrosComerciais();
+  if (n === 'regras') { loadParametrosComerciais(); loadPlanosPrazoBoleto(); }
   if (n === 'logs') loadLogs();
 }
 
@@ -386,6 +401,55 @@ async function salvarParametro(chave) {
     toast('Parametro atualizado');
   } catch (e) {
     toast('Erro ao salvar: ' + e.message, 'error');
+  }
+}
+
+// Planos de prazo do boleto/duplicata (Andre, 2026-11-16): lista livre,
+// qualquer admin cria/edita/desativa pelo proprio portal. Sem restricao por
+// categoria de cliente ainda -- fica pronto pra isso no futuro sem redesenho
+// (bastaria uma coluna de segmentos/classes permitidos aqui).
+async function loadPlanosPrazoBoleto() {
+  const wrap = document.getElementById('planosPrazoList');
+  if (!wrap) return;
+  const souAdmin = getUserRole() === 'admin';
+  try {
+    const planos = await sb('/hub_planos_prazo_boleto?order=ordem.asc&select=*');
+    wrap.innerHTML = `<div style="overflow-x:auto"><table>
+      <thead><tr><th>Nome</th><th>Dias</th><th>Ativo</th><th></th></tr></thead>
+      <tbody>${planos.map(p => `<tr>
+        <td>${escSol(p.nome)}</td>
+        <td><code style="font-size:12px">${(p.dias || []).join(' / ')}</code></td>
+        <td>${p.ativo ? 'Sim' : 'Nao'}</td>
+        <td>${souAdmin ? `<button class="btn btn-outline btn-sm" onclick="alternarPlanoPrazoBoleto('${p.id}', ${!p.ativo})">${p.ativo ? 'Desativar' : 'Ativar'}</button>` : ''}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  } catch (e) {
+    wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar planos de prazo</h3></div>';
+  }
+}
+
+async function criarPlanoPrazoBoleto() {
+  const nome = document.getElementById('novoPlanoNome').value.trim();
+  const diasTxt = document.getElementById('novoPlanoDias').value.trim();
+  const dias = diasTxt.split(',').map(d => parseInt(d.trim(), 10)).filter(d => Number.isInteger(d) && d >= 0);
+  if (!nome || !dias.length) { toast('Preencha nome e ao menos um dia valido', 'error'); return; }
+  try {
+    await sb('/hub_planos_prazo_boleto', 'POST', { nome, dias, ordem: 99 });
+    document.getElementById('novoPlanoNome').value = '';
+    document.getElementById('novoPlanoDias').value = '';
+    toast('Plano de prazo criado');
+    loadPlanosPrazoBoleto();
+  } catch (e) {
+    toast('Erro ao criar plano: ' + e.message, 'error');
+  }
+}
+
+async function alternarPlanoPrazoBoleto(id, novoAtivo) {
+  try {
+    await sb('/hub_planos_prazo_boleto?id=eq.' + id, 'PATCH', { ativo: novoAtivo, atualizado_em: new Date().toISOString() });
+    loadPlanosPrazoBoleto();
+  } catch (e) {
+    toast('Erro ao atualizar plano: ' + e.message, 'error');
   }
 }
 

@@ -1081,6 +1081,21 @@ async function abrirThreadSolicitacao(id) {
     if (!sol) { toast('Solicitacao nao encontrada', 'error'); return; }
     const msgs = await sb('/hub_solicitacao_mensagens?solicitacao_id=eq.' + id + '&select=*&order=criado_em.asc');
 
+    // Pedido em_analise (Credix ou excecao de rep/funcionario, 2026-11-16):
+    // quem assumiu a solicitacao aprova ou rejeita aqui mesmo, sem precisar
+    // abrir outra tela. So mostra os botoes se o pedido ainda esta pendente.
+    let btnsCredito = '';
+    if (sol.referencia_tipo === 'pedido' && sol.referencia_id) {
+      const [ped] = await sb('/hub_pedidos?id=eq.' + sol.referencia_id + '&select=id,numero,status,valor_total');
+      if (ped && ped.status === 'em_analise') {
+        btnsCredito = `<div style="margin-top:10px;padding:10px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px">
+          <div style="font-size:13px;color:#92400e;margin-bottom:8px"><strong>Pedido ${escSol(ped.numero)}</strong> aguardando decisao de credito -- ${fmtMoeda(ped.valor_total)}</div>
+          <button class="btn btn-primary btn-sm" onclick="aprovarPedidoEmAnalise('${ped.id}','${sol.id}')">Aprovar pedido</button>
+          <button class="btn btn-danger btn-sm" onclick="rejeitarPedidoEmAnalise('${ped.id}','${sol.id}')">Rejeitar pedido</button>
+        </div>`;
+      }
+    }
+
     const areaTag = `<span style="display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;background:#f0f4f8;color:#1d327b">${escSol(labelArea(sol.area_responsavel))}</span>`;
     const assumidoTag = sol.assumido_por_nome
       ? `<span style="font-size:12px;color:#718096">Assumida por <strong>${escSol(sol.assumido_por_nome)}</strong></span>`
@@ -1099,6 +1114,7 @@ async function abrirThreadSolicitacao(id) {
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
         ${badgeSolicitacao(sol.status)} ${areaTag} ${assumidoTag} ${btnAssumir}
       </div>
+      ${btnsCredito}
       <div id="threadSolicitacao" style="max-height:40vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:4px 2px">
         ${msgs.map(m => renderMensagemSolicitacao(m)).join('') || '<div style="color:#718096;font-size:13px">Sem mensagens ainda.</div>'}
       </div>
@@ -1112,6 +1128,33 @@ async function abrirThreadSolicitacao(id) {
     `);
   } catch (e) {
     toast('Erro ao abrir solicitacao', 'error');
+  }
+}
+
+// Decisao de credito (Credix ou excecao rep/funcionario, 2026-11-16): fecha
+// o pedido 'em_analise' e a solicitacao junto, numa chamada so.
+async function aprovarPedidoEmAnalise(pedidoId, solicitacaoId) {
+  try {
+    const r = await sbRpc('hub_fn_aprovar_pedido_em_analise', { p_pedido_id: pedidoId, p_solicitacao_id: solicitacaoId });
+    if (!r?.ok) { toast(r?.erro || 'Erro ao aprovar pedido', 'error'); return; }
+    toast('Pedido ' + r.numero + ' aprovado e liberado para o ZEN');
+    closeModal();
+    if (typeof loadSolicitacoesAdmin === 'function') loadSolicitacoesAdmin();
+  } catch (e) {
+    toast('Erro ao aprovar: ' + e.message, 'error');
+  }
+}
+
+async function rejeitarPedidoEmAnalise(pedidoId, solicitacaoId) {
+  if (!(await confirmModal('Rejeitar este pedido? O cliente/representante precisara criar um novo.', { textoBotao: 'Rejeitar pedido' }))) return;
+  try {
+    const r = await sbRpc('hub_fn_rejeitar_pedido_em_analise', { p_pedido_id: pedidoId, p_solicitacao_id: solicitacaoId });
+    if (!r?.ok) { toast(r?.erro || 'Erro ao rejeitar pedido', 'error'); return; }
+    toast('Pedido ' + r.numero + ' rejeitado');
+    closeModal();
+    if (typeof loadSolicitacoesAdmin === 'function') loadSolicitacoesAdmin();
+  } catch (e) {
+    toast('Erro ao rejeitar: ' + e.message, 'error');
   }
 }
 

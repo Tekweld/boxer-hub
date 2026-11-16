@@ -45,6 +45,58 @@ module.exports = async function handler(req, res) {
     const perfil = (await hubGet('/hub_perfis?user_id=eq.' + caller.id + '&ativo=eq.true&select=tipo,role,cliente_id,representante_id'))?.[0];
     if (!perfil) return res.status(403).json({ error: 'Perfil nao encontrado' });
 
+    // Visao geral (item 8, Andre 2026-11-16): funil agregado de TODOS os
+    // clientes, por mes -- so staff ve isso (cliente/representante so vem
+    // dessa mesma rota no modo por-revenda, abaixo). Rota separada do modo
+    // por cliente pra nao misturar a regra de acesso (ver REGRA DE OURO).
+    if (req.body?.modo === 'geral') {
+      if (!['admin', 'manager', 'analyst', 'financial'].includes(perfil.role)) {
+        return res.status(403).json({ error: 'Sem acesso a visao geral' });
+      }
+      const [orcamentos, pedidos, notas] = await Promise.all([
+        hubGet('/orcamentos?ativo=eq.true&select=status,total_final,criado_em&order=criado_em.desc&limit=3000'),
+        hubGet('/hub_pedidos?ativo=eq.true&select=id,status,valor_total,criado_em&order=criado_em.desc&limit=3000'),
+        hubGet('/hub_notas_fiscais?ativo=eq.true&select=pedido_id,valor_total,data_emissao&order=data_emissao.desc&limit=3000')
+      ]);
+      const pedidosFaturadosIds = new Set(notas.map(n => n.pedido_id).filter(Boolean));
+      const pedidosConfirmados = pedidos.filter(p => p.status !== 'rascunho');
+      const pendentes = pedidosConfirmados.filter(p =>
+        !pedidosFaturadosIds.has(p.id) && !['cancelado', 'rejeitado'].includes(p.status));
+
+      const meses = {};
+      const chave = iso => String(iso || '').slice(0, 7);
+      const linha = m => (meses[m] = meses[m] || {
+        mes: m, orcamentos_qtd: 0, orcamentos_valor: 0,
+        pedidos_qtd: 0, pedidos_valor: 0,
+        faturado_qtd: 0, faturado_valor: 0
+      });
+      orcamentos.filter(o => o.status !== 'cancelado').forEach(o => {
+        const l = linha(chave(o.criado_em)); l.orcamentos_qtd++; l.orcamentos_valor += Number(o.total_final) || 0;
+      });
+      pedidosConfirmados.forEach(p => {
+        const l = linha(chave(p.criado_em)); l.pedidos_qtd++; l.pedidos_valor += Number(p.valor_total) || 0;
+      });
+      notas.forEach(n => {
+        const l = linha(chave(n.data_emissao)); l.faturado_qtd++; l.faturado_valor += Number(n.valor_total) || 0;
+      });
+
+      return res.status(200).json({
+        ok: true,
+        geral: true,
+        totais: {
+          orcamentos_qtd: orcamentos.filter(o => o.status !== 'cancelado').length,
+          orcamentos_valor: orcamentos.filter(o => o.status !== 'cancelado').reduce((s, o) => s + (Number(o.total_final) || 0), 0),
+          pedidos_qtd: pedidosConfirmados.length,
+          pedidos_valor: pedidosConfirmados.reduce((s, p) => s + (Number(p.valor_total) || 0), 0),
+          faturado_qtd: notas.length,
+          faturado_valor: notas.reduce((s, n) => s + (Number(n.valor_total) || 0), 0),
+          pendente_qtd: pendentes.length,
+          pendente_valor: pendentes.reduce((s, p) => s + (Number(p.valor_total) || 0), 0)
+        },
+        por_mes: Object.values(meses).sort((a, b) => b.mes.localeCompare(a.mes)).slice(0, 13)
+      });
+    }
+
     const pedidoClienteId = req.body?.cliente_id || null;
     let clienteId = null;
 
@@ -134,13 +186,37 @@ module.exports = async function handler(req, res) {
     const tituloAberto = titulos.filter(t => t.status === 'aberto').reduce((s, t) => s + (Number(t.valor_aberto) || 0), 0);
     const tituloVencido = titulos.filter(t => t.status === 'vencido').reduce((s, t) => s + (Number(t.valor_aberto) || 0), 0);
 
+    // Pendente a faturar (item 8, Andre 2026-11-16): pedido confirmado que
+    // ainda nao tem NF vinculada (hub_notas_fiscais.pedido_id) e nao foi
+    // cancelado/rejeitado no meio do caminho.
+    const pedidosFaturadosIds = new Set(notas.map(n => n.pedido_id).filter(Boolean));
+    const pedidosPendentes = pedidosConfirmados.filter(p =>
+      !pedidosFaturadosIds.has(p.id) && !['cancelado', 'rejeitado'].includes(p.status));
+
+    // Funil por mes (qtd + R$), ultimos 13 meses com movimento.
+    const meses = {};
+    const chave = iso => String(iso || '').slice(0, 7);
+    const linha = m => (meses[m] = meses[m] || {
+      mes: m, orcamentos_qtd: 0, orcamentos_valor: 0,
+      pedidos_qtd: 0, pedidos_valor: 0,
+      faturado_qtd: 0, faturado_valor: 0
+    });
+    orcNaoCancelados.forEach(o => { const l = linha(chave(o.criado_em)); l.orcamentos_qtd++; l.orcamentos_valor += Number(o.total_final) || 0; });
+    pedidosConfirmados.forEach(p => { const l = linha(chave(p.criado_em)); l.pedidos_qtd++; l.pedidos_valor += Number(p.valor_total) || 0; });
+    notas.forEach(n => { const l = linha(chave(n.data_emissao)); l.faturado_qtd++; l.faturado_valor += Number(n.valor_total) || 0; });
+
     return res.status(200).json({
       ok: true,
       cliente,
       kpis: {
         orcamentos_gerados: orcNaoCancelados.length,
+        orcamentos_gerados_valor: orcNaoCancelados.reduce((s, o) => s + (Number(o.total_final) || 0), 0),
         pedidos_confirmados: pedidosConfirmados.length,
+        pedidos_confirmados_valor: pedidosConfirmados.reduce((s, p) => s + (Number(p.valor_total) || 0), 0),
         faturamento_realizado: faturamentoTotal,
+        faturamento_realizado_qtd: notas.length,
+        pendente_faturar_qtd: pedidosPendentes.length,
+        pendente_faturar_valor: pedidosPendentes.reduce((s, p) => s + (Number(p.valor_total) || 0), 0),
         taxa_conversao: orcNaoCancelados.length ? orcAprovados.length / orcNaoCancelados.length : null,
         ticket_medio_pedido: pedidosConfirmados.length
           ? pedidosConfirmados.reduce((s, p) => s + (Number(p.valor_total) || 0), 0) / pedidosConfirmados.length
@@ -148,6 +224,7 @@ module.exports = async function handler(req, res) {
         titulos_a_vencer: tituloAberto,
         titulos_vencidos: tituloVencido
       },
+      por_mes: Object.values(meses).sort((a, b) => b.mes.localeCompare(a.mes)).slice(0, 13),
       orcamentos: orcamentos.slice(0, 20),
       pedidos: pedidos.slice(0, 20),
       produtos_top: produtosTop

@@ -76,7 +76,7 @@ module.exports = async function handler(req, res) {
     const pedRes = await fetch(
       HUB_URL + '/rest/v1/hub_pedidos?id=eq.' + pedido_id +
         '&select=id,numero,status,valor_total,cliente_id,representante_id,erp_pedido_id,' +
-        'forma_pagamento,parcelas,observacoes,ordem_compra,frete_modalidade,' +
+        'forma_pagamento,parcelas,dias_pagamento,observacoes,ordem_compra,frete_modalidade,' +
         'classe_comercial_aplicada,segmento_aplicado,' +
         'hub_clientes(erp_cliente_id,razao_social,representante_id),hub_pedido_itens(sku,quantidade,preco_final)',
       { headers: hubH('GET') }
@@ -303,28 +303,35 @@ module.exports = async function handler(req, res) {
 
 // Uma linha de sale.salePayment por PARCELA, com `term` = dias ate o
 // vencimento. Convencao lida da base real (200 pagamentos): `type` e sempre
-// BILLING_TITLE e os prazos sao multiplos de 28 -- 28/56/84 e o 3x usual da
-// casa, e 0 e a vista.
+// BILLING_TITLE.
 //
-// Cartao fica como 0 (uma linha, a vista) porque quem financia e a
-// adquirente, nao a Boxer: para o contas a receber do Zen o titulo e unico.
-// PENDENTE DE CONFIRMACAO com o Andre/financeiro -- se o Zen tiver de refletir
-// as 10 parcelas do cartao, e so mudar o mapa abaixo.
+// Boleto/duplicata (Andre, 2026-11-16): nao e mais "Nx parcelas" -- o pedido
+// grava os dias exatos de cada parcela em hub_pedidos.dias_pagamento (plano
+// escolhido em comercial.hub_planos_prazo_boleto, ex.: 28/56/84, 30/60, 120
+// direto). Usa isso direto; so cai no fallback (parcelas x 28) pra pedido
+// antigo/espelhado de orcamento que nunca gravou o array.
 const DIAS_POR_PARCELA = 28;
 
+// Cartao e Credix ficam como 0 (uma linha, a vista) porque quem financia e a
+// adquirente/fintech, nao a Boxer: para o contas a receber do Zen o titulo e
+// unico. PENDENTE DE CONFIRMACAO com o Andre/financeiro -- se o Zen tiver de
+// refletir as parcelas do cartao ou do Credix, e so mudar o mapa abaixo.
 function montarPagamentos(pedido) {
   const forma = String(pedido.forma_pagamento || '').toLowerCase();
   const parcelas = Math.max(1, Number(pedido.parcelas) || 1);
 
   if (forma === 'boleto' || forma === 'duplicata') {
+    if (Array.isArray(pedido.dias_pagamento) && pedido.dias_pagamento.length) {
+      return pedido.dias_pagamento.map(dias => ({ type: 'BILLING_TITLE', term: Number(dias) || 0 }));
+    }
     return Array.from({ length: parcelas }, (_, i) => ({
       type: 'BILLING_TITLE',
       term: (i + 1) * DIAS_POR_PARCELA
     }));
   }
 
-  // pix, transferencia, cartao e o caso sem forma definida (pedido antigo ou
-  // criado por API): uma linha a vista. Nunca devolver lista vazia -- vazio e
-  // exatamente o que trava o avancar no Zen.
+  // pix, transferencia, cartao, credix e o caso sem forma definida (pedido
+  // antigo ou criado por API): uma linha a vista. Nunca devolver lista
+  // vazia -- vazio e exatamente o que trava o avancar no Zen.
   return [{ type: 'BILLING_TITLE', term: 0 }];
 }

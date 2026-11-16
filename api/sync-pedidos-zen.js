@@ -727,6 +727,141 @@ module.exports = async function handler(req, res) {
   };
 
   try {
+    // ---- 0. Drenar fila de backfill de historico (Andre, 2026-11-16) ----
+    // Nao processa a base inteira (7770 clientes) de uma vez -- so clientes
+    // enfileirados por evento (novo representante/cliente com login no Hub,
+    // ver triggers em comercial.hub_backfill_fila) e so vendas do ANO
+    // CORRENTE (reduz volume por cliente; quem precisar de historico mais
+    // antigo pede sob demanda, nao e varrido aqui). UM lote de 40 clientes
+    // por rodada do cron (este job ja tem maxDuration=45s e os passos 1-3
+    // rodam depois, no mesmo invocation -- nao vale a pena arriscar o
+    // timeout que ja travou o backfill de NF por causa disto). 2130
+    // clientes na fila inicial = ~54 rodadas (~13h de catch-up em segundo
+    // plano, sem pressa); dali pra frente so processa quem entra novo.
+    r.backfill_lotes = 0;
+    r.backfill_clientes_processados = 0;
+    r.backfill_pedidos_criados = 0;
+    r.backfill_erros = [];
+    try {
+      const filaRes = await fetch(HUB_URL +
+        '/rest/v1/hub_backfill_fila?status=eq.pendente&select=id,cliente_id&order=criado_em.asc&limit=40',
+        { headers: hubH('GET') });
+      const fila = filaRes.ok ? await filaRes.json() : [];
+
+      for (let i = 0; i < fila.length; i += 40) {
+        const loteFila = fila.slice(i, i + 40);
+        r.backfill_lotes++;
+        try {
+          const clientesRes = await fetch(HUB_URL +
+            '/rest/v1/hub_clientes?id=in.(' + loteFila.map(f => f.cliente_id).join(',') + ')' +
+            '&select=id,erp_cliente_id,representante_id', { headers: hubH('GET') });
+          const clientes = clientesRes.ok ? await clientesRes.json() : [];
+          const porErpId = {};
+          clientes.forEach(c => { if (c.erp_cliente_id) porErpId[String(c.erp_cliente_id)] = c; });
+          const erpIds = Object.keys(porErpId);
+
+          const anoAtual = new Date().getFullYear();
+          let vendas = [];
+          if (erpIds.length) {
+            vendas = await zenGet('/sale/sale', {
+              q: 'person.id=in=(' + erpIds.join(',') + ');date>=' + anoAtual + '-01-01',
+              max: 500, limite: 1000
+            });
+          }
+
+          if (vendas.length) {
+            const saleIds = vendas.map(v => String(v.id));
+            const existentesRes = await fetch(HUB_URL +
+              '/rest/v1/hub_pedidos?erp_pedido_id=in.(' + saleIds.join(',') + ')&select=erp_pedido_id',
+              { headers: hubH('GET') });
+            const existentesSet = new Set((existentesRes.ok ? await existentesRes.json() : []).map(x => x.erp_pedido_id));
+            const novas = vendas.filter(v => !existentesSet.has(String(v.id)));
+
+            const itensPorSale = {};
+            if (novas.length) {
+              const idsNovas = novas.map(v => String(v.id));
+              const itens = await zenGet('/sale/saleItem', { q: 'sale.id=in=(' + idsNovas.join(',') + ')', max: 1000, limite: 2000 });
+              itens.forEach(it => {
+                const sid = String(it.sale?.id || ''); if (!sid) return;
+                (itensPorSale[sid] = itensPorSale[sid] || []).push(it);
+              });
+            }
+
+            for (const venda of novas) {
+              try {
+                const cliente = porErpId[String(venda.person?.id)];
+                if (!cliente) continue;
+
+                const itensVenda = itensPorSale[String(venda.id)] || [];
+                const valorTotal = itensVenda.reduce((s, it) => s + (Number(it.totalValue) || 0), 0);
+
+                // sale.status fica PREPARED/PICKING/etc o tempo todo ate o
+                // fim -- so os dois extremos (cancelado/finalizado) sao
+                // confiaveis aqui. O resto vira 'submetido' e o passo 2/3
+                // deste mesmo job (workpiece/servedQuantity) refina sozinho
+                // na proxima rodada, sem logica nova.
+                let status = 'submetido', etapa = null;
+                if (venda.status === 'CANCELED') { status = 'cancelado'; }
+                else if (venda.status === 'FINISHED') { status = 'entregue'; etapa = 'Pedido aprovado'; }
+
+                const numRes = await fetch(HUB_URL + '/rest/v1/rpc/hub_fn_gerar_numero',
+                  { method: 'POST', headers: hubH('POST'), body: JSON.stringify({}) });
+                const numOut = numRes.ok ? await numRes.json() : null;
+                const numero = typeof numOut === 'string' ? numOut : numOut?.numero || null;
+
+                const pedRes = await fetch(HUB_URL + '/rest/v1/hub_pedidos', {
+                  method: 'POST', headers: hubH('POST'),
+                  body: JSON.stringify({
+                    numero, cliente_id: cliente.id, representante_id: cliente.representante_id || null,
+                    status, erp_workflow_status: etapa, origem: 'erp',
+                    valor_total: valorTotal, erp_pedido_id: String(venda.id), erp_tipo: 'sale',
+                    erp_sincronizado_em: new Date().toISOString()
+                  })
+                });
+                const pedJson = pedRes.ok ? await pedRes.json() : [];
+                const pedido = pedJson[0];
+                if (!pedido) { r.backfill_erros.push({ sale: venda.id, erro: 'hub_pedidos ' + pedRes.status }); continue; }
+
+                if (itensVenda.length) {
+                  const itensBody = itensVenda.map(it => ({
+                    pedido_id: pedido.id,
+                    sku: it.productPacking?.product?.code || '',
+                    nome_produto: it.productPacking?.product?.description || '',
+                    quantidade: Number(it.quantity) || 0,
+                    preco_unitario: Number(it.unitValue) || 0,
+                    preco_final: Number(it.unitValue) || 0,
+                    subtotal_item: Number(it.totalValue) || 0
+                  }));
+                  await fetch(HUB_URL + '/rest/v1/hub_pedido_itens', { method: 'POST', headers: hubH('POST'), body: JSON.stringify(itensBody) });
+                }
+                r.backfill_pedidos_criados++;
+              } catch (e) {
+                r.backfill_erros.push({ sale: venda.id, erro: e.message.slice(0, 150) });
+              }
+            }
+          }
+
+          // Lote consultado no Zen com sucesso -- marca concluido mesmo pra
+          // quem nao tinha venda nenhuma este ano (checagem feita de verdade).
+          await fetch(HUB_URL + '/rest/v1/hub_backfill_fila?id=in.(' + loteFila.map(f => f.id).join(',') + ')', {
+            method: 'PATCH', headers: hubH('PATCH'),
+            body: JSON.stringify({ status: 'concluido', atualizado_em: new Date().toISOString() })
+          });
+          r.backfill_clientes_processados += loteFila.length;
+        } catch (e) {
+          // Falha na consulta ao Zen (nao na criacao do pedido) -- nao marca
+          // concluido, so soma tentativa, pra tentar de novo na proxima rodada.
+          await fetch(HUB_URL + '/rest/v1/hub_backfill_fila?id=in.(' + loteFila.map(f => f.id).join(',') + ')', {
+            method: 'PATCH', headers: hubH('PATCH'),
+            body: JSON.stringify({ tentativas: 1, erro_detalhe: e.message.slice(0, 300), atualizado_em: new Date().toISOString() })
+          }).catch(() => {});
+          r.backfill_erros.push({ lote: i / 40, erro: e.message.slice(0, 200) });
+        }
+      }
+    } catch (e) {
+      r.erros.push({ etapa: 'backfill_fila', detalhe: e.message.slice(0, 200) });
+    }
+
     // ---- 1. Empurrar pedidos submetidos que ainda nao foram para o Zen ----
     const pendRes = await fetch(HUB_URL +
       '/rest/v1/hub_pedidos?status=in.(submetido,aprovado)&erp_pedido_id=is.null' +

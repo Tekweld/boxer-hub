@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Solicitacoes — Boxer Hub</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
+.topbar{background:linear-gradient(135deg,#1d327b,#162666);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;border-bottom:3px solid #25bbee}
+.topbar-left{display:flex;align-items:center;gap:12px}
+.topbar h1{color:#fff;font-size:18px;font-weight:700}
+.topbar-right{display:flex;align-items:center;gap:16px}
+.user-badge{color:#93b4d4;font-size:13px}.user-badge strong{color:#fff}
+.logout-btn{color:#93b4d4;font-size:13px;padding:6px 12px;border:1px solid rgba(255,255,255,.2);border-radius:6px;cursor:pointer}
+.logout-btn:hover{background:rgba(255,255,255,.1);color:#fff}
+.notif-badge{background:#e30613;color:#fff;font-size:10px;padding:2px 6px;border-radius:10px;cursor:pointer}
+.toast{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;color:#fff;font-family:Outfit;font-size:13px;font-weight:500;z-index:2000;animation:slideIn .3s;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+.toast-success{background:#16a34a}.toast-error{background:#dc2626}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
+.modal-overlay.show{display:flex}
+.modal{background:#fff;border-radius:12px;padding:24px;width:100%;max-width:600px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+
+.page-wrap{max-width:1200px;margin:0 auto;padding:20px 24px}
+.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.page-title{font-size:18px;font-weight:700;color:#1d327b}
+.panel-hint{background:#fff;border:1px solid #d0d8e8;border-left:3px solid #25bbee;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#4a5568;line-height:1.5;border-radius:0 6px 6px 0}
+.panel-hint b{color:#1d327b;font-weight:600}
+.empty-state{text-align:center;padding:40px 20px;color:#718096}
+
+table{width:100%;border-collapse:collapse;font-size:13px;background:#fff}
+thead th{padding:8px 12px;text-align:left;color:#718096;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #e2e8f0;background:#f7fafc}
+tbody td{padding:8px 12px;border-bottom:1px solid #e2e8f0;vertical-align:middle}
+tbody tr:hover{background:#f0f7ff}
+.table-wrap{border:1px solid #d0d8e8;border-radius:8px;overflow:hidden}
+
+.btn{padding:8px 16px;border-radius:8px;border:1px solid;font-family:Outfit;font-size:13px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:4px}
+.btn-primary{background:#1d327b;color:#fff;border-color:#1d327b}.btn-primary:hover{background:#162666}
+.btn-outline{background:#fff;color:#4a5568;border-color:#c3cfe2}.btn-outline:hover{border-color:#25bbee;color:#1d327b}
+.btn-danger{background:#fff;color:#e30613;border-color:#fecaca}.btn-danger:hover{background:#fee2e2}
+.btn-sm{padding:4px 10px;font-size:12px}
+
+.form-row{margin-bottom:14px}
+.form-row label{display:block;font-size:12px;font-weight:500;color:#4a5568;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+.form-row input,.form-row select,.form-row textarea{width:100%;padding:8px 12px;border:1px solid #c3cfe2;border-radius:6px;font-family:Outfit;font-size:13px;outline:none}
+.form-row input:focus,.form-row select:focus,.form-row textarea:focus{border-color:#25bbee}
+.form-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0}
+select,input,textarea{font-family:Outfit,sans-serif}
+</style>
+</head>
+<body>
+
+<div id="modalOverlay" class="modal-overlay" onclick="if(event.target===this)closeModal()">
+  <div id="modalContent" class="modal"></div>
+</div>
+
+<div class="page-wrap">
+  <div class="page-header">
+    <h2 class="page-title">Solicitacoes</h2>
+  </div>
+  <div class="panel-hint">
+    Cliente ou representante abre uma solicitacao vinculada a um pedido, titulo ou nota fiscal. Cai automaticamente
+    na area responsavel (Financeiro, ADM de Vendas, etc); alguem da area <b>assume</b>, responde e confirma a conclusao.
+    O representante da carteira continua sempre na conversa.
+  </div>
+  <div id="solIndicadores" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px"></div>
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px;flex-wrap:wrap">
+    <select id="solFiltroArea" onchange="loadSolicitacoesAdmin()" style="min-width:180px">
+      <option value="">Todas as areas</option>
+      <option value="vendas_adm">Comercial / ADM de Vendas</option>
+      <option value="financeiro">Financeiro</option>
+      <option value="operacoes">Operacoes</option>
+      <option value="ti">TI</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#4a5568;cursor:pointer">
+      <input type="checkbox" id="solMostrarResolvidas" onchange="loadSolicitacoesAdmin()" style="width:auto"> Mostrar concluidas
+    </label>
+  </div>
+  <div id="solicitacoesList"></div>
+</div>
+
+<script src="hub.js"></script>
+<script>
+if (!requireAuth()) throw 'auth';
+
+(async () => {
+  await loadPerfil();
+  // Pedido do Andre, 2026-11-17: modulo proprio fora do Admin, mas restrito
+  // a quem ja via isso dentro do Admin -- funcionario Boxer ou role admin.
+  // Dealer/representante continuam vendo as PROPRIAS solicitacoes de dentro
+  // do pedido/titulo deles (canal de resolucao), nao nesta tela.
+  if (getUserTipo() !== 'funcionario' && getUserRole() !== 'admin') {
+    document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;color:#718096;font-family:Outfit"><h2>Acesso restrito</h2></div>';
+    return;
+  }
+  renderTopbar('Solicitacoes');
+  await loadSolicitacoesAdmin();
+})();
+
+async function loadSolicitacoesAdmin() {
+  const wrap = document.getElementById('solicitacoesList');
+  const mostrarResolvidas = document.getElementById('solMostrarResolvidas')?.checked;
+  const area = document.getElementById('solFiltroArea')?.value || '';
+  wrap.innerHTML = '<div style="padding:16px;color:#718096;font-size:13px">Carregando...</div>';
+  carregarIndicadoresSolicitacoes();
+  try {
+    let url = '/hub_solicitacoes?ativo=eq.true&order=criado_em.desc'
+      + '&select=id,numero,assunto,categoria,status,area_responsavel,assumido_por_nome,criado_em,resolvido_em,hub_clientes(razao_social),hub_representantes(nome)';
+    if (!mostrarResolvidas) url += '&status=neq.resolvida';
+    if (area) url += '&area_responsavel=eq.' + area;
+    const lista = await sb(url);
+    if (!lista.length) {
+      wrap.innerHTML = '<div class="empty-state"><h3>Nenhuma solicitacao encontrada</h3></div>';
+      return;
+    }
+    wrap.innerHTML = `<div class="table-wrap" style="overflow-x:auto"><table>
+      <thead><tr><th>Numero</th><th>Cliente</th><th>Assunto</th><th>Categoria</th><th>Area</th><th>Representante</th><th>Assumida por</th><th>Status</th><th>Aberta ha</th><th></th></tr></thead>
+      <tbody>${lista.map(s => `<tr>
+        <td><strong>${s.numero}</strong></td>
+        <td>${s.hub_clientes?.razao_social || '—'}</td>
+        <td>${s.assunto}</td>
+        <td>${labelCategoria(s.categoria)}</td>
+        <td>${labelArea(s.area_responsavel)}</td>
+        <td>${s.hub_representantes?.nome || '—'}</td>
+        <td>${s.assumido_por_nome || '<span style="color:#e30613">Ninguem</span>'}</td>
+        <td>${badgeSolicitacao(s.status)}</td>
+        <td>${horasDesde(s.criado_em, s.resolvido_em)}</td>
+        <td style="white-space:nowrap">
+          ${(!s.assumido_por_nome && podeAssumirSolicitacao(s.area_responsavel)) ? `<button class="btn btn-outline btn-sm" onclick="assumirSolicitacao('${s.id}').then(loadSolicitacoesAdmin)">Assumir</button> ` : ''}
+          <button class="btn btn-outline btn-sm" onclick="abrirThreadSolicitacao('${s.id}')">Abrir</button>
+        </td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  } catch (e) {
+    wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar solicitacoes</h3></div>';
+  }
+}
+
+// Resumo por area: quantas em aberto (nao concluidas) e tempo medio em horas.
+async function carregarIndicadoresSolicitacoes() {
+  const wrap = document.getElementById('solIndicadores');
+  if (!wrap) return;
+  try {
+    const linhas = await sb('/hub_v_solicitacoes_indicadores?select=*');
+    const porArea = {};
+    linhas.forEach(l => {
+      const a = l.area_responsavel || 'sem_area';
+      if (!porArea[a]) porArea[a] = { abertas: 0, concluidas: 0, horasAbertasSoma: 0, horasAbertasQtd: 0 };
+      if (l.status === 'resolvida') {
+        porArea[a].concluidas += Number(l.total);
+      } else {
+        porArea[a].abertas += Number(l.total);
+        porArea[a].horasAbertasSoma += Number(l.horas_medias) * Number(l.total);
+        porArea[a].horasAbertasQtd += Number(l.total);
+      }
+    });
+    const areas = Object.keys(porArea);
+    if (!areas.length) { wrap.innerHTML = ''; return; }
+    wrap.innerHTML = areas.map(a => {
+      const d = porArea[a];
+      const media = d.horasAbertasQtd ? Math.round(d.horasAbertasSoma / d.horasAbertasQtd) : 0;
+      return `<div style="background:#fff;border:1px solid #d0d8e8;border-radius:10px;padding:12px 16px;min-width:160px">
+        <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.4px;font-weight:600">${labelArea(a)}</div>
+        <div style="font-size:20px;font-weight:700;color:#1d327b;margin-top:2px">${d.abertas} <span style="font-size:12px;font-weight:500;color:#718096">em aberto</span></div>
+        <div style="font-size:12px;color:#718096;margin-top:2px">${d.concluidas} concluidas &middot; media ${media}h em aberto</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    wrap.innerHTML = '';
+  }
+}
+
+// SLA simples: ha quanto tempo a solicitacao esta aberta. Se ja foi
+// concluida, congela no momento da conclusao em vez de contar ate agora.
+function horasDesde(iso, resolvidoEmIso) {
+  const fim = resolvidoEmIso ? new Date(resolvidoEmIso).getTime() : Date.now();
+  const horas = Math.max(0, Math.round((fim - new Date(iso).getTime()) / 3600000));
+  if (horas < 24) return horas + 'h';
+  return Math.round(horas / 24) + 'd';
+}
+</script>
+</body>
+</html>

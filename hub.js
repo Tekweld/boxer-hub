@@ -648,6 +648,13 @@ function renderTopbar(titulo) {
   }
   navItems.push({ href: 'pesquisas.html', label: 'Pesquisas', icon: boxerNavIcon('#0891b2') });
   navItems.push({ href: 'indicadores.html', label: 'Indicadores', icon: boxerNavIcon('#a3121f') });
+  // Modulo proprio (Andre, 2026-11-17): saiu de dentro do Admin, mas continua
+  // restrito a quem ja via isso la -- funcionario Boxer ou role admin. Dealer
+  // e representante veem as PROPRIAS solicitacoes de dentro do pedido/titulo
+  // deles (canal de resolucao), nao aqui.
+  if (tipo === 'funcionario' || role === 'admin') {
+    navItems.push({ href: 'solicitacoes.html', label: 'Solicitacoes', icon: boxerNavIcon('#7c3aed') });
+  }
   if (['admin', 'manager', 'analyst'].includes(role)) {
     navItems.push({ href: 'admin.html', label: 'Admin', icon: boxerNavIcon('#0f1b4c') });
   }

@@ -25,7 +25,8 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 | `pedidos.html` | Criar pedido (carrinho), listar pedidos, detalhe, acompanhar status |
 | `financeiro.html` | Titulos (abertos/vencidos), notas fiscais (download XML/PDF), boletos, solicitar credito |
 | `cadastro.html` | Dados do cliente (read-only), enderecos, documentos cadastrais, solicitacao de alteracao |
-| `admin.html` | Painel admin: usuarios/perfis, campanhas, regras comerciais, tabelas de preco, pesquisas |
+| `admin.html` | Painel admin: usuarios/perfis, campanhas, regras comerciais (motor de excecoes), tabelas de preco, catalogo, clientes, logs |
+| `solicitacoes.html` | Canal Unico de solicitacoes — modulo proprio (saiu do Admin em 17/11), restrito a funcionario Boxer ou role admin |
 | `pesquisas.html` | Pesquisas ativas para o revendedor responder |
 | `netlify.toml` | Config de deploy Netlify |
 | `docs/` | Documentacao de planejamento (NAO MEXER) |
@@ -41,7 +42,7 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 
 | Tabela | Colunas-chave | Uso |
 |---|---|---|
-| `hub_clientes` | cnpj, razao_social, nome_fantasia, status_cadastro, limite_credito, limite_disponivel, limite_credito_fonte (grupo/pessoa — credito e do PersonGroup replicado em cada filial, ou da pessoa de verdade; decide se agregacao por grupo soma ou deduplica, ver `somarCreditoGrupo` em hub.js), grupo_erp_id, grupo_nome, tabela_preco_id, representante_id, erp_cliente_id | Cadastro do revendedor |
+| `hub_clientes` | cnpj, razao_social, nome_fantasia, status_cadastro, limite_credito, limite_disponivel, limite_credito_fonte (grupo/pessoa — credito e do PersonGroup replicado em cada filial, ou da pessoa de verdade; decide se agregacao por grupo soma ou deduplica, ver `somarCreditoGrupo` em hub.js), grupo_erp_id, grupo_nome, tabela_preco_id, representante_id, erp_cliente_id, classe_comercial (override manual F1-F3/H1-H3/E1-E3, editavel em Admin>Clientes so por admin via `hub_fn_definir_classe_comercial` — ZEN nao aceita update de Person depois de criado, entao isso NUNCA sincroniza pro ZEN, so por sale.tags a cada pedido novo) | Cadastro do revendedor |
 | `hub_representantes` | nome, email, regiao, meta_mensal, comissao_percentual, erp_representante_id | Representantes comerciais |
 | `hub_enderecos` | cliente_id, tipo (principal/entrega/cobranca), cep-logradouro-cidade-uf | Enderecos do cliente |
 | `hub_produtos` | sku, nome, descricao, ncm, categoria_id, estoque_disponivel, estoque_minimo, previsao_chegada, ficha_tecnica (jsonb), erp_produto_id | Catalogo de produtos |
@@ -65,6 +66,12 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 | `hub_pesquisa_respostas` | pesquisa_id, pergunta_id, respondente_id, resposta_texto, resposta_numero | Respostas dos revendedores |
 | `hub_log_alteracoes` | usuario_id, usuario_email, tabela_ref, registro_id, campo, valor_anterior, valor_novo, acao | Log de auditoria |
 | `hub_log_autenticacao` | usuario_id, email, evento (login_sucesso/login_falha/logout/etc), ip_address | Log de auth |
+| `hub_planos_prazo_boleto` | nome, dias (int[], ex: 28/56/84), ordem, ativo | Planos de prazo pra boleto/duplicata (admin cadastra, cliente escolhe no checkout) |
+| `hub_backfill_fila` | cliente_id (unique), status (pendente/concluido/erro), tentativas | Fila de backfill de historico ZEN por cliente — populada por trigger em `hub_perfis`/`hub_carteira`, drenada a cada 15min (GH Actions) |
+| `hub_historico_compras` | cliente_id, produto_id, sku, historico (jsonb: [{data,quantidade,preco_unitario}], max 5, mais recente primeiro) | Cache de ultimas compras por cliente+produto, mostrado automatico na PDP do catalogo |
+| `hub_historico_compras_status` | cliente_id, atualizado_em | Quando foi a ultima baixada em massa do historico de um cliente (gate de 24h em `garantirHistoricoCompras` no hub.js) |
+| `hub_pdm_sem_preco` | sku, nome | Produtos que o PDM ja documentou (ficha/foto) mas ainda sem preco na tabela Principal — populado por `sync-pdm.js`, mostrado em Admin>Catalogo |
+| `hub_sync_estado` | chave (ex: `nf_historico`), valor (jsonb: cursor/concluido), atualizado_em | Estado generico de sync historico de longa duracao (cursor que sobrevive a timeout/cancelamento) — hoje so usado pelo backfill de NF historico em `api/sync-financeiro.js` |
 
 ### ONBOARDING — pipeline de cadastro de novos clientes.
 
@@ -87,7 +94,7 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 | `hub_categorias` | nome, slug, categoria_pai_id, ordem | Categorias do catalogo |
 | `hub_tabela_precos` | nome, codigo, tipo (padrao/segmento/promocional), vigencia_inicio/fim | Tabelas de preco |
 | `hub_tabela_preco_itens` | tabela_preco_id, produto_id, preco_base, preco_minimo, desconto_maximo_percentual, ipi, icms | Precos por produto |
-| `hub_regras_comerciais` | nome, tipo, condicao (jsonb), acao (jsonb), vigencia | Regras do CIE (motor comercial) |
+| `hub_regras_comerciais` | nome, tipo (pedido_minimo/prazo_especial/frete_gratis/desconto_volume/desconto_mix/alcada_aprovacao/outro — CHECK constraint), condicao (jsonb: cliente_id/uf/segmento, todos opcionais), acao (jsonb, formato por tipo — ver `hub_fn_regra_excecao`), prioridade, vigencia_inicio/fim, ativo | Motor de Excecoes, ligado em `hub_fn_validar_politica` desde 17/11. Cliente especifico sempre vence regra geral de UF/segmento. `desconto_volume`/`desconto_mix` reservados mas NAO implementados (mexeriam no motor de preco, nao no portao de validacao) |
 | `hub_campanhas` | nome, tipo (promocao/lancamento/etc), data_inicio/fim, segmentos_alvo | Campanhas promocionais |
 | `hub_campanha_produtos` | campanha_id, produto_id, preco_promocional, desconto_percentual, quantidade_limite | Produtos em campanha |
 | `hub_pesquisas` | titulo, tipo (satisfacao/nps/etc), status (rascunho/ativa/encerrada), anonima | Pesquisas para revendedores |
@@ -111,10 +118,16 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 
 | Funcao | Parametros | Retorna | Quando usar |
 |---|---|---|---|
-| `hub_fn_submeter_pedido(pedido_id)` | uuid do pedido | `{ok, numero, valor_total, itens}` | Ao submeter pedido (muda rascunho→submetido, gera numero, calcula totais) |
+| `hub_fn_submeter_pedido(pedido_id)` | uuid do pedido | `{ok, numero, valor_total, itens}` | Ao submeter pedido (muda rascunho→submetido, gera numero, calcula totais, chama `hub_fn_validar_politica`). Se credito insuficiente e origem=admin/proxy_representante OU pagamento=credix, vai pra `em_analise` em vez de bloquear (`hub_fn_aprovar_pedido_em_analise`/`hub_fn_rejeitar_pedido_em_analise` decidem depois) |
+| `hub_fn_validar_politica(pedido_id)` | uuid do pedido | `{ok, violacoes[], avisos[], frete, ...}` | Portao de validacao: pedido minimo, boleto/parcelamento, frete por UF, estoque (aviso, nao bloqueia). Consulta `hub_fn_regra_excecao` pra cada regra antes de aplicar o padrao |
+| `hub_fn_regra_excecao(tipo, cliente_id, uf, segmento)` | text + uuid + text + text | jsonb `acao` da melhor regra ativa de `hub_regras_comerciais`, ou null | Chamada por `hub_fn_validar_politica` — nao chamar direto fora dali |
 | `hub_fn_calcular_preco(cliente_id, produto_id, quantidade)` | uuids + int | `{ok, preco_base, preco_final, preco_minimo, ipi, icms, em_promocao, subtotal}` | Ao adicionar item ao carrinho |
-| `hub_fn_validar_credito(cliente_id, valor)` | uuid + numeric | `{ok, limite_total, disponivel, disponivel_apos}` ou erro | Antes de submeter pedido |
-| `hub_fn_gerar_numero()` | — | `'HUB-2026-00001'` | Chamada internamente por hub_fn_submeter_pedido |
+| `hub_fn_classe(cliente_id, valor_pedido)` | uuid + numeric | smallint (1-3) | Classe de preco do cliente — confere `hub_clientes.classe_comercial` (override admin) ANTES de calcular por valor/progressao |
+| `hub_fn_definir_classe_comercial(cliente_id, classe)` | uuid + smallint/null | `{ok, nome, classe_comercial}` | Admin define/limpa o override de classe (Admin>Clientes). Nunca sincroniza pro ZEN (ver tabela hub_clientes acima) |
+| `hub_fn_validar_credito(cliente_id, valor)` | uuid + numeric | `{ok, limite_total, disponivel, disponivel_apos}` ou erro | Antes de submeter pedido — agrega por `grupo_erp_id` quando o cliente tem grupo |
+| `hub_fn_ajustar_credito_grupo(cliente_id, delta)` | uuid + numeric | — | Reserva/libera credito distribuindo entre as filiais do grupo (`FOR UPDATE` no grupo inteiro) |
+| `hub_fn_gerar_numero()` | — | `'HUB-2026-00001'` | Chamada internamente por hub_fn_submeter_pedido. **Nao tem lock** — seguro so sequencial, nunca chamar em paralelo sem reservar o bloco antes (ver backfill em `sync-pedidos-zen.js`) |
+| `hub_fn_liberar_cliente(cliente_id)` | uuid | `{ok, nome}` | Admin/manager libera bloqueio manualmente (sobrevive ao proximo sync do ZEN via `bloqueio_liberado_manualmente`) |
 
 **Helper RLS (security definer, nao chamar diretamente):**
 `hub_user_role()`, `hub_user_tipo()`, `hub_user_cliente_id()`, `hub_user_representante_id()`
@@ -167,8 +180,15 @@ rascunho → submetido → em_analise → aprovado → em_separacao → faturado
                     ↘ cancelado (dealer pode cancelar rascunho)
 ```
 
+`em_analise` acontece quando `hub_fn_submeter_pedido` acha credito insuficiente MAS a origem e
+admin/proxy_representante ou o pagamento e credix — vira solicitacao em `hub_solicitacoes`
+(area financeiro ou vendas_adm), resolvida via `hub_fn_aprovar_pedido_em_analise`/
+`hub_fn_rejeitar_pedido_em_analise` na thread (`abrirThreadSolicitacao` em hub.js).
+
 Trigger `trg_hub_notif_status` gera notificacao automatica ao mudar status.
 Trigger `trg_hub_atualizar_credito` ajusta limite ao aprovar solicitacao de credito.
+Status pos-aprovacao (`em_separacao`/`entregue`) avanca sozinho via `sale.SaleItem.servedQuantity`
+no cron `api/sync-pedidos-zen.js`.
 
 ---
 

@@ -1,0 +1,90 @@
+# Backfill UNICO do historico de notas fiscais (antes do piso que o sync
+# normal ja cobre -- ver ZEN-ERP-CONHECIMENTO.md e MEMORY.md pra contexto).
+# Pedido do Andre, 2026-11-17: rodar sozinho, fora do horario comercial,
+# verificando a cada ~75 min se ja terminou; se nao terminou, religar do
+# cursor exato onde parou (nunca reprocessar NF ja encontrada) ate concluir.
+#
+# Cada disparo encadeia rodadas num loop apertado (mesmo padrao ja provado em
+# sync-pedidos-zen.yml/sync-financeiro.yml) ate a propria janela de 60 min
+# acabar ou o backfill concluir de verdade -- "a cada 75 min" e o
+# ESPACAMENTO entre janelas, nao o ritmo dentro de uma janela (senao
+# andaria rapido demais... ou devagar demais, dependendo de onde o Zen
+# estiver lento naquela hora). O cursor e a flag "concluido" moram no banco
+# (hub_sync_estado via api/sync-financeiro.js?alvo=notas_historico), entao
+# mesmo se esta janela for cancelada no meio (timeout), a proxima retoma
+# exatamente dali -- nunca reprocessa NF ja encontrada.
+#
+# Por que 75 min de espacamento: cada janela pode levar ate 60 min (teto do
+# job, a faixa antiga de id e lenta no Zen -- ja visto ao vivo, timeout
+# constante nessa regiao). 75 min da folga de 15 min pra uma janela
+# terminar de verdade antes da proxima comecar -- e o `concurrency` abaixo
+# cobre o caso do agendador do GitHub disparar fora de hora (ja visto ficar
+# 14h sem disparar, ou disparar fora do horario esperado): ele FILA em vez
+# de rodar em paralelo, entao nunca ha sobreposicao real.
+name: Backfill historico de notas fiscais
+
+on:
+  schedule:
+    # Fora do expediente (19h45-06h BRT = 22h-09h UTC), ~75 min de intervalo.
+    - cron: '0 22 * * *'
+    - cron: '15 23 * * *'
+    - cron: '30 0 * * *'
+    - cron: '45 1 * * *'
+    - cron: '0 3 * * *'
+    - cron: '15 4 * * *'
+    - cron: '30 5 * * *'
+    - cron: '45 6 * * *'
+    - cron: '0 8 * * *'
+  workflow_dispatch: # permite forcar uma janela na mao, qualquer hora
+
+concurrency:
+  group: backfill-notas-historico
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Encadear /api/sync-financeiro?alvo=notas_historico ate concluir ou a janela acabar
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          rodada=0
+          while [ "$rodada" -lt 200 ]; do
+            rodada=$((rodada + 1))
+            corpo=$(mktemp)
+            codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+              -X POST 'https://hub.boxersoldas.com.br/api/sync-financeiro?alvo=notas_historico' \
+              -H "x-cron-secret: $CRON_SECRET" \
+              --max-time 90)
+
+            if [ "$codigo" != "200" ]; then
+              echo "::error::rodada $rodada respondeu HTTP $codigo"
+              cat "$corpo"; echo
+              exit 1
+            fi
+
+            concluido=$(jq -r '.estado.concluido // false' "$corpo")
+            pulou=$(jq -r '.pulou // false' "$corpo")
+            cursor=$(jq -r '.estado.cursor // "?"' "$corpo")
+            echo "--- rodada $rodada -> HTTP $codigo, concluido=$concluido, pulou=$pulou, cursor=$cursor"
+
+            if [ "$concluido" = "true" ]; then
+              echo "Backfill historico de NF CONCLUIDO. Este workflow pode ser desativado."
+              exit 0
+            fi
+            # "pulou" aqui so acontece se outra instancia concluiu entre uma
+            # rodada e outra -- nao ha mais o que fazer nesta janela.
+            if [ "$pulou" = "true" ]; then
+              echo "Nada a fazer nesta rodada ($(jq -r '.motivo' "$corpo"))."
+              exit 0
+            fi
+          done
+
+          echo "Teto de $rodada rodadas nesta janela -- continua na proxima janela agendada (~75min)."

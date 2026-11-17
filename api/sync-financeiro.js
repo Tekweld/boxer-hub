@@ -314,6 +314,17 @@ module.exports = async function handler(req, res) {
     const idHub = await carregarMapaClientes(hubH);
     r.clientes_mapeados = Object.keys(idHub).length;
 
+    // alvo dedicado: backfill historico de NF, auto-retomavel (ver comentario
+    // em sincronizarNotasHistoricoAuto). Nao participa do alvo=ambos de
+    // proposito -- e um processo a parte, disparado pelo workflow proprio
+    // (.github/workflows/backfill-notas-historico.yml), nao pelo cron normal.
+    if (alvo === 'notas_historico') {
+      const out = await sincronizarNotasHistoricoAuto({ idHub, hubH, dryRun });
+      out.duracao_ms = Date.now() - t0;
+      console.log('[FINANCEIRO][NF_HISTORICO]', JSON.stringify(out));
+      return res.status(200).json(out);
+    }
+
     // t0 proprio para cada etapa (nao o mesmo t0 da function inteira) -- com
     // alvo=ambos, titulo roda primeiro e, se dividisse o mesmo relogio com
     // NF, sempre consumia o orcamento inteiro e NF nunca tinha tempo nenhum
@@ -335,6 +346,69 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ ok: false, erro: e.message, ...r });
   }
 };
+
+// Estado persistente do backfill historico de NF -- sobrevive a cancelamento
+// por timeout (job tem teto de 60min, a faixa antiga e lenta e pode nao
+// terminar numa chamada so) e a disparos espacados do GitHub Actions sem
+// precisar ler log pra saber onde parou.
+//
+// O espacamento de ~75min entre tentativas (pedido do Andre) mora no
+// AGENDAMENTO (.github/workflows/backfill-notas-historico.yml), nao aqui --
+// de proposito, pra nao atrapalhar o encadeamento rapido de rodadas DENTRO
+// de uma mesma janela (o bash do workflow chama este endpoint em loop
+// apertado ate concluir ou acabar o tempo da janela; um gate de tempo aqui
+// travaria esse loop na 2a chamada). Quem impede duas janelas se sobrepondo
+// e o `concurrency` do workflow (fila, nao cancela) somado ao espacamento
+// dos horarios -- nao precisa de outro controle de tempo aqui.
+const NF_HISTORICO_CHAVE = 'nf_historico';
+
+async function lerEstadoSync(hubH, chave) {
+  const r = await fetch(HUB_URL + '/rest/v1/hub_sync_estado?chave=eq.' + chave + '&select=valor,atualizado_em', { headers: hubH('GET') });
+  if (!r.ok) return null;
+  const rows = await r.json();
+  return rows?.[0] || null;
+}
+
+async function gravarEstadoSync(hubH, chave, valor) {
+  await fetch(HUB_URL + '/rest/v1/hub_sync_estado?on_conflict=chave', {
+    method: 'POST',
+    headers: { ...hubH('POST'), Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({ chave, valor, atualizado_em: new Date().toISOString() })
+  });
+}
+
+// alvo=notas_historico: backfill unico do historico de NF (mar/2025 em
+// diante, antes do piso onde o sync normal ja cobre), pensado pra ser
+// chamado repetidas vezes pelo GitHub Actions ate concluir sozinho.
+// NAO reprocessa nota ja encontrada -- o cursor persiste em
+// hub_sync_estado, nunca comeca do zero de novo (so na primeirissima vez,
+// sem estado nenhum, comeca do id 1). Depois de "concluido", todo disparo
+// seguinte vira um no-op barato (so le o estado, nem chama o Zen).
+async function sincronizarNotasHistoricoAuto({ idHub, hubH, dryRun }) {
+  const estado = await lerEstadoSync(hubH, NF_HISTORICO_CHAVE);
+  const valorAtual = estado?.valor || {};
+
+  if (valorAtual.concluido === true) {
+    return { ok: true, pulou: true, motivo: 'backfill historico de NF ja concluido', estado: valorAtual };
+  }
+
+  const desde = valorAtual.cursor || 1;
+  const resultado = await sincronizarNotas({ idHub, hubH, dryRun, desde, t0: Date.now() });
+
+  const novoValor = {
+    cursor: resultado.proximo_desde,
+    concluido: !!resultado.concluido,
+    ultima_rodada: {
+      cursor_inicial: resultado.cursor_inicial,
+      lidos: resultado.lidos,
+      gravados: resultado.gravados,
+      erros: resultado.erros
+    }
+  };
+  await gravarEstadoSync(hubH, NF_HISTORICO_CHAVE, novoValor);
+
+  return { ok: true, pulou: false, notas: resultado, estado: novoValor };
+}
 
 async function carregarMapaClientes(hubH) {
   const idHub = {};

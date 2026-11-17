@@ -132,9 +132,17 @@ body.has-footer-bar{padding-bottom:72px}
 .pdp-footer-price{font-size:18px;font-weight:700;color:#1d327b;white-space:nowrap}
 .pdp-footer-ipi{font-size:10px;color:#718096;font-weight:400;display:block}
 .pdp-footer-spacer{flex:1}
-.pdp-footer-qty{display:flex;align-items:center;gap:5px}
+.pdp-footer-qty{display:flex;align-items:center;gap:5px;position:relative}
 .pdp-footer-qty label{font-size:11px;color:#718096;font-weight:500;text-transform:uppercase}
 .pdp-footer-qty input{width:52px;padding:8px;border:1px solid #d0d8e8;border-radius:6px;text-align:center;font-family:Outfit;font-size:14px}
+/* Historico de compras: automatico ao lado da Qtd (pedido do Andre, 2026-11-17),
+   sem empurrar o layout do footer -- fica como um cartao flutuante acima do campo. */
+.pdp-historico{position:absolute;bottom:100%;left:0;margin-bottom:8px;background:#fff;border:1px solid #d0d8e8;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:10px 12px;min-width:220px;font-size:12px;z-index:20}
+.pdp-historico-titulo{font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-bottom:6px}
+.pdp-historico-linha{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-bottom:1px solid #f0f4f8;white-space:nowrap}
+.pdp-historico-linha:last-child{border-bottom:none}
+.pdp-historico-data{color:#718096}
+.pdp-historico-valor{color:#1a202c;font-weight:500}
 .pdp-footer-add{padding:10px 20px;border:none;border-radius:8px;background:#1d327b;color:#fff;font-family:Outfit;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap}
 .pdp-footer-add:hover{background:#162666}
 .pdp-footer-add:active{transform:scale(.97)}
@@ -836,6 +844,7 @@ async function openPDP(produtoId) {
       <div class="pdp-footer-qty">
         <label>Qtd</label>
         <input type="number" id="pdp-qty" data-pid="${produtoId}" data-sku="${esc(prod.sku)}" data-nome="${esc(prod.nome)}" value="${cartQty || 1}" min="1" max="999" oninput="atualizarSeloEstoquePdpDebounced()">
+        <div id="pdpHistoricoCompras" class="pdp-historico"></div>
       </div>
       <button class="pdp-footer-add" onclick="pdpAddToCart()">Adicionar ao pedido</button>`;
     _pdpProdutoAtual = prod;
@@ -844,6 +853,10 @@ async function openPDP(produtoId) {
     // pessoa editava o campo Qtd de novo, mesmo abrindo ja com uma
     // quantidade alta (vinda do carrinho). Achado pelo Andre, 2026-11-03.
     atualizarSeloEstoquePdp();
+    // Automatico, sem clique (pedido do Andre, 2026-11-17) -- so LE o cache
+    // que o hub.js ja baixou ao entrar na revenda (ver garantirHistoricoCompras
+    // em hub.js), nunca chama o ZEN daqui.
+    renderHistoricoCompraPdp(produtoId);
   } catch (e) {
     toast('Erro ao abrir produto', 'error');
     closePDP();
@@ -868,6 +881,27 @@ async function atualizarSeloEstoquePdp() {
 }
 
 const atualizarSeloEstoquePdpDebounced = debounce(atualizarSeloEstoquePdp, 350);
+
+// Historico de compras (pedido do Andre, 2026-11-17): so LE o cache que
+// hub.js ja baixou ao entrar na revenda (garantirHistoricoCompras) -- nunca
+// chama o ZEN aqui, por isso aparece automatico e na hora.
+async function renderHistoricoCompraPdp(produtoId) {
+  const wrap = document.getElementById('pdpHistoricoCompras');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!getClienteAtivo()) return; // staff sem revenda selecionada: nada pra mostrar
+
+  const historico = await buscarHistoricoCompraProduto(produtoId);
+  if (wrap !== document.getElementById('pdpHistoricoCompras')) return; // PDP trocou de produto enquanto buscava
+  if (!historico || !historico.length) return;
+
+  wrap.innerHTML = '<div class="pdp-historico-titulo">Ultimas compras deste cliente</div>' +
+    historico.map(h => {
+      const data = h.data ? new Date(h.data).toLocaleDateString('pt-BR') : '—';
+      return '<div class="pdp-historico-linha"><span class="pdp-historico-data">' + data + '</span>' +
+        '<span class="pdp-historico-valor">' + (h.quantidade || 0) + ' un · ' + fmtMoeda(h.preco_unitario || 0) + '</span></div>';
+    }).join('');
+}
 
 function closePDP() {
   document.getElementById('pdpPage').style.display = 'none';

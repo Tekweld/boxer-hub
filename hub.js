@@ -725,6 +725,46 @@ function renderTopbar(titulo) {
   if (nameEl) nameEl.textContent = getUserNome();
   loadNotifCount();
   atualizarCartBadgeTopo();
+  garantirHistoricoCompras();
+}
+
+// === HISTORICO DE COMPRAS (baixa 1x/dia por cliente, ao entrar na revenda) ===
+// Pedido do Andre, 2026-11-17: aparecer automatico na ficha do produto, perto
+// do campo de quantidade, sem clicar em nada -- mas sem bater no ZEN a cada
+// produto aberto. Desenho: ao entrar numa revenda (ou logar como cliente), o
+// Hub baixa de uma vez o historico de TODOS os produtos dela (1 chamada ao
+// ZEN por cliente por dia, guardada em hub_historico_compras). Daqui pra
+// frente, abrir qualquer produto so LE essa tabela (instantaneo).
+let _historicoCompraEmAndamento = null;
+
+async function garantirHistoricoCompras() {
+  const clienteId = getClienteAtivo();
+  if (!clienteId) return;
+  try {
+    const status = await sb('/hub_historico_compras_status?cliente_id=eq.' + clienteId + '&select=atualizado_em');
+    const UM_DIA_MS = 24 * 3600 * 1000;
+    if (status?.[0]?.atualizado_em && (Date.now() - new Date(status[0].atualizado_em).getTime()) < UM_DIA_MS) return;
+  } catch (_) { /* sem status ainda = nunca baixou, segue pra buscar */ }
+
+  if (_historicoCompraEmAndamento === clienteId) return; // ja disparado nesta pagina
+  _historicoCompraEmAndamento = clienteId;
+  try {
+    await fetch('/api/push-pedido?target=historico', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (SESSION?.access_token || '') },
+      body: JSON.stringify({ cliente_id: clienteId })
+    });
+  } catch (_) { /* silencioso -- a ficha do produto so mostra historico se existir, nunca bloqueia nada */ }
+}
+
+// Le o cache ja pronto (sem chamar o ZEN) para mostrar na ficha do produto.
+async function buscarHistoricoCompraProduto(produtoId) {
+  const clienteId = getClienteAtivo();
+  if (!clienteId || !produtoId) return null;
+  try {
+    const rows = await sb('/hub_historico_compras?cliente_id=eq.' + clienteId + '&produto_id=eq.' + produtoId + '&select=historico');
+    return rows?.[0]?.historico || null;
+  } catch (_) { return null; }
 }
 
 // Carrinho visivel em QUALQUER pagina enquanto nao foi cancelado nem

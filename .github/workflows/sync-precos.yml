@@ -1,0 +1,46 @@
+# Mantem comercial.hub_produtos.ativo alinhado com a tabela de precos oficial
+# (public.produtos, tabela_id=1): cria produto novo que ganhou preco, desativa
+# quem perdeu. Nao usa Vercel Cron porque o unico slot nativo do plano ja e do
+# sync-pdm (segunda de manha) -- mesmo padrao de sync-estoque/sync-financeiro.
+#
+# Diario (nao precisa de 15 em 15 min -- tabela de preco nao muda tantas vezes
+# ao dia): roda cedo, antes do expediente, pra qualquer ajuste de preco feito
+# no dia anterior já refletir no catalogo quando o time comercial comecar.
+name: Sync tabela de precos -> catalogo
+
+on:
+  schedule:
+    - cron: '30 8 * * *' # 05h30 BRT
+  workflow_dispatch:
+
+concurrency:
+  group: sync-precos
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar /api/sync-precos
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          corpo=$(mktemp)
+          codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+            -X POST 'https://hub.boxersoldas.com.br/api/sync-precos' \
+            -H "x-cron-secret: $CRON_SECRET" \
+            --max-time 60)
+
+          echo "HTTP $codigo"
+          cat "$corpo"
+          echo
+
+          if [ "$codigo" != "200" ]; then
+            echo "::error::sync-precos respondeu $codigo"
+            exit 1
+          fi

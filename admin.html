@@ -267,7 +267,7 @@ select,input,textarea{font-family:Outfit,sans-serif}
       </div>
       <div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;text-align:center">
         <div style="font-size:24px;font-weight:700;color:#1d327b" id="statNaTabela">--</div>
-        <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px">Na Tabela Preco</div>
+        <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px">Sem Preco (inativo)</div>
       </div>
       <div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;text-align:center">
         <div style="font-size:24px;font-weight:700;color:#1d327b" id="statComPDM">--</div>
@@ -283,6 +283,18 @@ select,input,textarea{font-family:Outfit,sans-serif}
       </div>
     </div>
     <div id="catalogoAlertas" style="margin-bottom:16px"></div>
+    <div id="pdmSemPrecoBlock" class="hidden" style="margin-bottom:16px;background:#fff8f0;border:1px solid #fed7aa;border-radius:8px;padding:14px 16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="document.getElementById('pdmSemPrecoLista').classList.toggle('hidden')">
+        <div style="font-size:12px;font-weight:600;color:#9a3412;text-transform:uppercase;letter-spacing:.5px" id="pdmSemPrecoTitulo"></div>
+        <span style="font-size:12px;color:#9a3412">mostrar/ocultar lista ▾</span>
+      </div>
+      <div class="panel-hint" style="margin:10px 0 0">
+        Esses produtos ja tem ficha tecnica/foto prontas no PDM, mas ninguem cadastrou preco pra eles na tabela
+        <b>"Principal"</b> ainda -- por isso nao aparecem no catalogo do cliente. Cadastrar o preco em
+        <b>admin_supabase.html</b> resolve: o proximo sync (diario) cria o produto aqui sozinho.
+      </div>
+      <div id="pdmSemPrecoLista" class="hidden" style="margin-top:10px;max-height:220px;overflow-y:auto;font-size:13px"></div>
+    </div>
     <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">
       <span style="font-size:12px;color:#718096;font-weight:500">FILTRAR:</span>
       <button class="btn btn-sm btn-outline catFilter active" data-filter="todos" onclick="filterCatalogo('todos',this)">Todos</button>
@@ -1860,33 +1872,47 @@ let _catalogoData = null;
 async function loadCatalogo() {
   const wrap = document.getElementById('catalogoList');
   try {
-    const [produtos, categorias, anexos, precoItens, totalAnexos] = await Promise.all([
-      sb('/hub_produtos?select=id,sku,nome,descricao,categoria_id,erp_produto_id,ativo,atualizado_em&order=nome.asc&ativo=eq.true&limit=5000'),
+    // "Tem preco" vem direto de hub_produtos.ativo -- desde que api/sync-precos.js
+    // existe, esse campo E a presenca de preco real na tabela "Principal"
+    // (nao mais hub_tabela_preco_itens, achado como dado morto nunca escrito
+    // por nenhuma rotina: so 2/613 linhas sem relacao com a tabela de preco de
+    // verdade -- removido daqui, tabela em si nao foi apagada).
+    const [todosProdutos, categorias, anexos, totalAnexos, pdmSemPreco] = await Promise.all([
+      sb('/hub_produtos?select=id,sku,nome,descricao,categoria_id,erp_produto_id,ativo,atualizado_em&order=nome.asc&limit=5000'),
       sb('/hub_categorias?select=id,nome,slug,categoria_pai_id&ativo=eq.true&order=nome.asc&limit=5000'),
       sb('/hub_produto_anexos?select=produto_id,tipo&tipo=eq.foto&limit=5000'),
-      sb('/hub_tabela_preco_itens?select=produto_id&limit=5000'),
-      sb('/hub_produto_anexos?select=id&limit=5000')
+      sb('/hub_produto_anexos?select=id&limit=5000'),
+      sb('/hub_pdm_sem_preco?select=sku,nome&order=nome.asc&limit=500')
     ]);
+    const produtos = todosProdutos.filter(p => p.ativo);
+    const inativos = todosProdutos.filter(p => !p.ativo);
+
+    const pdmBlock = document.getElementById('pdmSemPrecoBlock');
+    if (pdmSemPreco.length > 0) {
+      pdmBlock.classList.remove('hidden');
+      document.getElementById('pdmSemPrecoTitulo').textContent =
+        pdmSemPreco.length + ' produto(s) no PDM aguardando cadastro de preco';
+      document.getElementById('pdmSemPrecoLista').innerHTML = pdmSemPreco.map(p =>
+        '<div style="padding:4px 0;border-bottom:1px solid #fed7aa">' + escHub(p.sku) + ' — ' + escHub(p.nome) + '</div>'
+      ).join('');
+    } else {
+      pdmBlock.classList.add('hidden');
+    }
 
     const fotosPorProduto = {};
     anexos.forEach(a => { fotosPorProduto[a.produto_id] = (fotosPorProduto[a.produto_id] || 0) + 1; });
-
-    const produtosComPreco = new Set();
-    precoItens.forEach(i => produtosComPreco.add(i.produto_id));
 
     const catMap = {};
     categorias.forEach(c => catMap[c.id] = c.nome);
 
     const semFoto = produtos.filter(p => !fotosPorProduto[p.id]);
     const semDescricao = produtos.filter(p => !p.descricao || p.descricao.trim().length < 10);
-    const semPreco = produtos.filter(p => !produtosComPreco.has(p.id));
     const semPDM = produtos.filter(p => !p.erp_produto_id);
     const comFoto = Object.keys(fotosPorProduto).length;
     const comPDM = produtos.filter(p => p.erp_produto_id).length;
-    const naTabela = produtos.filter(p => produtosComPreco.has(p.id)).length;
 
     document.getElementById('statProdutos').textContent = produtos.length;
-    document.getElementById('statNaTabela').textContent = naTabela;
+    document.getElementById('statNaTabela').textContent = inativos.length;
     document.getElementById('statComPDM').textContent = comPDM;
     document.getElementById('statComFoto').textContent = comFoto;
     document.getElementById('statAnexos').textContent = totalAnexos.length;
@@ -1894,7 +1920,7 @@ async function loadCatalogo() {
     const alertas = [];
     if (semFoto.length > 0) alertas.push({ icon: '▸', cor: '#e30613', texto: semFoto.length + ' produtos sem foto — afeta a vitrine do catalogo', filtro: 'sem-foto' });
     if (semDescricao.length > 0) alertas.push({ icon: '▸', cor: '#f59e0b', texto: semDescricao.length + ' produtos sem descricao — ficha do produto fica vazia', filtro: 'sem-descricao' });
-    if (semPreco.length > 0) alertas.push({ icon: '▸', cor: '#e30613', texto: semPreco.length + ' produtos sem preco na tabela — nao aparecem no catalogo', filtro: 'sem-preco' });
+    if (inativos.length > 0) alertas.push({ icon: '▸', cor: '#e30613', texto: inativos.length + ' produtos sem preco na tabela — desativados automaticamente, somem do catalogo', filtro: 'sem-preco' });
     if (semPDM.length > 0) alertas.push({ icon: '▸', cor: '#f59e0b', texto: semPDM.length + ' produtos na tabela sem dados PDM — sem foto e ficha tecnica', filtro: 'sem-pdm' });
 
     const alertaEl = document.getElementById('catalogoAlertas');
@@ -1907,16 +1933,19 @@ async function loadCatalogo() {
       alertaEl.innerHTML = '';
     }
 
-    _catalogoData = produtos.map(p => ({
+    // _catalogoData carrega ATIVOS + INATIVOS juntos (o filtro "sem-preco"
+    // precisa enxergar quem foi desativado por falta de preco); a tabela
+    // por padrao mostra so os ativos, igual antes.
+    _catalogoData = todosProdutos.map(p => ({
       ...p,
       fotos: fotosPorProduto[p.id] || 0,
-      temPreco: produtosComPreco.has(p.id),
+      temPreco: !!p.ativo,
       temPDM: !!p.erp_produto_id,
       temDescricao: p.descricao && p.descricao.trim().length >= 10,
       catNome: catMap[p.categoria_id] || null
     }));
 
-    renderCatalogoTable(_catalogoData);
+    renderCatalogoTable(_catalogoData.filter(p => p.ativo));
 
   } catch (e) {
     wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar catalogo</h3><p>' + e.message + '</p></div>';
@@ -1928,10 +1957,11 @@ function filterCatalogo(filtro, el) {
   if (el) el.classList.add('active');
   if (!_catalogoData) return;
 
-  let dados = _catalogoData;
+  // "sem-preco" e o UNICO filtro que olha os inativos -- os demais continuam
+  // restritos ao que de fato aparece no catalogo hoje (ativo=true).
+  let dados = filtro === 'sem-preco' ? _catalogoData.filter(p => !p.temPreco) : _catalogoData.filter(p => p.ativo);
   if (filtro === 'sem-foto') dados = dados.filter(p => p.fotos === 0);
   else if (filtro === 'sem-descricao') dados = dados.filter(p => !p.temDescricao);
-  else if (filtro === 'sem-preco') dados = dados.filter(p => !p.temPreco);
   else if (filtro === 'sem-pdm') dados = dados.filter(p => !p.temPDM);
 
   renderCatalogoTable(dados);

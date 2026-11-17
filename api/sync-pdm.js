@@ -289,6 +289,50 @@ module.exports = async function handler(req, res) {
     );
     console.log(`[SYNC] ${pdmProdutos.length} produtos ativos no PDM`);
 
+    // 1b — Sinal para o admin: produto que o PDM ja documentou (ficha/foto
+    // prontas) mas que ninguem ainda cadastrou na tabela de preco oficial
+    // (public.produtos, tabela_id=1 -- a mesma fonte que api/sync-precos.js
+    // usa para ligar/desligar hub_produtos.ativo). Sem isso, um produto podia
+    // ficar "pronto" no PDM e nunca virar vendavel, sem ninguem perceber.
+    let pdmSemPrecoCount = 0;
+    try {
+      const pubH = { apikey: SB_SERVICE, Authorization: 'Bearer ' + SB_SERVICE };
+      const precosAtivos = await fetchAll(
+        HUB_URL + '/rest/v1/produtos?tabela_id=eq.1&ativo=eq.true&pv_sp=gt.0&select=codigo',
+        pubH, 'produtos (tabela de precos)'
+      );
+      const skusComPreco = new Set(precosAtivos.map(p => normSku(p.codigo)));
+      const semPreco = pdmProdutos.filter(p => p.codigo && !skusComPreco.has(normSku(p.codigo)));
+      pdmSemPrecoCount = semPreco.length;
+
+      if (semPreco.length) {
+        const bodies = semPreco.map(p => ({
+          sku: normSku(p.codigo),
+          nome: p.nome || p.codigo,
+          atualizado_em: new Date().toISOString()
+        }));
+        for (let i = 0; i < bodies.length; i += 200) {
+          const batch = bodies.slice(i, i + 200);
+          await fetch(HUB_URL + '/rest/v1/hub_pdm_sem_preco?on_conflict=sku', {
+            method: 'POST',
+            headers: { ...hubH('POST'), Prefer: 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify(batch)
+          });
+        }
+        // Autocura: sku que saiu da lista (ganhou preco, ou saiu do PDM) nao
+        // deve continuar aparecendo como pendencia pro admin.
+        const manterSkus = bodies.map(b => `"${b.sku.replace(/"/g, '')}"`).join(',');
+        await fetch(HUB_URL + '/rest/v1/hub_pdm_sem_preco?sku=not.in.(' + manterSkus + ')', {
+          method: 'DELETE', headers: hubH('DELETE')
+        });
+      } else {
+        await fetch(HUB_URL + '/rest/v1/hub_pdm_sem_preco', { method: 'DELETE', headers: hubH('DELETE') });
+      }
+      console.log(`[SYNC] ${pdmSemPrecoCount} produto(s) do PDM sem preco na tabela oficial`);
+    } catch (e) {
+      console.error('[SYNC] Falha ao calcular PDM sem preco (nao interrompe o sync):', e.message);
+    }
+
     // 2 — Documentos ativos do PDM
     const pdmDocs = await fetchAll(
       PDM_URL + '/rest/v1/documentos?ativo=eq.true&select=id,produto_id,nome,tipo,arquivo_url,revisao',
@@ -332,7 +376,11 @@ module.exports = async function handler(req, res) {
         ficha_tecnica: Object.keys(ft).length > 0 ? ft : null,
         o_que_acompanha: parseOQueAcompanha(p.recursos_diferenciais),
         erp_produto_id: p.codigo,
-        ativo: true,
+        // ativo NAO vai aqui de proposito -- quem liga/desliga pela presenca
+        // de preco e api/sync-precos.js (fonte: public.produtos). Mandar o
+        // campo aqui faria este sync religar todo produto do PDM 1x/semana
+        // mesmo sem preco, desfazendo o trabalho do outro job (acharam o
+        // conflito investigando o item "produto novo nao aparece sozinho").
         atualizado_em: new Date().toISOString()
       };
     });
@@ -531,6 +579,7 @@ module.exports = async function handler(req, res) {
       anexos_sincronizados: anexosCount,
       anexos_total_tentados: anexoBodies.length,
       anexo_errors: anexoErrors.length > 0 ? anexoErrors : undefined,
+      pdm_sem_preco_na_tabela: pdmSemPrecoCount,
       timestamp: new Date().toISOString()
     });
 

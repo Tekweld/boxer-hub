@@ -732,20 +732,22 @@ module.exports = async function handler(req, res) {
     // enfileirados por evento (novo representante/cliente com login no Hub,
     // ver triggers em comercial.hub_backfill_fila) e so vendas do ANO
     // CORRENTE (reduz volume por cliente; quem precisar de historico mais
-    // antigo pede sob demanda, nao e varrido aqui). UM lote de 20 clientes
-    // por rodada do cron (maxDuration subido para 60s, igual aos outros
-    // syncs, mas os passos 1-3 rodam depois no mesmo invocation -- medido ao
-    // vivo em 2026-11-16: 40 clientes + passos 1-3 = 504/timeout aos 48s com
-    // 45s de limite. 20 fica com folga mesmo nos 60s novos). 2130 clientes
-    // na fila inicial = ~107 rodadas (~27h de catch-up em segundo plano, sem
-    // pressa); dali pra frente so processa quem entra novo.
+    // antigo pede sob demanda, nao e varrido aqui). UM lote de 40 clientes
+    // por rodada (maxDuration 120s, pedido do Andre 2026-11-17 apos medir ao
+    // vivo: 40+passos1-3 trava em 45s, 20+passos1-3 passa em 56s com 60s).
+    // O gargalo real nao era o numero de clientes, era rodar cada VENDA em
+    // sequencia (gerar_numero + criar pedido + itens, um de cada vez) --
+    // paralelizado abaixo (reserva o bloco de numeros uma vez, sem trava no
+    // hub_fn_gerar_numero original, e processa as vendas do lote ao mesmo
+    // tempo). 2130 clientes na fila inicial = ~53 rodadas (~13h de catch-up
+    // em segundo plano); dali pra frente so processa quem entra novo.
     r.backfill_lotes = 0;
     r.backfill_clientes_processados = 0;
     r.backfill_pedidos_criados = 0;
     r.backfill_erros = [];
     try {
       const filaRes = await fetch(HUB_URL +
-        '/rest/v1/hub_backfill_fila?status=eq.pendente&select=id,cliente_id&order=criado_em.asc&limit=20',
+        '/rest/v1/hub_backfill_fila?status=eq.pendente&select=id,cliente_id&order=criado_em.asc&limit=40',
         { headers: hubH('GET') });
       const fila = filaRes.ok ? await filaRes.json() : [];
 
@@ -802,10 +804,21 @@ module.exports = async function handler(req, res) {
               }
             }
 
-            for (const venda of novas) {
+            // hub_fn_gerar_numero faz max()+1 SEM trava -- chamar uma vez por
+            // venda (sequencial) era o maior gargalo de tempo do lote. Reserva
+            // o bloco inteiro de numeros de uma vez (1 leitura) e distribui
+            // localmente, o que libera o resto (criar pedido + itens) para
+            // rodar em paralelo entre vendas sem colidir em nada.
+            const existentesNumRes = await fetch(HUB_URL +
+              '/rest/v1/hub_pedidos?numero=like.HUB-' + anoAtual + '-*&select=numero&order=numero.desc&limit=1',
+              { headers: hubH('GET') });
+            const existentesNum = existentesNumRes.ok ? await existentesNumRes.json() : [];
+            let proxSeq = existentesNum[0]?.numero ? parseInt(existentesNum[0].numero.slice(-5), 10) + 1 : 1;
+
+            await Promise.all(novas.map(async (venda) => {
               try {
                 const cliente = porErpId[String(venda.person?.id)];
-                if (!cliente) continue;
+                if (!cliente) return;
 
                 const itensVenda = itensPorSale[String(venda.id)] || [];
                 const valorTotal = itensVenda.reduce((s, it) => s + (Number(it.totalValue) || 0), 0);
@@ -819,10 +832,7 @@ module.exports = async function handler(req, res) {
                 if (venda.status === 'CANCELED') { status = 'cancelado'; }
                 else if (venda.status === 'FINISHED') { status = 'entregue'; etapa = 'Pedido aprovado'; }
 
-                const numRes = await fetch(HUB_URL + '/rest/v1/rpc/hub_fn_gerar_numero',
-                  { method: 'POST', headers: hubH('POST'), body: JSON.stringify({}) });
-                const numOut = numRes.ok ? await numRes.json() : null;
-                const numero = typeof numOut === 'string' ? numOut : numOut?.numero || null;
+                const numero = 'HUB-' + anoAtual + '-' + String(proxSeq++).padStart(5, '0');
 
                 const pedRes = await fetch(HUB_URL + '/rest/v1/hub_pedidos', {
                   method: 'POST', headers: hubH('POST'),
@@ -835,7 +845,7 @@ module.exports = async function handler(req, res) {
                 });
                 const pedJson = pedRes.ok ? await pedRes.json() : [];
                 const pedido = pedJson[0];
-                if (!pedido) { r.backfill_erros.push({ sale: venda.id, erro: 'hub_pedidos ' + pedRes.status }); continue; }
+                if (!pedido) { r.backfill_erros.push({ sale: venda.id, erro: 'hub_pedidos ' + pedRes.status }); return; }
 
                 if (itensVenda.length) {
                   // So entra item cujo sku existe em hub_produtos -- produto_id
@@ -873,7 +883,7 @@ module.exports = async function handler(req, res) {
               } catch (e) {
                 r.backfill_erros.push({ sale: venda.id, erro: e.message.slice(0, 150) });
               }
-            }
+            }));
           }
 
           // Lote consultado no Zen com sucesso -- marca concluido mesmo pra

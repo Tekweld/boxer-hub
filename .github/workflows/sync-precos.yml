@@ -1,7 +1,10 @@
 # Mantem comercial.hub_produtos.ativo alinhado com a tabela de precos oficial
 # (public.produtos, tabela_id=1): cria produto novo que ganhou preco, desativa
-# quem perdeu. Nao usa Vercel Cron porque o unico slot nativo do plano ja e do
-# sync-pdm (segunda de manha) -- mesmo padrao de sync-estoque/sync-financeiro.
+# quem perdeu. Chama ?target=precos dentro do PROPRIO api/sync-pdm.js (nao um
+# arquivo novo) -- um endpoint a mais estourou o teto de 12 Serverless
+# Functions do plano Hobby na primeira tentativa de subir isto. Nao usa Vercel
+# Cron porque o unico slot nativo do plano ja e do sync-pdm (segunda de manha)
+# -- mesmo padrao de sync-estoque/sync-financeiro.
 #
 # Diario (nao precisa de 15 em 15 min -- tabela de preco nao muda tantas vezes
 # ao dia): roda cedo, antes do expediente, pra qualquer ajuste de preco feito
@@ -21,7 +24,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Chamar /api/sync-precos
+      - name: Chamar /api/sync-pdm?target=precos
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
@@ -32,7 +35,7 @@ jobs:
 
           corpo=$(mktemp)
           codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
-            -X POST 'https://hub.boxersoldas.com.br/api/sync-precos' \
+            -X POST 'https://hub.boxersoldas.com.br/api/sync-pdm?target=precos' \
             -H "x-cron-secret: $CRON_SECRET" \
             --max-time 60)
 

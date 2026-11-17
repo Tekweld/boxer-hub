@@ -238,10 +238,47 @@ select,input,textarea{font-family:Outfit,sans-serif}
       <h3 style="font-size:15px;color:#1d327b">Motor de Excecoes</h3>
     </div>
     <div class="panel-hint">
-      Pedido minimo, faixas de desconto por volume, elegibilidade a boleto/duplicata, frete gratis por UF/valor, etc.
-      Cada regra tem <em>condicao</em> (ex: cliente da regiao X, valor acima de Y) e <em>acao</em> (ex: aplicar desconto de Z%).
-      O servidor avalia todas as regras vigentes ao validar o pedido -- se algo bloqueia, o cliente ve o motivo.
-      <em>Ainda nao construido nesta tela.</em>
+      Excecao por cliente especifico, UF ou segmento (deixe em branco = vale para todos). Regra de cliente especifico
+      sempre vence regra geral. O servidor confere isso toda vez que valida um pedido -- se liberar algo, o motivo aparece
+      pro cliente como aviso, nao fica escondido. <b>Desconto por faixa de volume ainda nao entra aqui</b> -- isso mexe no
+      motor de preco, nao no portao do pedido; fica registrado como proximo passo.
+    </div>
+    <div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:14px">
+      <div class="form-row-inline">
+        <div class="form-row"><label>Nome da regra</label><input id="novaRegraNome" type="text" placeholder="Ex: Prazo liberado - Cliente X"></div>
+        <div class="form-row"><label>Tipo</label>
+          <select id="novaRegraTipo" onchange="atualizarCamposRegraAcao()">
+            <option value="pedido_minimo">Pedido minimo (valor diferente)</option>
+            <option value="prazo_especial">Prazo especial (liberar boleto e/ou mudar max. de parcelas)</option>
+            <option value="frete_gratis">Frete (definir tipo/valor fixo)</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row-inline" style="margin-top:10px">
+        <div class="form-row">
+          <label>Cliente (opcional -- em branco vale para todos que casarem com UF/segmento)</label>
+          <input id="novaRegraClienteBusca" type="text" placeholder="Buscar por nome ou CNPJ..." autocomplete="off"
+                 oninput="buscarClienteParaRegra(this.value)">
+          <div id="novaRegraClienteResultado" style="font-size:12px;margin-top:4px"></div>
+          <input type="hidden" id="novaRegraClienteId">
+        </div>
+        <div class="form-row"><label>UF (opcional)</label><input id="novaRegraUf" type="text" maxlength="2" style="text-transform:uppercase" placeholder="Ex: SP"></div>
+        <div class="form-row"><label>Segmento (opcional)</label>
+          <select id="novaRegraSegmento">
+            <option value="">Qualquer</option>
+            <option value="Física">Física</option>
+            <option value="Ecommerce">Ecommerce</option>
+            <option value="Híbrido">Híbrido</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row-inline" style="margin-top:10px" id="novaRegraAcaoCampos"></div>
+      <div class="form-row-inline" style="margin-top:10px">
+        <div class="form-row"><label>Vigencia inicio (opcional)</label><input id="novaRegraVigenciaInicio" type="date"></div>
+        <div class="form-row"><label>Vigencia fim (opcional)</label><input id="novaRegraVigenciaFim" type="date"></div>
+        <div class="form-row"><label>Prioridade (maior vence empate)</label><input id="novaRegraPrioridade" type="number" value="0"></div>
+      </div>
+      <div style="margin-top:12px"><button class="btn btn-primary" onclick="criarRegraComercial()">Criar excecao</button></div>
     </div>
     <div id="regrasList"></div>
   </div>
@@ -372,7 +409,7 @@ function showTab(n, el) {
   if (n === 'catalogo') loadCatalogo();
   if (n === 'clientes') loadClientes();
   if (n === 'solicitacoes') loadSolicitacoesAdmin();
-  if (n === 'regras') { loadParametrosComerciais(); loadPlanosPrazoBoleto(); }
+  if (n === 'regras') { loadParametrosComerciais(); loadPlanosPrazoBoleto(); loadRegrasComerciais(); }
   if (n === 'logs') loadLogs();
 }
 
@@ -462,6 +499,177 @@ async function alternarPlanoPrazoBoleto(id, novoAtivo) {
     loadPlanosPrazoBoleto();
   } catch (e) {
     toast('Erro ao atualizar plano: ' + e.message, 'error');
+  }
+}
+
+// === MOTOR DE EXCECOES (hub_regras_comerciais -> hub_fn_validar_politica) ===
+
+const REGRA_TIPO_LABEL = {
+  pedido_minimo: 'Pedido minimo',
+  prazo_especial: 'Prazo especial (boleto)',
+  frete_gratis: 'Frete fixo'
+};
+
+function atualizarCamposRegraAcao() {
+  const tipo = document.getElementById('novaRegraTipo').value;
+  const wrap = document.getElementById('novaRegraAcaoCampos');
+  if (tipo === 'pedido_minimo') {
+    wrap.innerHTML = '<div class="form-row"><label>Valor minimo (R$)</label><input id="novaRegraAcaoValor" type="number" step="0.01" placeholder="Ex: 500"></div>';
+  } else if (tipo === 'prazo_especial') {
+    wrap.innerHTML = '<div class="form-row"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="novaRegraAcaoLiberarElegibilidade" style="width:auto"> Liberar boleto mesmo sem limite/com titulo vencido</label></div>' +
+      '<div class="form-row"><label>Maximo de parcelas (opcional, em branco = usa o padrao)</label><input id="novaRegraAcaoMax" type="number" step="1" placeholder="Ex: 5"></div>';
+  } else if (tipo === 'frete_gratis') {
+    wrap.innerHTML = '<div class="form-row"><label>Tipo de frete</label><select id="novaRegraAcaoFreteTipo"><option value="CIF">CIF (Boxer envia)</option><option value="FOB">FOB (cliente retira/indica transportadora)</option></select></div>' +
+      '<div class="form-row"><label>Valor do frete (R$)</label><input id="novaRegraAcaoFreteValor" type="number" step="0.01" value="0"></div>';
+  }
+}
+atualizarCamposRegraAcao();
+
+async function buscarClienteParaRegra(termo) {
+  const wrap = document.getElementById('novaRegraClienteResultado');
+  const t = (termo || '').trim();
+  if (t.length < 2) { wrap.innerHTML = ''; document.getElementById('novaRegraClienteId').value = ''; return; }
+  try {
+    const seguro = t.replace(/[(),*]/g, '');
+    const buscaCnpj = t.replace(/\D/g, '');
+    const filtro = buscaCnpj.length >= 3
+      ? 'or=(nome_exibicao.ilike.*' + seguro + '*,razao_social.ilike.*' + seguro + '*,cnpj.ilike.*' + buscaCnpj + '*)'
+      : 'or=(nome_exibicao.ilike.*' + seguro + '*,razao_social.ilike.*' + seguro + '*)';
+    const clientes = await sb('/hub_clientes?ativo=eq.true&' + filtro + '&select=id,nome_exibicao,cnpj&order=nome_exibicao.asc&limit=8');
+    if (!clientes.length) { wrap.innerHTML = '<span style="color:#718096">Nenhum cliente encontrado</span>'; return; }
+    wrap.innerHTML = clientes.map(c =>
+      '<div style="padding:4px 6px;cursor:pointer;border-radius:4px" onmouseover="this.style.background=\'#eff6ff\'" onmouseout="this.style.background=\'\'" onclick="selecionarClienteParaRegra(\'' + c.id + '\',\'' + esc(c.nome_exibicao).replace(/'/g, "\\'") + '\')">' +
+      esc(c.nome_exibicao) + ' <span style="color:#a0aec0">' + esc(c.cnpj || '') + '</span></div>'
+    ).join('');
+  } catch (e) {
+    wrap.innerHTML = '<span style="color:#991b1b">Erro ao buscar</span>';
+  }
+}
+
+function selecionarClienteParaRegra(id, nome) {
+  document.getElementById('novaRegraClienteId').value = id;
+  document.getElementById('novaRegraClienteBusca').value = nome;
+  document.getElementById('novaRegraClienteResultado').innerHTML = '<span style="color:#16a34a">Selecionado: ' + esc(nome) + ' <a href="javascript:void(0)" onclick="document.getElementById(\'novaRegraClienteId\').value=\'\';document.getElementById(\'novaRegraClienteBusca\').value=\'\';this.parentElement.innerHTML=\'\'" style="color:#e30613">(remover)</a></span>';
+}
+
+async function criarRegraComercial() {
+  const nome = document.getElementById('novaRegraNome').value.trim();
+  const tipo = document.getElementById('novaRegraTipo').value;
+  const clienteId = document.getElementById('novaRegraClienteId').value || null;
+  const uf = document.getElementById('novaRegraUf').value.trim().toUpperCase() || null;
+  const segmento = document.getElementById('novaRegraSegmento').value || null;
+  const vigenciaInicio = document.getElementById('novaRegraVigenciaInicio').value || null;
+  const vigenciaFim = document.getElementById('novaRegraVigenciaFim').value || null;
+  const prioridade = parseInt(document.getElementById('novaRegraPrioridade').value, 10) || 0;
+
+  if (!nome) { toast('Informe um nome para a regra', 'error'); return; }
+  if (!clienteId && !uf && !segmento) {
+    toast('Escolha ao menos cliente, UF ou segmento -- regra sem escopo valeria para TODOS os pedidos', 'error');
+    return;
+  }
+
+  let acao = {};
+  if (tipo === 'pedido_minimo') {
+    const valor = parseFloat(document.getElementById('novaRegraAcaoValor').value);
+    if (!(valor >= 0)) { toast('Informe o valor minimo', 'error'); return; }
+    acao = { valor };
+  } else if (tipo === 'prazo_especial') {
+    const liberar = document.getElementById('novaRegraAcaoLiberarElegibilidade').checked;
+    const maxTxt = document.getElementById('novaRegraAcaoMax').value;
+    const max = maxTxt ? parseInt(maxTxt, 10) : null;
+    if (!liberar && !max) { toast('Marque liberar boleto e/ou informe o maximo de parcelas', 'error'); return; }
+    if (liberar) acao.liberar_elegibilidade = true;
+    if (max) acao.max_parcelas = max;
+  } else if (tipo === 'frete_gratis') {
+    acao = {
+      tipo: document.getElementById('novaRegraAcaoFreteTipo').value,
+      valor: parseFloat(document.getElementById('novaRegraAcaoFreteValor').value) || 0
+    };
+  }
+
+  const condicao = {};
+  if (clienteId) condicao.cliente_id = clienteId;
+  if (uf) condicao.uf = uf;
+  if (segmento) condicao.segmento = segmento;
+
+  try {
+    await sb('/hub_regras_comerciais', 'POST', {
+      nome, tipo, condicao, acao, prioridade,
+      vigencia_inicio: vigenciaInicio, vigencia_fim: vigenciaFim
+    });
+    document.getElementById('novaRegraNome').value = '';
+    document.getElementById('novaRegraClienteId').value = '';
+    document.getElementById('novaRegraClienteBusca').value = '';
+    document.getElementById('novaRegraClienteResultado').innerHTML = '';
+    document.getElementById('novaRegraUf').value = '';
+    document.getElementById('novaRegraSegmento').value = '';
+    document.getElementById('novaRegraVigenciaInicio').value = '';
+    document.getElementById('novaRegraVigenciaFim').value = '';
+    document.getElementById('novaRegraPrioridade').value = '0';
+    toast('Excecao criada');
+    loadRegrasComerciais();
+  } catch (e) {
+    toast('Erro ao criar excecao: ' + e.message, 'error');
+  }
+}
+
+async function loadRegrasComerciais() {
+  const wrap = document.getElementById('regrasList');
+  if (!wrap) return;
+  const souAdmin = getUserRole() === 'admin';
+  try {
+    const regras = await sb('/hub_regras_comerciais?order=criado_em.desc&select=*');
+    if (!regras.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhuma excecao cadastrada</h3></div>'; return; }
+
+    const clienteIds = [...new Set(regras.map(r => r.condicao?.cliente_id).filter(Boolean))];
+    let nomesPorId = {};
+    if (clienteIds.length) {
+      const clientes = await sb('/hub_clientes?id=in.(' + clienteIds.join(',') + ')&select=id,nome_exibicao');
+      clientes.forEach(c => { nomesPorId[c.id] = c.nome_exibicao; });
+    }
+
+    const escopoTexto = r => {
+      const partes = [];
+      if (r.condicao?.cliente_id) partes.push(esc(nomesPorId[r.condicao.cliente_id] || 'cliente removido'));
+      if (r.condicao?.uf) partes.push('UF ' + esc(r.condicao.uf));
+      if (r.condicao?.segmento) partes.push(esc(r.condicao.segmento));
+      return partes.join(' + ') || '—';
+    };
+    const acaoTexto = r => {
+      if (r.tipo === 'pedido_minimo') return 'R$ ' + Number(r.acao?.valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+      if (r.tipo === 'prazo_especial') {
+        const partes = [];
+        if (r.acao?.liberar_elegibilidade) partes.push('libera boleto');
+        if (r.acao?.max_parcelas) partes.push('ate ' + r.acao.max_parcelas + 'x');
+        return partes.join(' + ') || '—';
+      }
+      if (r.tipo === 'frete_gratis') return (r.acao?.tipo || 'CIF') + ' — R$ ' + Number(r.acao?.valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+      return '—';
+    };
+
+    wrap.innerHTML = `<div style="overflow-x:auto"><table>
+      <thead><tr><th>Nome</th><th>Tipo</th><th>Escopo</th><th>Acao</th><th>Vigencia</th><th>Ativo</th><th></th></tr></thead>
+      <tbody>${regras.map(r => `<tr>
+        <td><strong>${esc(r.nome)}</strong>${r.descricao ? '<div style="font-size:11px;color:#718096">' + esc(r.descricao) + '</div>' : ''}</td>
+        <td>${esc(REGRA_TIPO_LABEL[r.tipo] || r.tipo)}</td>
+        <td>${escopoTexto(r)}</td>
+        <td>${acaoTexto(r)}</td>
+        <td style="font-size:12px;color:#718096">${r.vigencia_inicio || '...'} ate ${r.vigencia_fim || '...'}</td>
+        <td>${r.ativo ? 'Sim' : 'Nao'}</td>
+        <td>${souAdmin ? `<button class="btn btn-outline btn-sm" onclick="alternarRegraComercial('${r.id}', ${!r.ativo})">${r.ativo ? 'Desativar' : 'Ativar'}</button>` : ''}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  } catch (e) {
+    wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar excecoes</h3><p>' + e.message + '</p></div>';
+  }
+}
+
+async function alternarRegraComercial(id, novoAtivo) {
+  try {
+    await sb('/hub_regras_comerciais?id=eq.' + id, 'PATCH', { ativo: novoAtivo, atualizado_em: new Date().toISOString() });
+    loadRegrasComerciais();
+  } catch (e) {
+    toast('Erro ao atualizar excecao: ' + e.message, 'error');
   }
 }
 

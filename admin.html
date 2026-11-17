@@ -731,7 +731,7 @@ async function loadClientes() {
     }
     const LIMITE = 500;
     const clientes = await sb('/hub_clientes?ativo=eq.true' + filtro +
-      '&order=nome_exibicao.asc&select=id,nome_exibicao,razao_social,cnpj,email_principal,canal,grupo_nome,status_cadastro,bloqueado,tags&limit=' + LIMITE);
+      '&order=nome_exibicao.asc&select=id,nome_exibicao,razao_social,cnpj,email_principal,canal,grupo_nome,status_cadastro,bloqueado,tags,classe_comercial&limit=' + LIMITE);
 
     if (!clientes.length) {
       wrap.innerHTML = '<div class="empty-state"><h3>Nenhum cliente encontrado</h3></div>';
@@ -752,9 +752,10 @@ async function loadClientes() {
     const convitePorCliente = {};
     convites.forEach(c => { if (!convitePorCliente[c.cliente_id]) convitePorCliente[c.cliente_id] = c; }); // mais recente primeiro
 
+    const souAdminClientes = getUserRole() === 'admin';
     wrap.innerHTML = `${clientes.length === LIMITE ? `<div style="font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;margin-bottom:10px">Mostrando os primeiros ${LIMITE} — refine o filtro para ver o restante.</div>` : ''}
     <div style="overflow-x:auto"><table>
-      <thead><tr><th>Cliente</th><th>CNPJ</th><th>Canal</th><th>Grupo</th><th>Status</th><th>Tags</th><th>Acesso ao Hub</th><th></th></tr></thead>
+      <thead><tr><th>Cliente</th><th>CNPJ</th><th>Canal</th><th>Grupo</th><th>Status</th><th>Tags</th><th title="Override manual do calculo de preco -- 'Automatico' usa a regra normal (valor do pedido/segmento)">Classe</th><th>Acesso ao Hub</th><th></th></tr></thead>
       <tbody>${clientes.map(c => {
         const convite = convitePorCliente[c.id];
         const expirado = convite && new Date(convite.expira_em) < new Date();
@@ -775,6 +776,14 @@ async function loadClientes() {
         <td>${c.grupo_nome || '-'}</td>
         <td>${c.status_cadastro || ''}</td>
         <td style="font-size:11px;color:#718096">${(c.tags || []).join(', ')}</td>
+        <td style="white-space:nowrap">${souAdminClientes
+          ? `<select style="font-size:12px;padding:4px 6px" onchange="definirClasseComercial('${c.id}',this.value)">
+              <option value="" ${!c.classe_comercial ? 'selected' : ''}>Automatico</option>
+              <option value="1" ${c.classe_comercial === 1 ? 'selected' : ''}>1</option>
+              <option value="2" ${c.classe_comercial === 2 ? 'selected' : ''}>2</option>
+              <option value="3" ${c.classe_comercial === 3 ? 'selected' : ''}>3</option>
+            </select>`
+          : (c.classe_comercial || 'Automatico')}</td>
         <td style="white-space:nowrap">${acessoHtml}</td>
         <td style="white-space:nowrap">
           ${c.bloqueado ? `<button class="btn btn-primary btn-sm" onclick="liberarCliente('${c.id}')">Liberar acesso</button>` : ''}
@@ -796,6 +805,22 @@ async function liberarCliente(clienteId) {
     loadClientes();
   } catch (e) {
     toast('Erro: ' + e.message, 'error');
+  }
+}
+
+// Classe comercial (pedido do Andre, 2026-11-17): override manual do calculo
+// de preco -- hub_fn_classe() ja confere esse campo ANTES de qualquer conta
+// por valor de pedido, so nunca teve tela. "" (Automatico) grava null.
+async function definirClasseComercial(clienteId, valor) {
+  const classe = valor === '' ? null : parseInt(valor, 10);
+  try {
+    const r = await sb('/rpc/hub_fn_definir_classe_comercial', 'POST', { p_cliente_id: clienteId, p_classe: classe });
+    const resultado = Array.isArray(r) ? r[0] : r;
+    if (resultado?.ok === false) throw new Error(resultado.erro || 'Falha ao definir classe');
+    toast('Classe comercial atualizada: ' + (resultado?.nome || '') + ' -> ' + (resultado?.classe_comercial || 'Automatico'));
+  } catch (e) {
+    toast('Erro: ' + e.message, 'error');
+    loadClientes();
   }
 }
 

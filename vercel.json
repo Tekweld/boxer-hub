@@ -5,7 +5,7 @@
     "api/sync-pdm.js": { "maxDuration": 60 },
     "api/push-pedido.js": { "maxDuration": 60 },
     "api/sync-financeiro.js": { "maxDuration": 60 },
-    "api/sync-pedidos-zen.js": { "maxDuration": 45 }
+    "api/sync-pedidos-zen.js": { "maxDuration": 60 }
   },
   "crons": [
     { "path": "/api/sync-pdm?target=produtos", "schedule": "0 7 * * 1" }

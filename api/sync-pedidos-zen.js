@@ -732,19 +732,20 @@ module.exports = async function handler(req, res) {
     // enfileirados por evento (novo representante/cliente com login no Hub,
     // ver triggers em comercial.hub_backfill_fila) e so vendas do ANO
     // CORRENTE (reduz volume por cliente; quem precisar de historico mais
-    // antigo pede sob demanda, nao e varrido aqui). UM lote de 40 clientes
-    // por rodada do cron (este job ja tem maxDuration=45s e os passos 1-3
-    // rodam depois, no mesmo invocation -- nao vale a pena arriscar o
-    // timeout que ja travou o backfill de NF por causa disto). 2130
-    // clientes na fila inicial = ~54 rodadas (~13h de catch-up em segundo
-    // plano, sem pressa); dali pra frente so processa quem entra novo.
+    // antigo pede sob demanda, nao e varrido aqui). UM lote de 20 clientes
+    // por rodada do cron (maxDuration subido para 60s, igual aos outros
+    // syncs, mas os passos 1-3 rodam depois no mesmo invocation -- medido ao
+    // vivo em 2026-11-16: 40 clientes + passos 1-3 = 504/timeout aos 48s com
+    // 45s de limite. 20 fica com folga mesmo nos 60s novos). 2130 clientes
+    // na fila inicial = ~107 rodadas (~27h de catch-up em segundo plano, sem
+    // pressa); dali pra frente so processa quem entra novo.
     r.backfill_lotes = 0;
     r.backfill_clientes_processados = 0;
     r.backfill_pedidos_criados = 0;
     r.backfill_erros = [];
     try {
       const filaRes = await fetch(HUB_URL +
-        '/rest/v1/hub_backfill_fila?status=eq.pendente&select=id,cliente_id&order=criado_em.asc&limit=40',
+        '/rest/v1/hub_backfill_fila?status=eq.pendente&select=id,cliente_id&order=criado_em.asc&limit=20',
         { headers: hubH('GET') });
       const fila = filaRes.ok ? await filaRes.json() : [];
 
@@ -778,6 +779,7 @@ module.exports = async function handler(req, res) {
             const novas = vendas.filter(v => !existentesSet.has(String(v.id)));
 
             const itensPorSale = {};
+            const produtoIdPorSku = {};
             if (novas.length) {
               const idsNovas = novas.map(v => String(v.id));
               const itens = await zenGet('/sale/saleItem', { q: 'sale.id=in=(' + idsNovas.join(',') + ')', max: 1000, limite: 2000 });
@@ -785,6 +787,19 @@ module.exports = async function handler(req, res) {
                 const sid = String(it.sale?.id || ''); if (!sid) return;
                 (itensPorSale[sid] = itensPorSale[sid] || []).push(it);
               });
+
+              // hub_pedido_itens.produto_id e NOT NULL -- sem resolver por
+              // sku aqui, o INSERT inteiro falhava (bug visto ao vivo no
+              // primeiro teste real, 2026-11-16: pedido criado certo, 0
+              // itens, erro engolido porque o fetch nao checava .ok).
+              const skus = [...new Set(itens.map(it => it.productPacking?.product?.code).filter(Boolean))];
+              for (let i = 0; i < skus.length; i += 100) {
+                const loteSku = skus.slice(i, i + 100).map(s => '"' + String(s).replace(/"/g, '') + '"');
+                const prodRes = await fetch(HUB_URL +
+                  '/rest/v1/hub_produtos?sku=in.(' + loteSku.join(',') + ')&select=id,sku', { headers: hubH('GET') });
+                const prods = prodRes.ok ? await prodRes.json() : [];
+                prods.forEach(p => { produtoIdPorSku[p.sku] = p.id; });
+              }
             }
 
             for (const venda of novas) {
@@ -823,16 +838,36 @@ module.exports = async function handler(req, res) {
                 if (!pedido) { r.backfill_erros.push({ sale: venda.id, erro: 'hub_pedidos ' + pedRes.status }); continue; }
 
                 if (itensVenda.length) {
-                  const itensBody = itensVenda.map(it => ({
-                    pedido_id: pedido.id,
-                    sku: it.productPacking?.product?.code || '',
-                    nome_produto: it.productPacking?.product?.description || '',
-                    quantidade: Number(it.quantity) || 0,
-                    preco_unitario: Number(it.unitValue) || 0,
-                    preco_final: Number(it.unitValue) || 0,
-                    subtotal_item: Number(it.totalValue) || 0
-                  }));
-                  await fetch(HUB_URL + '/rest/v1/hub_pedido_itens', { method: 'POST', headers: hubH('POST'), body: JSON.stringify(itensBody) });
+                  // So entra item cujo sku existe em hub_produtos -- produto_id
+                  // e NOT NULL, sem isso nao tem como gravar a linha. Item sem
+                  // match (sku descontinuado/nao cadastrado) fica de fora, mas
+                  // conta no log pra nao desaparecer sem rastro.
+                  const itensBody = itensVenda
+                    .map(it => {
+                      const sku = it.productPacking?.product?.code || '';
+                      const produtoId = produtoIdPorSku[sku];
+                      if (!produtoId) return null;
+                      return {
+                        pedido_id: pedido.id, produto_id: produtoId, sku,
+                        nome_produto: it.productPacking?.product?.description || '',
+                        quantidade: Number(it.quantity) || 0,
+                        preco_unitario: Number(it.unitValue) || 0,
+                        preco_final: Number(it.unitValue) || 0,
+                        subtotal_item: Number(it.totalValue) || 0
+                      };
+                    })
+                    .filter(Boolean);
+                  const semMatch = itensVenda.length - itensBody.length;
+                  if (semMatch > 0) {
+                    r.backfill_erros.push({ sale: venda.id, erro: semMatch + ' item(ns) sem produto_id (sku nao cadastrado no Hub)' });
+                  }
+                  if (itensBody.length) {
+                    const itensRes = await fetch(HUB_URL + '/rest/v1/hub_pedido_itens',
+                      { method: 'POST', headers: hubH('POST'), body: JSON.stringify(itensBody) });
+                    if (!itensRes.ok) {
+                      r.backfill_erros.push({ sale: venda.id, erro: 'hub_pedido_itens ' + itensRes.status + ': ' + (await itensRes.text()).slice(0, 200) });
+                    }
+                  }
                 }
                 r.backfill_pedidos_criados++;
               } catch (e) {
@@ -949,19 +984,27 @@ module.exports = async function handler(req, res) {
             continue;
           }
 
+          // produto_id e NOT NULL em hub_pedido_itens -- sem pular quem nao
+          // acha o sku, o INSERT inteiro falha (silenciosamente, se ninguem
+          // checar .ok -- bug confirmado ao vivo em 2026-11-16 no backfill).
           const itensBody = [];
+          let semMatchOrc = 0;
           for (const i of (o.itens || [])) {
             const prodRes = await fetch(HUB_URL + '/rest/v1/hub_produtos?sku=eq.' + encodeURIComponent(i.codigo) + '&select=id&limit=1',
               { headers: hubH('GET') });
             const prodJson = prodRes.ok ? await prodRes.json() : [];
+            const produtoId = prodJson[0]?.id;
+            if (!produtoId) { semMatchOrc++; continue; }
             itensBody.push({
-              pedido_id: pedido.id, produto_id: prodJson[0]?.id || null, sku: i.codigo, nome_produto: i.modelo,
+              pedido_id: pedido.id, produto_id: produtoId, sku: i.codigo, nome_produto: i.modelo,
               quantidade: i.qtd, preco_unitario: i.unit_tabela ?? i.unit, preco_final: i.unit,
               subtotal_item: i.subtotal ?? (i.unit * i.qtd)
             });
           }
+          if (semMatchOrc) r.falhas_orcamento.push({ codigo: o.codigo, erro: semMatchOrc + ' item(ns) sem produto_id (sku nao cadastrado)' });
           if (itensBody.length) {
-            await fetch(HUB_URL + '/rest/v1/hub_pedido_itens', { method: 'POST', headers: hubH('POST'), body: JSON.stringify(itensBody) });
+            const itensRes = await fetch(HUB_URL + '/rest/v1/hub_pedido_itens', { method: 'POST', headers: hubH('POST'), body: JSON.stringify(itensBody) });
+            if (!itensRes.ok) r.falhas_orcamento.push({ codigo: o.codigo, erro: 'hub_pedido_itens ' + itensRes.status });
           }
           await registrarEvento(pedido.id, 'Orcamento espelhado (reconciliacao automatica)', 'zen', null, hubH);
           r.orcamentos_reconciliados++;

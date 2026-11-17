@@ -1873,15 +1873,20 @@ async function espelharOrcamentoComoPedido(o, zenSaleId) {
     });
     if (!pedido) return;
 
-    const itens = (o.itens || []).map(async (i) => {
+    // produto_id e NOT NULL em hub_pedido_itens -- pular item sem match em
+    // vez de mandar null, que derrubava o INSERT inteiro (bug confirmado em
+    // 2026-11-16, mesmo padrao no backfill de sync-pedidos-zen.js).
+    const itensResolvidos = await Promise.all((o.itens || []).map(async (i) => {
       const [prod] = await sb('/hub_produtos?sku=eq.' + encodeURIComponent(i.codigo) + '&select=id&limit=1');
+      if (!prod?.id) return null;
       return {
-        pedido_id: pedido.id, produto_id: prod?.id || null, sku: i.codigo, nome_produto: i.modelo,
+        pedido_id: pedido.id, produto_id: prod.id, sku: i.codigo, nome_produto: i.modelo,
         quantidade: i.qtd, preco_unitario: i.unit_tabela ?? i.unit, preco_final: i.unit,
         subtotal_item: i.subtotal ?? (i.unit * i.qtd)
       };
-    });
-    await sb('/hub_pedido_itens', 'POST', await Promise.all(itens));
+    }));
+    const itens = itensResolvidos.filter(Boolean);
+    if (itens.length) await sb('/hub_pedido_itens', 'POST', itens);
   } catch (e) {
     console.error('[orcamento->pedido] falha ao espelhar:', e);
     toast('Pedido criado no Zen, mas houve erro ao refletir aqui no Hub — confira no Zen/Monitor', 'error');

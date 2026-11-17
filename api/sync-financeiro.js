@@ -427,6 +427,7 @@ async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
     // Aqui uso a estrategia de "id ascendente": pega tudo com id > cursor,
     // ordenado por id, e o cursor da proxima rodada e o maior id do lote.
     let lote;
+    let paginaUsada = PASSO_ZEN;
     try {
       lote = await zenGet('/financial/receivable', {
         q: 'id>' + cursor + ';flow==IN;status==APPROVED',
@@ -443,12 +444,13 @@ async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
       // Zen computar -- tenta de novo so essa rodada com metade do passo
       // antes de desistir (preserva ORCAMENTO_MS: so acontece quando a
       // primeira tentativa ja falhou, nao dobra o custo do caminho feliz).
+      paginaUsada = Math.max(25, Math.floor(PASSO_ZEN / 4));
       try {
         lote = await zenGet('/financial/receivable', {
           q: 'id>' + cursor + ';flow==IN;status==APPROVED',
           order: 'id',
-          max: Math.max(25, Math.floor(PASSO_ZEN / 4)),
-          limite: Math.max(25, Math.floor(PASSO_ZEN / 4))
+          max: paginaUsada,
+          limite: paginaUsada
         });
       } catch (e2) {
         r.erros.push({ etapa: 'ler', cursor, detalhe: e2.message.slice(0, 200) });
@@ -478,7 +480,14 @@ async function sincronizarTitulos({ idHub, hubH, dryRun, desde, t0 }) {
       pendentes.push({ row: mapearTitulo(tit, clienteId, hoje), invoiceId: tit.invoice?.id ? String(tit.invoice.id) : null });
     }
 
-    if (lote.length < PASSO_ZEN) { r.concluido = true; break; }
+    // BUG REAL achado em 2026-11-17 testando backfill historico: comparava
+    // contra PASSO_ZEN(200) mesmo quando o fallback acima usou uma pagina
+    // MENOR (50) por causa de timeout numa faixa de id lenta -- toda vez que
+    // o fallback entrava, 50<200 era sempre verdade e declarava concluido
+    // (proximo_desde:null) mesmo com milhares de titulos reais mais a frente
+    // (ids ate 77636 confirmados no banco). Comparar contra o tamanho da
+    // pagina REALMENTE pedida, nao a constante original.
+    if (lote.length < paginaUsada) { r.concluido = true; break; }
   }
 
   r.proximo_desde = r.concluido ? null : cursor;
@@ -609,6 +618,7 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
 
   while (Date.now() - t0 < ORCAMENTO_MS && r.lidos < MAX_LIDOS_POR_CHAMADA) {
     let lote;
+    let paginaUsada = PASSO_ZEN;
     try {
       lote = await zenGet('/fiscal/outgoingInvoice', {
         q: 'id>' + cursor + ';flow==OUT',
@@ -620,12 +630,13 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
       // Mesma mitigacao de sincronizarTitulos: pagina menor custa menos pro
       // Zen computar numa faixa de id lenta -- tenta de novo so essa rodada
       // antes de desistir.
+      paginaUsada = Math.max(25, Math.floor(PASSO_ZEN / 4));
       try {
         lote = await zenGet('/fiscal/outgoingInvoice', {
           q: 'id>' + cursor + ';flow==OUT',
           order: 'id',
-          max: Math.max(25, Math.floor(PASSO_ZEN / 4)),
-          limite: Math.max(25, Math.floor(PASSO_ZEN / 4))
+          max: paginaUsada,
+          limite: paginaUsada
         });
       } catch (e2) {
         r.erros.push({ etapa: 'ler', cursor, detalhe: e2.message.slice(0, 200) });
@@ -658,7 +669,14 @@ async function sincronizarNotas({ idHub, hubH, dryRun, desde, t0 }) {
       });
     }
 
-    if (lote.length < PASSO_ZEN) { r.concluido = true; break; }
+    // BUG REAL achado em 2026-11-17 (ver mesmo comentario em sincronizarTitulos):
+    // comparar contra PASSO_ZEN(200) mesmo quando o fallback usou pagina
+    // menor (50) fazia o backfill historico declarar "concluido" cedo demais
+    // -- testado ao vivo 4x (desde=1,20000,22656,30000), sempre "lidos":50
+    // batendo exatamente com o tamanho do fallback, nunca o fim real dos
+    // dados (ha 7625 notas reais ate erp_nf_id 77636). Comparar contra o
+    // tamanho da pagina de fato pedida.
+    if (lote.length < paginaUsada) { r.concluido = true; break; }
   }
 
   r.proximo_desde = r.concluido ? null : cursor;

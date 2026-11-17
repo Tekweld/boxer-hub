@@ -65,9 +65,17 @@ jobs:
               --max-time 90)
 
             if [ "$codigo" != "200" ]; then
-              echo "::error::rodada $rodada respondeu HTTP $codigo"
+              # Nao fatal de proposito: a faixa historica tem regioes de id
+              # lentas no Zen que estouram os 60s da function de vez em
+              # quando (ja visto ao vivo, FUNCTION_INVOCATION_TIMEOUT) --
+              # isso e esperado, nao um erro real. O cursor da ULTIMA rodada
+              # que respondeu 200 ja esta salvo em hub_sync_estado, entao
+              # nada se perde -- so encerra esta janela mais cedo e deixa a
+              # proxima (~75min) continuar dali. Marcar como falha aqui so
+              # geraria alarme falso toda vez que isso acontecesse.
+              echo "::warning::rodada $rodada respondeu HTTP $codigo -- encerrando esta janela mais cedo, cursor ja salvo continua na proxima"
               cat "$corpo"; echo
-              exit 1
+              exit 0
             fi
 
             concluido=$(jq -r '.estado.concluido // false' "$corpo")

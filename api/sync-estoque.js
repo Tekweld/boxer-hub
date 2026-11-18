@@ -107,7 +107,18 @@ async function fetchEstoqueZenerp(zenToken, codigos) {
     console.warn(`[Estoque] ${naoEncontrados.length} codigo(s) NAO encontrados na resposta do ZenERP.`);
   }
 
-  return { porSku, matched, total: codigos.length, naoEncontrados };
+  // Universo INTEIRO do cubo (nao so os `codigos` pedidos) -- usado pra achar
+  // SKU com estoque real no Zen que nao esta no nosso catalogo/tabela de
+  // precos nenhuma (pedido do Andre, 2026-11-18: "produto com estoque no Zen
+  // mas fora da tabela de precos" e ponto cego hoje). Gratuito: os dois cubos
+  // ja vieram inteiros pra calcular o que foi pedido, so reaproveitar.
+  const todosComEstoque = new Map();
+  new Set([...somaFisico.keys(), ...somaSaida.keys()]).forEach(sku => {
+    const saldo = Math.max((somaFisico.get(sku) || 0) + (somaSaida.get(sku) || 0), 0);
+    if (saldo > 0) todosComEstoque.set(sku, saldo);
+  });
+
+  return { porSku, matched, total: codigos.length, naoEncontrados, todosComEstoque };
 }
 
 module.exports = async function handler(req, res) {
@@ -227,6 +238,42 @@ module.exports = async function handler(req, res) {
       atualizados += batch.length;
     }
 
+    // Ponto cego (pedido do Andre, 2026-11-18): SKU com estoque real no Zen
+    // mas sem preco na tabela Principal. O cubo inteiro ja veio pra calcular
+    // o estoque dos SKUs conhecidos -- so comparar com quem tem preco,
+    // gratuito (sem chamada a mais no Zen nem no Supabase alem das 2 abaixo).
+    let semPrecoCount = 0;
+    try {
+      const pubH = { apikey: SB_SERVICE, Authorization: 'Bearer ' + SB_SERVICE };
+      const precosAtivos = await fetchAll(
+        HUB_URL + '/rest/v1/produtos?tabela_id=eq.1&ativo=eq.true&pv_sp=gt.0&select=codigo',
+        pubH, 'produtos (tabela de precos)'
+      );
+      const skusComPreco = new Set(precosAtivos.map(p => normSku(p.codigo)));
+      const semPreco = [...estoque.todosComEstoque.entries()].filter(([sku]) => !skusComPreco.has(sku));
+      semPrecoCount = semPreco.length;
+
+      if (semPreco.length) {
+        const bodiesSemPreco = semPreco.map(([sku, qtd]) => ({ sku, estoque_disponivel: qtd, atualizado_em: new Date().toISOString() }));
+        for (let i = 0; i < bodiesSemPreco.length; i += 200) {
+          const batch = bodiesSemPreco.slice(i, i + 200);
+          await fetch(HUB_URL + '/rest/v1/hub_estoque_sem_preco?on_conflict=sku', {
+            method: 'POST',
+            headers: { ...hubH('POST'), Prefer: 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify(batch)
+          });
+        }
+        const manterSkus = semPreco.map(([sku]) => `"${sku.replace(/"/g, '')}"`).join(',');
+        await fetch(HUB_URL + '/rest/v1/hub_estoque_sem_preco?sku=not.in.(' + manterSkus + ')', {
+          method: 'DELETE', headers: hubH('DELETE')
+        });
+      } else {
+        await fetch(HUB_URL + '/rest/v1/hub_estoque_sem_preco', { method: 'DELETE', headers: hubH('DELETE') });
+      }
+    } catch (e) {
+      console.error('[SYNC ESTOQUE] Falha ao calcular estoque sem preco (nao interrompe o sync):', e.message);
+    }
+
     const duracaoMs = Date.now() - t0;
     console.log(`[SYNC ESTOQUE] Concluido em ${duracaoMs}ms — ${atualizados} alterado(s), ${inalterados} sem mudanca.`);
 
@@ -242,6 +289,7 @@ module.exports = async function handler(req, res) {
         ? estoque.naoEncontrados
         : estoque.naoEncontrados.slice(0, 10),
       produtos_atualizados: atualizados,
+      estoque_sem_preco_na_tabela: semPrecoCount,
       produtos_sem_mudanca: inalterados,
       duracao_ms: duracaoMs,
       timestamp: new Date().toISOString()

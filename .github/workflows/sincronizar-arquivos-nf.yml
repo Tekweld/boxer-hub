@@ -1,0 +1,86 @@
+# Guarda XML + PDF (DANFE) de cada nota fiscal no Storage do Hub (bucket
+# privado `hub-notas-fiscais`), pra nao depender de buscar ao vivo no Zen
+# toda vez que alguem clicar em "Baixar". Pedido do Andre, 2026-11-18:
+# "a partir de agora toda NF/XML venha automaticamente pro Hub".
+#
+# MESMO endpoint cobre o historico (milhares de notas sem arquivo ainda) e o
+# dia a dia (nota nova que acabou de ser sincronizada por sync-financeiro.js
+# e ainda nao tem arquivo) -- a query de `api/sync-financeiro.js?sincronizar_arquivos_nf=1`
+# so olha "quem ainda nao tem xml_path", nao importa se e nota de 2025 ou de
+# hoje. Por isso um workflow so, sem distincao de "backfill" vs "sync".
+#
+# Fora do horario comercial, de proposito: 2 downloads + 2 uploads por nota
+# (alem da resolucao) e mais pesado no Zen que os outros syncs -- nao misturar
+# com a carga do expediente. ~75min de espacamento, mesmo motivo do backfill
+# de NF historico (job pode levar ate 60min, 75 deixa folga).
+name: Sincronizar arquivos de NF (XML/PDF)
+
+on:
+  schedule:
+    - cron: '7 22 * * *'
+    - cron: '22 23 * * *'
+    - cron: '37 0 * * *'
+    - cron: '52 1 * * *'
+    - cron: '7 3 * * *'
+    - cron: '22 4 * * *'
+    - cron: '37 5 * * *'
+    - cron: '52 6 * * *'
+    - cron: '7 8 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: sincronizar-arquivos-nf
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Encadear /api/sync-financeiro?sincronizar_arquivos_nf=1 ate concluir ou a janela acabar
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          offset=0
+          rodada=0
+          while [ "$rodada" -lt 400 ]; do
+            rodada=$((rodada + 1))
+            corpo=$(mktemp)
+            codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+              -X POST "https://hub.boxersoldas.com.br/api/sync-financeiro?sincronizar_arquivos_nf=1&offset=$offset" \
+              -H "x-cron-secret: $CRON_SECRET" \
+              --max-time 90)
+
+            if [ "$codigo" != "200" ]; then
+              # Mesma razao do backfill de NF historico: faixa de id lenta
+              # pode estourar o teto de 60s do Vercel de vez em quando --
+              # nao e fatal, so encerra esta janela mais cedo (o offset so
+              # avanca quando o patch de verdade acontece, entao nada se
+              # perde: a proxima janela reconsulta do mesmo ponto).
+              echo "::warning::rodada $rodada respondeu HTTP $codigo -- encerrando esta janela mais cedo"
+              cat "$corpo"; echo
+              exit 0
+            fi
+
+            concluido=$(jq -r '.concluido // false' "$corpo")
+            proximo=$(jq -r '.proximo_offset // empty' "$corpo")
+            gravados=$(jq -r '.gravados // 0' "$corpo")
+            echo "--- rodada $rodada (offset $offset) -> gravados=$gravados concluido=$concluido"
+
+            if [ "$concluido" = "true" ]; then
+              echo "Sem mais notas sem arquivo nesta passada. Novas notas do dia a dia caem aqui sozinhas na proxima janela."
+              exit 0
+            fi
+            if [ -z "$proximo" ]; then
+              echo "::warning::resposta sem proximo_offset -- encerrando por seguranca"
+              exit 0
+            fi
+            offset="$proximo"
+          done
+
+          echo "Teto de $rodada rodadas nesta janela -- continua na proxima (~75min)."

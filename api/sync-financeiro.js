@@ -109,7 +109,7 @@ module.exports = async function handler(req, res) {
       if (!perfil) return res.status(403).json({ error: 'Perfil nao encontrado' });
 
       const nfRes = await fetch(
-        HUB_URL + '/rest/v1/hub_notas_fiscais?id=eq.' + notaId + '&ativo=eq.true&select=id,cliente_id,erp_nf_id',
+        HUB_URL + '/rest/v1/hub_notas_fiscais?id=eq.' + notaId + '&ativo=eq.true&select=id,cliente_id,erp_nf_id,xml_path,pdf_path',
         { headers: hubH('GET') });
       const nf = (await nfRes.json())?.[0];
       if (!nf) return res.status(404).json({ error: 'Nota nao encontrada' });
@@ -126,6 +126,23 @@ module.exports = async function handler(req, res) {
         autorizado = ((await cartRes.json()) || []).length > 0;
       }
       if (!autorizado) return res.status(403).json({ error: 'Sem acesso a esta nota' });
+
+      // Se ja foi guardado no Storage do Hub (sincronizar_arquivos_nf),
+      // serve dali -- mais rapido e nao depende do Zen estar no ar. So cai
+      // pro Zen ao vivo (abaixo) quando ainda nao tem copia guardada.
+      const pathGuardado = tipo === 'pdf' ? nf.pdf_path : nf.xml_path;
+      if (pathGuardado) {
+        const objRes = await fetch(HUB_URL + '/storage/v1/object/' + pathGuardado, {
+          headers: { Authorization: 'Bearer ' + SB_SERVICE, apikey: SB_SERVICE }
+        });
+        if (objRes.ok) {
+          const buf = Buffer.from(await objRes.arrayBuffer());
+          res.setHeader('Content-Type', tipo === 'pdf' ? 'application/pdf' : 'application/xml');
+          res.setHeader('Content-Disposition', 'inline; filename="NF-' + nf.erp_nf_id + '.' + tipo + '"');
+          return res.status(200).send(buf);
+        }
+        // guardado mas nao leu (objeto removido?) -- cai pro Zen ao vivo abaixo
+      }
 
       const dfe = await zenBuscarDfeNfeProcOut(nf.erp_nf_id);
       if (!dfe) return res.status(404).json({ error: 'Documento fiscal nao encontrado no Zen' });
@@ -280,6 +297,81 @@ module.exports = async function handler(req, res) {
         resultado.atualizadas = patches.filter(Boolean).length;
         resultado.sem_invoice = lote.length - Object.keys(invoicePorTitulo).length;
       }
+      resultado.proximo_offset = lote.length < PASSO ? null : offset + PASSO;
+      resultado.concluido = resultado.proximo_offset === null;
+      return res.status(200).json({ ok: true, ...resultado });
+    } catch (e) {
+      return res.status(500).json({ ok: false, erro: e.message, ...resultado });
+    }
+  }
+
+  // Guarda XML + PDF (DANFE) de cada NF no Storage do Hub, pra nao depender
+  // de buscar ao vivo no Zen toda vez que alguem clicar em "Baixar" (e pra
+  // ficar disponivel mesmo se o Zen cair). Mesmo mecanismo que ja existia
+  // sob demanda (?baixar_nf=/?baixar_xml= acima): DfeNfeProcOut resolve
+  // file/fileDanfe, zenBaixarArquivo baixa o binario. Mesmo padrao de
+  // paginacao encadeada dos outros backfills -- e o MESMO endpoint que
+  // cobre o historico (xml_path/pdf_path nulos de notas antigas) e o dia a
+  // dia (nota nova nunca teve arquivo ainda) -- nao precisa de dois
+  // mecanismos diferentes, so chamar de novo periodicamente resolve os dois.
+  if (req.query?.sincronizar_arquivos_nf) {
+    const BUCKET_NF = 'hub-notas-fiscais'; // privado -- documento fiscal e financeiro
+    const PASSO = 15; // cada nota custa 1 chamada de resolucao + 2 downloads + 2 uploads
+    const offset = Number(req.query.offset) || 0;
+    const resultado = { processadas: 0, gravados: 0, sem_documento: 0, erros: [] };
+    try {
+      await fetch(HUB_URL + '/storage/v1/bucket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SB_SERVICE, apikey: SB_SERVICE },
+        body: JSON.stringify({ id: BUCKET_NF, name: BUCKET_NF, public: false })
+      }).catch(() => {});
+
+      const rNf = await fetch(HUB_URL +
+        '/rest/v1/hub_notas_fiscais?xml_path=is.null&erp_nf_id=not.is.null&status=eq.ativa&ativo=eq.true' +
+        '&select=id,cliente_id,erp_nf_id&order=erp_nf_id.asc&offset=' + offset + '&limit=' + PASSO,
+        { headers: hubH('GET') });
+      const lote = rNf.ok ? await rNf.json() : [];
+      resultado.processadas = lote.length;
+
+      for (const nf of lote) {
+        try {
+          const dfe = await zenBuscarDfeNfeProcOut(nf.erp_nf_id);
+          if (!dfe || (!dfe.file?.id && !dfe.fileDanfe?.id)) {
+            resultado.sem_documento++;
+            continue;
+          }
+          const patch = {};
+          if (dfe.file?.id) {
+            const bufXml = await zenBaixarArquivo(dfe.file.id);
+            const pathXml = nf.cliente_id + '/' + nf.erp_nf_id + '.xml';
+            const up = await fetch(HUB_URL + '/storage/v1/object/' + BUCKET_NF + '/' + pathXml, {
+              method: 'POST',
+              headers: { Authorization: 'Bearer ' + SB_SERVICE, apikey: SB_SERVICE, 'Content-Type': 'application/xml', 'x-upsert': 'true' },
+              body: bufXml
+            });
+            if (up.ok) patch.xml_path = BUCKET_NF + '/' + pathXml;
+          }
+          if (dfe.fileDanfe?.id) {
+            const bufPdf = await zenBaixarArquivo(dfe.fileDanfe.id);
+            const pathPdf = nf.cliente_id + '/' + nf.erp_nf_id + '.pdf';
+            const up = await fetch(HUB_URL + '/storage/v1/object/' + BUCKET_NF + '/' + pathPdf, {
+              method: 'POST',
+              headers: { Authorization: 'Bearer ' + SB_SERVICE, apikey: SB_SERVICE, 'Content-Type': 'application/pdf', 'x-upsert': 'true' },
+              body: bufPdf
+            });
+            if (up.ok) patch.pdf_path = BUCKET_NF + '/' + pathPdf;
+          }
+          if (Object.keys(patch).length) {
+            const pr = await fetch(HUB_URL + '/rest/v1/hub_notas_fiscais?id=eq.' + nf.id, {
+              method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify(patch)
+            });
+            if (pr.ok) resultado.gravados++;
+          }
+        } catch (e) {
+          resultado.erros.push({ nf: nf.erp_nf_id, detalhe: e.message.slice(0, 150) });
+        }
+      }
+
       resultado.proximo_offset = lote.length < PASSO ? null : offset + PASSO;
       resultado.concluido = resultado.proximo_offset === null;
       return res.status(200).json({ ok: true, ...resultado });

@@ -199,8 +199,11 @@ async function buscarClienteBase(ctx, cnpjIn) {
             };
             break;
           }
+          console.error('[orcamento][cnpj-publico] BrasilAPI respondeu ' + r.status + ' pra ' + cnpj);
           if (r.status === 404) break; // CNPJ realmente nao existe -- nao adianta tentar de novo
-        } catch (_) { /* timeout/rede -- tenta a proxima, ou desiste na ultima */ }
+        } catch (e) {
+          console.error('[orcamento][cnpj-publico] falha na chamada pra ' + cnpj + ': ' + e.message);
+        }
       }
     }
     return { encontrado: false, cnpj, publico };

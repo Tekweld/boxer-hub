@@ -27,6 +27,7 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
 
 /* === PAGE LAYOUT === */
 .page-wrap{max-width:1400px;margin:0 auto;padding:0 16px 16px}
+.catalogo-carrinho-col{display:none}
 
 /* === SEARCH === */
 .search-section{margin-bottom:10px}
@@ -91,6 +92,19 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
 .catalog-footer-bar .cf-btn{background:#25bbee;color:#0f2050;font-weight:700;padding:10px 22px;border-radius:8px;border:none;cursor:pointer;font-family:Outfit;font-size:13px;white-space:nowrap}
 .catalog-footer-bar .cf-btn:hover{background:#4ecbf2}
 body.has-footer-bar{padding-bottom:72px}
+.cl-header{padding:14px 16px;border-bottom:1px solid #e2e8f0;font-size:14px;font-weight:700;color:#1d327b;flex-shrink:0}
+.cl-lista{overflow-y:auto;flex:1;padding:4px 12px}
+.cl-item{padding:10px 0;border-bottom:1px solid #f0f4f8;display:flex;flex-direction:column;gap:4px}
+.cl-item:last-child{border-bottom:none}
+.cl-item-nome{font-size:12px;font-weight:600;color:#1a202c;line-height:1.3}
+.cl-item-sku{font-size:10px;color:#a0aec0}
+.cl-item-linha{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px}
+.cl-item-qty{width:48px;padding:4px;border:1px solid #d0d8e8;border-radius:5px;text-align:center;font-family:Outfit;font-size:12px}
+.cl-item-sub{font-size:12px;font-weight:700;color:#1d327b}
+.cl-item-remove{background:none;border:none;color:#dc2626;cursor:pointer;font-size:13px;padding:2px 4px;flex-shrink:0}
+.cl-footer{padding:12px 16px;border-top:1px solid #e2e8f0;flex-shrink:0;background:#f7fafc}
+.cl-footer-total{display:flex;justify-content:space-between;font-size:14px;font-weight:700;color:#1d327b;margin-bottom:10px}
+.cl-vazio{padding:30px 16px;text-align:center;font-size:12px;color:#a0aec0}
 .empty-state{text-align:center;padding:60px 20px;color:#718096;grid-column:1/-1}
 .empty-state h3{font-size:16px;margin-bottom:8px;color:#4a5568}
 
@@ -177,6 +191,20 @@ body.has-footer-bar{padding-bottom:72px}
 }
 @media(min-width:1024px){
   .produto-grid{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+  /* Coluna de carrinho fixa ao lado do catalogo -- pedido do time, 2026-11-19:
+     vendedor precisa ver o que ja esta no pedido (editar qtd, tirar item)
+     sem sair do catalogo no meio de uma negociacao. So desktop por agora --
+     em tela estreita nao cabe lado a lado, o rodape de carrinho de sempre
+     continua servindo o mobile. */
+  .page-wrap{display:flex;align-items:flex-start;gap:20px}
+  .catalogo-produtos-col{flex:1;min-width:0}
+  .catalogo-carrinho-col{display:none;flex-direction:column;width:300px;flex-shrink:0;position:sticky;top:var(--header-h,160px);max-height:calc(100vh - var(--header-h,160px) - 20px);background:#fff;border:1px solid #d0d8e8;border-radius:10px;overflow:hidden}
+  .catalogo-carrinho-col.tem-itens{display:flex}
+  /* Com a coluna lateral sempre visivel em telas grandes, a faixa fixa no
+     rodape (pensada pra mobile/tablet) vira peso duplicado -- a mesma
+     informacao já está ali do lado. */
+  body.has-carrinho-lateral .catalog-footer-bar{display:none}
+  body.has-carrinho-lateral{padding-bottom:0!important}
 }
 </style>
 </head>
@@ -194,16 +222,19 @@ body.has-footer-bar{padding-bottom:72px}
     </div>
   </div>
   <div class="page-wrap">
-    <div class="results-bar">
-      <span class="results-count" id="resultsCount"></span>
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#4a5568">
-        <input type="checkbox" id="filtroSoEstoque" onchange="loadProdutos()" style="width:14px;height:14px;cursor:pointer">
-        So em estoque (pode faturar ja)
-      </label>
+    <div class="catalogo-produtos-col">
+      <div class="results-bar">
+        <span class="results-count" id="resultsCount"></span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#4a5568">
+          <input type="checkbox" id="filtroSoEstoque" onchange="loadProdutos()" style="width:14px;height:14px;cursor:pointer">
+          So em estoque (pode faturar ja)
+        </label>
+      </div>
+      <div class="produto-grid" id="produtoGrid">
+        <div class="empty-state"><h3>Carregando catalogo...</h3></div>
+      </div>
     </div>
-    <div class="produto-grid" id="produtoGrid">
-      <div class="empty-state"><h3>Carregando catalogo...</h3></div>
-    </div>
+    <div class="catalogo-carrinho-col" id="carrinhoLateral"></div>
   </div>
 </div>
 
@@ -237,6 +268,8 @@ let selectedCat = '';
   await Promise.all([loadCategorias(), loadPrecos()]);
   await loadProdutos();
   renderFooterCarrinho();
+  medirAlturaHeaderSticky();
+  renderCarrinhoLateral();
   if (location.hash.startsWith('#produto=')) {
     openPDP(location.hash.replace('#produto=', ''));
   }
@@ -709,7 +742,71 @@ function saveCart(cart) {
   sessionStorage.setItem(cartKey(), JSON.stringify(cart));
   atualizarCartBadgeTopo();
   renderFooterCarrinho();
+  renderCarrinhoLateral();
 }
+
+// Coluna fixa ao lado do catalogo (so desktop, >=1024px -- ver media query no
+// topo do arquivo). Mesmo carrinho/precos do rodape mobile, so que sempre
+// visivel: pedido do time (2026-11-19) pra editar qtd/tirar item sem sair do
+// catalogo no meio de uma negociacao com o cliente.
+function renderCarrinhoLateral() {
+  const col = document.getElementById('carrinhoLateral');
+  if (!col) return;
+  const cart = getCart();
+  col.classList.toggle('tem-itens', cart.length > 0);
+  document.body.classList.toggle('has-carrinho-lateral', cart.length > 0);
+  if (!cart.length) { col.innerHTML = ''; return; }
+
+  const total = cart.reduce((s, i) => {
+    const pr = allPrecos[i.produto_id];
+    const unit = i.precoManual != null ? i.precoManual : +(pr?.preco_final ?? i.preco_base ?? 0);
+    return s + unit * (Number(i.quantidade) || 0);
+  }, 0);
+
+  col.innerHTML = `
+    <div class="cl-header">Carrinho — ${cart.length} item${cart.length !== 1 ? 's' : ''}</div>
+    <div class="cl-lista">${cart.map((i, idx) => {
+      const pr = allPrecos[i.produto_id];
+      const unit = i.precoManual != null ? i.precoManual : +(pr?.preco_final ?? i.preco_base ?? 0);
+      return `<div class="cl-item">
+        <div class="cl-item-nome">${esc(i.nome)}</div>
+        <div class="cl-item-sku">${esc(i.sku)}</div>
+        <div class="cl-item-linha">
+          <input type="number" class="cl-item-qty" min="1" max="999" value="${i.quantidade}" onchange="clAlterarQtd(${idx},this.value)">
+          <span class="cl-item-sub">${fmtMoeda(unit * i.quantidade)}</span>
+          <button class="cl-item-remove" title="Remover" onclick="clRemoverItem(${idx})">✕</button>
+        </div>
+      </div>`;
+    }).join('')}</div>
+    <div class="cl-footer">
+      <div class="cl-footer-total"><span>Total</span><span>${fmtMoeda(total)}</span></div>
+      <button style="width:100%;padding:10px;border:none;border-radius:8px;background:#1d327b;color:#fff;font-family:Outfit;font-size:13px;font-weight:600;cursor:pointer" onclick="location.href='pedidos.html'">Revisar e enviar pedido</button>
+    </div>`;
+}
+
+function clAlterarQtd(idx, valor) {
+  const cart = getCart();
+  const q = Math.max(1, Math.min(999, parseInt(valor) || 1));
+  if (!cart[idx]) return;
+  cart[idx].quantidade = q;
+  saveCart(cart);
+}
+
+function clRemoverItem(idx) {
+  const cart = getCart();
+  cart.splice(idx, 1);
+  saveCart(cart);
+}
+
+// Chips de categoria podem quebrar em 1 ou 2 linhas dependendo da largura --
+// a altura do header sticky varia, entao a coluna de carrinho (tambem
+// sticky, logo abaixo) mede de verdade em vez de usar um valor fixo que
+// erraria em telas diferentes.
+function medirAlturaHeaderSticky() {
+  const h = document.getElementById('stickyHeader');
+  if (h) document.documentElement.style.setProperty('--header-h', h.getBoundingClientRect().height + 'px');
+}
+window.addEventListener('resize', medirAlturaHeaderSticky);
 
 // Faixa fixa no rodape com o total do que ja foi selecionado -- pedido do
 // Andre (ja discutido antes, reforcado em 2026-11-06): produtos/unidades/

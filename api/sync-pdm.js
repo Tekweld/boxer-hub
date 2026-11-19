@@ -565,10 +565,17 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    // 'Vista Explodida' ia para 'catalogo' -- tipo que catalogo.html expoe na
+    // PDP pra qualquer cliente logado. Achado em 2026-11-19: 52 documentos
+    // (vista explodida de ~45 produtos, incluindo manual combinado com vista
+    // explodida em 2 casos) ficaram publicos no catalogo por causa desse
+    // mapeamento. Corrigido pra 'ficha_tecnica', que catalogo.html ja exclui
+    // de proposito ("documento critico", fora da query da PDP e da RLS).
+    // NUNCA mapear Vista Explodida pra 'catalogo'/'foto'/'manual' de novo.
     const TIPO_MAP = {
       'Artworks': 'foto',
       'Ficha Técnica': 'ficha_tecnica',
-      'Vista Explodida': 'catalogo',
+      'Vista Explodida': 'ficha_tecnica',
       'Manual do Usuário': 'manual',
       'Desenho Técnico': 'ficha_tecnica',
       'Outro': 'catalogo'

@@ -1662,7 +1662,7 @@ function abrirOrcamentoDetalhe(id) {
       </div>
       <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:16px">
       <div style="padding:10px;background:#f7fafc;border-radius:8px">
         <div style="font-size:11px;color:#718096;text-transform:uppercase">Status</div>
         <span class="orc-st-badge${classe ? ' ' + classe : ''}">${esc(label)}</span>
@@ -1936,7 +1936,7 @@ async function openPedido(id) {
         </div>
         <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:16px">
         <div style="padding:10px;background:#f7fafc;border-radius:8px">
           <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px">Status</div>
           <span class="status-badge status-${pedido.status}">${pedido.status.replace('_', ' ')}</span>

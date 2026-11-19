@@ -122,7 +122,7 @@ body.has-footer-bar{padding-bottom:72px}
 .pdp-info-card ul{padding-left:18px}
 .pdp-info-card table{width:100%;border-collapse:collapse}
 .pdp-info-card td{font-size:12px;padding:5px 10px 5px 0;border-bottom:1px solid #f0f4f8;vertical-align:top}
-.pdp-info-card td:first-child{font-weight:500;color:#718096;white-space:nowrap;width:40%}
+.pdp-info-card td:first-child{font-weight:500;color:#718096;width:42%;word-break:break-word}
 .pdp-info-card td:last-child{color:#1a202c}
 .pdp-doc-link{display:flex;align-items:center;gap:6px;font-size:13px;color:#1d327b;text-decoration:none;padding:6px 0;border-bottom:1px solid #f0f4f8}
 .pdp-doc-link:last-child{border-bottom:none}
@@ -145,6 +145,17 @@ body.has-footer-bar{padding-bottom:72px}
 .pdp-historico-valor{color:#1a202c;font-weight:500}
 .pdp-footer-add{padding:10px 20px;border:none;border-radius:8px;background:#1d327b;color:#fff;font-family:Outfit;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap}
 .pdp-footer-add:hover{background:#162666}
+/* Preco + qtd + botao em flex sem wrap cabiam nos 960px do desktop mas
+   somados (preco ~100px + qty ~90px + botao ~160px + gaps) passam de um
+   celular estreito (~375px) -- empurrava o botao "Adicionar" pra fora da
+   tela. Empilha em 2 linhas abaixo de 480px. */
+@media(max-width:480px){
+  .pdp-footer{flex-wrap:wrap;row-gap:8px}
+  .pdp-footer-price{order:1}
+  .pdp-footer-spacer{display:none}
+  .pdp-footer-qty{order:2;margin-left:auto}
+  .pdp-footer-add{order:3;flex:1 1 100%}
+}
 .pdp-footer-add:active{transform:scale(.97)}
 .prev-hint{font-weight:400;opacity:.75;font-size:inherit}
 

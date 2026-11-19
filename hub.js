@@ -487,8 +487,11 @@ async function buscarProspect() {
 
     const pub = j.publico;
     if (!pub || !pub.razao_social) {
+      const msg = j.publico_indisponivel
+        ? 'Consulta pública indisponível agora (tente de novo em alguns segundos) ou continue informando os dados na mão.'
+        : 'Não encontramos dados públicos para esse CNPJ. Confira o número ou continue informando os dados na mão.';
       wrap.innerHTML = `<div style="margin-top:10px;padding:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:13px;color:#991b1b">
-        Não encontramos dados públicos para esse CNPJ. Confira o número ou continue informando os dados na mão.
+        ${msg}
       </div>
       <div class="form-row" style="margin-top:10px"><label>Razão social</label><input id="prospectNome" type="text" maxlength="200"></div>
       <div class="form-row"><label>UF</label><input id="prospectUf" type="text" maxlength="2" style="text-transform:uppercase"></div>

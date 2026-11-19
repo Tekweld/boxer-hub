@@ -1239,7 +1239,12 @@ async function enviarOrcamento() {
   const email = document.getElementById('orcDestEmail').value.trim();
   const celular = document.getElementById('orcDestCelular').value.trim();
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) { toast('Informe um e-mail valido para quem recebe o orcamento', 'error'); return; }
-  if (!celular.replace(/\D/g, '')) { toast('Informe o celular de quem recebe o orcamento', 'error'); return; }
+  // Mesma regra do backend (telOk em api/_orcamento.js) checada aqui ANTES de
+  // chamar o servidor -- achado real (Andre, 2026-11-19): o campo so checava
+  // "nao vazio", entao um numero com 1 digito faltando passava na tela e so
+  // quebrava depois do roundtrip, com o vendedor sem saber o motivo exato.
+  const soDigitosCel = celular.replace(/\D/g, '');
+  if (soDigitosCel.length !== 10 && soDigitosCel.length !== 11) { toast('Celular invalido: informe DDD + numero, ex. (41) 99999-9999', 'error'); return; }
 
   const textoOriginal = btn.textContent;
   btn.disabled = true; btn.textContent = 'Enviando...';

@@ -330,14 +330,19 @@ select,input,textarea{font-family:Outfit,sans-serif}
       <div id="pdmSemPrecoLista" class="hidden" style="margin-top:10px;max-height:220px;overflow-y:auto;font-size:13px"></div>
     </div>
     <div id="estoqueSemPrecoBlock" class="hidden" style="margin-bottom:16px;background:#fff8f0;border:1px solid #fed7aa;border-radius:8px;padding:14px 16px">
-      <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="document.getElementById('estoqueSemPrecoLista').classList.toggle('hidden')">
+      <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="document.getElementById('estoqueSemPrecoLista').classList.toggle('hidden');document.getElementById('estoqueSemPrecoBusca').classList.toggle('hidden')">
         <div style="font-size:12px;font-weight:600;color:#9a3412;text-transform:uppercase;letter-spacing:.5px" id="estoqueSemPrecoTitulo"></div>
         <span style="font-size:12px;color:#9a3412">mostrar/ocultar lista ▾</span>
       </div>
       <div class="panel-hint" style="margin:10px 0 0">
-        Esses SKUs tem estoque de verdade no ZEN mas nao tem preco cadastrado na tabela <b>"Principal"</b> --
-        ninguem consegue vender nem ver isso no catalogo hoje. Cadastrar o preco em <b>admin_supabase.html</b>
-        resolve: o proximo sync (diario) cria o produto no catalogo sozinho.
+        Esses SKUs tem estoque de verdade no ZEN mas nenhum cadastro na tabela de precos -- nao e so preco
+        faltando, e o produto inteiro (NCM, ICMS, IPI, porte etc) que nunca foi criado. Ninguem consegue vender
+        nem ver isso no catalogo hoje (o cliente nunca ve estes SKUs, de proposito). Cadastrar em
+        <b>admin_supabase.html</b> resolve: o proximo sync (diario) cria o produto no catalogo sozinho.
+      </div>
+      <div id="estoqueSemPrecoBusca" class="hidden" style="margin-top:10px">
+        <input type="text" placeholder="Buscar SKU..." oninput="filtrarEstoqueSemPreco(this.value)"
+               style="width:100%;padding:7px 10px;border:1px solid #fed7aa;border-radius:6px;font-family:Outfit;font-size:13px">
       </div>
       <div id="estoqueSemPrecoLista" class="hidden" style="margin-top:10px;max-height:220px;overflow-y:auto;font-size:13px"></div>
     </div>
@@ -2005,6 +2010,19 @@ function copiarLinkConvite(token) {
 }
 
 let _catalogoData = null;
+let _estoqueSemPrecoCache = [];
+
+function renderEstoqueSemPreco(lista) {
+  document.getElementById('estoqueSemPrecoLista').innerHTML = lista.length
+    ? lista.map(p => '<div style="padding:4px 0;border-bottom:1px solid #fed7aa">' + escHub(p.sku) + ' — ' + p.estoque_disponivel + ' un disponivel</div>').join('')
+    : '<div style="padding:4px 0;color:#9a3412">Nenhum SKU bate com a busca.</div>';
+}
+// Busca so no cache ja carregado -- lista pode ter ate 2000+ linhas, time de
+// vendas precisa achar um SKU especifico sem rolar a lista inteira.
+function filtrarEstoqueSemPreco(termo) {
+  const t = (termo || '').trim().toUpperCase();
+  renderEstoqueSemPreco(t ? _estoqueSemPrecoCache.filter(p => p.sku.toUpperCase().includes(t)) : _estoqueSemPrecoCache);
+}
 
 async function loadCatalogo() {
   const wrap = document.getElementById('catalogoList');
@@ -2020,7 +2038,7 @@ async function loadCatalogo() {
       sb('/hub_produto_anexos?select=produto_id,tipo&tipo=eq.foto&limit=5000'),
       sb('/hub_produto_anexos?select=id&limit=5000'),
       sb('/hub_pdm_sem_preco?select=sku,nome&order=nome.asc&limit=500'),
-      sb('/hub_estoque_sem_preco?select=sku,estoque_disponivel&order=estoque_disponivel.desc&limit=500')
+      sb('/hub_estoque_sem_preco?select=sku,estoque_disponivel&order=estoque_disponivel.desc&limit=5000')
     ]);
     const produtos = todosProdutos.filter(p => p.ativo);
     const inativos = todosProdutos.filter(p => !p.ativo);
@@ -2030,9 +2048,8 @@ async function loadCatalogo() {
       estoqueBlock.classList.remove('hidden');
       document.getElementById('estoqueSemPrecoTitulo').textContent =
         estoqueSemPreco.length + ' SKU(s) com estoque no ZEN sem preco cadastrado';
-      document.getElementById('estoqueSemPrecoLista').innerHTML = estoqueSemPreco.map(p =>
-        '<div style="padding:4px 0;border-bottom:1px solid #fed7aa">' + escHub(p.sku) + ' — ' + p.estoque_disponivel + ' un disponivel</div>'
-      ).join('');
+      _estoqueSemPrecoCache = estoqueSemPreco;
+      renderEstoqueSemPreco(estoqueSemPreco);
     } else {
       estoqueBlock.classList.add('hidden');
     }

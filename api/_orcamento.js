@@ -183,27 +183,28 @@ async function buscarClienteBase(ctx, cnpjIn) {
     // fora do cadastro do ZEN: tenta os dados publicos da Receita (BrasilAPI) para preencher razao social e endereco
     let publico = null;
     if (cnpj.length === 14) {
-      // Uma tentativa so (5s) deixava "indisponivel" indistinguivel de "nao
-      // existe" -- CNPJ real (ex: da propria Boxer) voltando vazio por um
-      // engasgo pontual da BrasilAPI. Agora tenta 2x (timeout maior na 2a)
-      // antes de desistir de verdade.
-      for (const timeoutMs of [6000, 9000]) {
-        try {
-          const r = await fetch('https://brasilapi.com.br/api/cnpj/v1/' + cnpj, { signal: AbortSignal.timeout(timeoutMs) });
-          if (r.ok) {
-            const j = await r.json();
+      // BrasilAPI bloqueia (403) chamadas vindas do IP do Vercel -- medido em
+      // producao em 2026-11-19, nao e timeout nem CNPJ invalido, e a faixa de
+      // IP de datacenter mesmo. ReceitaWS responde normal dali. ReceitaWS no
+      // free tier aceita so 3 req/min por IP (uso aqui e esporadico, cliente
+      // novo nao e todo dia) e devolve 200 com status:"ERROR" pra CNPJ
+      // invalido em vez de 404 -- tratado abaixo.
+      try {
+        const r = await fetch('https://www.receitaws.com.br/v1/cnpj/' + cnpj, { signal: AbortSignal.timeout(9000) });
+        if (r.ok) {
+          const j = await r.json();
+          if (j.status !== 'ERROR') {
             publico = {
-              razao_social: j.razao_social || '', nome_fantasia: j.nome_fantasia || '', email: j.email || '',
-              cidade: j.municipio || '', uf: j.uf || '', situacao: j.descricao_situacao_cadastral || '',
-              endereco: [[j.descricao_tipo_de_logradouro, j.logradouro].filter(Boolean).join(' ') + (j.numero ? ', ' + j.numero : ''), j.bairro, j.cep ? 'CEP ' + j.cep : null].filter(x => x && String(x).trim()).join(' · ')
+              razao_social: j.nome || '', nome_fantasia: j.fantasia || '', email: j.email || '',
+              cidade: j.municipio || '', uf: j.uf || '', situacao: j.situacao || '',
+              endereco: [[j.logradouro, j.numero].filter(Boolean).join(', '), j.bairro, j.cep ? 'CEP ' + j.cep : null].filter(x => x && String(x).trim()).join(' · ')
             };
-            break;
           }
-          console.error('[orcamento][cnpj-publico] BrasilAPI respondeu ' + r.status + ' pra ' + cnpj);
-          if (r.status === 404) break; // CNPJ realmente nao existe -- nao adianta tentar de novo
-        } catch (e) {
-          console.error('[orcamento][cnpj-publico] falha na chamada pra ' + cnpj + ': ' + e.message);
+        } else {
+          console.error('[orcamento][cnpj-publico] ReceitaWS respondeu ' + r.status + ' pra ' + cnpj);
         }
+      } catch (e) {
+        console.error('[orcamento][cnpj-publico] falha na chamada pra ' + cnpj + ': ' + e.message);
       }
     }
     return { encontrado: false, cnpj, publico };

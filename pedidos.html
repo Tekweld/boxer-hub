@@ -966,7 +966,7 @@ async function _enviarPedidoInterno() {
       politica.uf_aplicada = precoRef.uf;
     }
 
-    abrirRevisao(pedido.id, politica, cliente, endereco);
+    abrirRevisao(pedido.id, politica, cliente, endereco, cart, precos);
   } catch (e) {
     toast('Erro: ' + erroLegivel(e), 'error');
   } finally {
@@ -1017,6 +1017,7 @@ async function abrirRevisaoProspect(cart) {
       <div style="font-size:12px;color:#92400e;background:#fff7ed;border:1px solid #fed7aa;padding:10px 12px;border-radius:8px;margin-bottom:16px">
         <strong>${esc(prospect.nome)}</strong> ainda não é cliente cadastrado no ZEN. Endereço, crédito e frete serão definidos no cadastro — por enquanto só dá pra enviar o link do orçamento, não confirmar um pedido real.
       </div>
+      ${renderTabelaItensRevisao(cart, precos)}
       <div class="rev-sec">
         <h4>Resumo</h4>
         <div class="rev-linha"><span>${cart.length} item(ns)</span><span class="v">${fmtMoeda(total)}</span></div>
@@ -1050,7 +1051,47 @@ async function abrirRevisaoProspect(cart) {
 }
 function esc(s) { return esc(s); }
 
-function abrirRevisao(pedidoId, politica, cliente, endereco) {
+// Pedido do Andre, 2026-11-19: a revisao so mostrava "N item(ns) + total",
+// sem descricao/preco/imposto por item -- o vendedor precisa ver como o ZEN
+// mostra (linha a linha), pra negociar com o cliente sem abrir outra tela.
+// Compartilhada entre cliente existente (abrirRevisao) e CNPJ novo
+// (abrirRevisaoProspect) -- os dois ja tem cart+precos calculados na mao.
+function renderTabelaItensRevisao(cart, precos) {
+  if (!cart || !cart.length) return '';
+  return `
+    <div class="rev-sec">
+      <h4>Itens</h4>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr>
+            <th style="text-align:left;padding:4px 6px;color:#718096;font-weight:500">Produto</th>
+            <th style="text-align:right;padding:4px 6px;color:#718096;font-weight:500">Qtd</th>
+            <th style="text-align:right;padding:4px 6px;color:#718096;font-weight:500">Preço unit.</th>
+            <th style="text-align:right;padding:4px 6px;color:#718096;font-weight:500">IPI</th>
+            <th style="text-align:right;padding:4px 6px;color:#718096;font-weight:500">ICMS</th>
+            <th style="text-align:right;padding:4px 6px;color:#718096;font-weight:500">Subtotal</th>
+          </tr></thead>
+          <tbody>
+            ${cart.map(i => {
+              const p = precos?.[i.produto_id];
+              const unit = i.precoManual != null ? i.precoManual : +(p?.preco_final ?? i.preco_base ?? 0);
+              const sub = unit * i.quantidade;
+              return `<tr style="border-top:1px solid #e2e8f0">
+                <td style="padding:5px 6px"><div style="font-weight:500;color:#1a202c">${esc(i.nome)}</div><div style="font-size:10px;color:#a0aec0">${esc(i.sku)}</div></td>
+                <td style="text-align:right;padding:5px 6px">${i.quantidade}</td>
+                <td style="text-align:right;padding:5px 6px">${fmtMoeda(unit)}</td>
+                <td style="text-align:right;padding:5px 6px">${p?.ipi != null ? p.ipi + '%' : '—'}</td>
+                <td style="text-align:right;padding:5px 6px">${p?.icms != null ? p.icms + '%' : '—'}</td>
+                <td style="text-align:right;padding:5px 6px;font-weight:600;color:#1d327b">${fmtMoeda(sub)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
   const subtotal = +(politica.subtotal || 0);
   const frete = politica.frete && politica.frete !== 'null' ? politica.frete : null;
   const valorFrete = +(frete?.valor || 0);
@@ -1080,6 +1121,8 @@ function abrirRevisao(pedidoId, politica, cliente, endereco) {
     ${bloqueado ? `<div class="cart-bloqueio" style="margin:0 0 18px">
       ${violacoes.map(v => `<strong>${esc(rotuloRegra(v.regra))}</strong><p>${esc(v.mensagem || '')}</p>`).join('<hr>')}
     </div>` : ''}
+
+    ${renderTabelaItensRevisao(cart, precos)}
 
     ${(() => {
       // Credito sem saldo vem PRIMEIRO e com destaque forte -- e a informacao

@@ -183,17 +183,25 @@ async function buscarClienteBase(ctx, cnpjIn) {
     // fora do cadastro do ZEN: tenta os dados publicos da Receita (BrasilAPI) para preencher razao social e endereco
     let publico = null;
     if (cnpj.length === 14) {
-      try {
-        const r = await fetch('https://brasilapi.com.br/api/cnpj/v1/' + cnpj, { signal: AbortSignal.timeout(5000) });
-        if (r.ok) {
-          const j = await r.json();
-          publico = {
-            razao_social: j.razao_social || '', nome_fantasia: j.nome_fantasia || '', email: j.email || '',
-            cidade: j.municipio || '', uf: j.uf || '', situacao: j.descricao_situacao_cadastral || '',
-            endereco: [[j.descricao_tipo_de_logradouro, j.logradouro].filter(Boolean).join(' ') + (j.numero ? ', ' + j.numero : ''), j.bairro, j.cep ? 'CEP ' + j.cep : null].filter(x => x && String(x).trim()).join(' · ')
-          };
-        }
-      } catch (_) { /* sem Receita agora: segue manual */ }
+      // Uma tentativa so (5s) deixava "indisponivel" indistinguivel de "nao
+      // existe" -- CNPJ real (ex: da propria Boxer) voltando vazio por um
+      // engasgo pontual da BrasilAPI. Agora tenta 2x (timeout maior na 2a)
+      // antes de desistir de verdade.
+      for (const timeoutMs of [6000, 9000]) {
+        try {
+          const r = await fetch('https://brasilapi.com.br/api/cnpj/v1/' + cnpj, { signal: AbortSignal.timeout(timeoutMs) });
+          if (r.ok) {
+            const j = await r.json();
+            publico = {
+              razao_social: j.razao_social || '', nome_fantasia: j.nome_fantasia || '', email: j.email || '',
+              cidade: j.municipio || '', uf: j.uf || '', situacao: j.descricao_situacao_cadastral || '',
+              endereco: [[j.descricao_tipo_de_logradouro, j.logradouro].filter(Boolean).join(' ') + (j.numero ? ', ' + j.numero : ''), j.bairro, j.cep ? 'CEP ' + j.cep : null].filter(x => x && String(x).trim()).join(' · ')
+            };
+            break;
+          }
+          if (r.status === 404) break; // CNPJ realmente nao existe -- nao adianta tentar de novo
+        } catch (_) { /* timeout/rede -- tenta a proxima, ou desiste na ultima */ }
+      }
     }
     return { encontrado: false, cnpj, publico };
   }

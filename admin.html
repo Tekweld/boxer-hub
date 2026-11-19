@@ -285,8 +285,6 @@ select,input,textarea{font-family:Outfit,sans-serif}
     <div class="page-header">
       <h2 class="page-title">Catalogo de Produtos</h2>
       <div style="display:flex;gap:8px;align-items:center">
-        <span id="estoqueSyncStatus" style="font-size:12px;color:#718096"></span>
-        <button class="btn btn-outline" onclick="syncEstoque()" id="btnSyncEstoque">Sincronizar Estoque (ZenERP)</button>
         <span id="syncStatus" style="font-size:12px;color:#718096"></span>
         <button class="btn btn-primary" onclick="syncPDM()" id="btnSync">Sincronizar PDM</button>
       </div>
@@ -2329,38 +2327,6 @@ async function syncPDM() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Sincronizar PDM';
-  }
-}
-
-async function syncEstoque() {
-  const btn = document.getElementById('btnSyncEstoque');
-  const status = document.getElementById('estoqueSyncStatus');
-  btn.disabled = true;
-  btn.textContent = 'Sincronizando...';
-  status.textContent = '';
-  status.style.color = '#718096';
-
-  try {
-    const res = await fetch('/api/sync-estoque', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + SESSION.access_token
-      }
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro desconhecido');
-
-    toast(data.produtos_atualizados + ' produtos atualizados (' + data.skus_encontrados_zenerp + '/' + data.skus_no_catalogo + ' SKUs encontrados no ZenERP)');
-    status.textContent = 'Ultima sync: ' + new Date().toLocaleTimeString('pt-BR');
-    await loadCatalogo();
-  } catch (e) {
-    toast('Erro no sync de estoque: ' + e.message, 'error');
-    status.textContent = 'Erro na sincronizacao';
-    status.style.color = '#e30613';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Sincronizar Estoque (ZenERP)';
   }
 }
 

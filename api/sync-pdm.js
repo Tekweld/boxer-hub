@@ -657,14 +657,23 @@ module.exports = async function handler(req, res) {
     });
 
     // Outros documentos (não fotos)
+    // Pedido do Andre, 2026-11-19: na PDP so pode aparecer catalogo de verdade
+    // e manual -- qualquer outra coisa (software, diagrama eletrico,
+    // esquematico, "CA ####", etc) e documento tecnico/interno, mesmo vindo
+    // classificada como 'Outro' no PDM (que cai em 'catalogo' por padrao
+    // acima). Trava por nome, nao so por tipo do PDM, porque 'Outro' e
+    // catch-all e mistura catalogo de verdade com conteudo sensivel.
+    const NOME_CATALOGO_RE = /cat[áa]log/i;
     pdmDocs.forEach(d => {
       if (d.tipo !== 'Artworks') {
         const sku = pdmIdToSku[d.produto_id];
         const hubId = sku ? skuToHubId[sku] : null;
         if (hubId && d.arquivo_url && validHubIds.has(hubId)) {
+          let tipoFinal = TIPO_MAP[d.tipo] || 'catalogo';
+          if (tipoFinal === 'catalogo' && !NOME_CATALOGO_RE.test(d.nome || '')) tipoFinal = 'ficha_tecnica';
           anexoBodies.push({
             produto_id: hubId,
-            tipo: TIPO_MAP[d.tipo] || 'catalogo',
+            tipo: tipoFinal,
             storage_path: d.arquivo_url,
             nome: d.nome + (d.revisao && d.revisao !== 'Rev.00' ? ' (' + d.revisao + ')' : ''),
             alt_text: null,

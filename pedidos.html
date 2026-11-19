@@ -1051,6 +1051,45 @@ async function abrirRevisaoProspect(cart) {
 }
 function esc(s) { return esc(s); }
 
+// Mesma tabela que o cliente ve no link publico (orcamento-publico.html) --
+// pedido do Andre, 2026-11-19: quem olha o orcamento por dentro do Hub
+// (detalhe, edicao) precisa ver a mesma informacao, nao uma versao mais
+// pobre. Dados ja vem prontos (unit/subtotal/ipi/icms/estoque gravados na
+// criacao, api/_orcamento.js linha ~354), so falta exibir.
+const ORC_ESTOQUE_LABEL = { ok: ['Disponível', '#166534', '#dcfce7'], prev: ['Previsão de chegada', '#9a5b00', '#fff4e5'], sem: ['Sem previsão', '#991b1b', '#fee2e2'], sem_info: ['A confirmar', '#4a5568', '#e2e8f0'] };
+function renderTabelaItensOrcamento(itens, freteValor, totalFinal) {
+  if (!itens || !itens.length) return '<div style="font-size:13px;color:#718096">Sem itens.</div>';
+  const grupos = { ok: { valor: 0, qtd: 0 }, prev: { valor: 0, qtd: 0 }, sem: { valor: 0, qtd: 0 } };
+  itens.forEach(i => { if (grupos[i.estoque]) { grupos[i.estoque].valor += i.subtotal; grupos[i.estoque].qtd += i.qtd; } });
+  const GRUPO_LABEL = { ok: 'Itens disponíveis', prev: 'Itens com previsão de chegada', sem: 'Itens sem previsão' };
+  return `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr>
+      <th style="text-align:left;padding:4px 6px;color:#718096;font-weight:500">Produto</th>
+      <th style="text-align:left;padding:4px 6px;color:#718096;font-weight:500">Estoque</th>
+      <th style="text-align:right;padding:4px 6px;color:#718096;font-weight:500">Qtd</th>
+      <th style="text-align:left;padding:4px 6px;color:#718096;font-weight:500">Impostos</th>
+      <th style="text-align:right;padding:4px 6px;color:#718096;font-weight:500">Unitário</th>
+      <th style="text-align:right;padding:4px 6px;color:#718096;font-weight:500">Total</th>
+    </tr></thead>
+    <tbody>${itens.map(i => {
+      const [label, cor, bg] = ORC_ESTOQUE_LABEL[i.estoque] || ORC_ESTOQUE_LABEL.sem_info;
+      return `<tr style="border-top:1px solid #e2e8f0">
+        <td style="padding:5px 6px"><div style="font-weight:500;color:#1a202c">${esc(i.modelo || i.codigo)}</div><div style="font-size:10px;color:#a0aec0">${esc(i.codigo)}</div></td>
+        <td style="padding:5px 6px"><span style="display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:600;color:${cor};background:${bg}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
+        <td style="text-align:right;padding:5px 6px">${i.qtd}</td>
+        <td style="padding:5px 6px;font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'} · ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
+        <td style="text-align:right;padding:5px 6px">${fmtMoeda(i.unit)}</td>
+        <td style="text-align:right;padding:5px 6px;font-weight:600;color:#1d327b">${fmtMoeda(i.subtotal)}</td>
+      </tr>`;
+    }).join('')}</tbody>
+    <tfoot>
+      ${['ok', 'prev', 'sem'].map(k => grupos[k].valor > 0.004 ? `<tr><td colspan="5" style="padding:4px 6px;font-size:11px;color:#a0aec0;border-top:1px solid #f0f4f8">${GRUPO_LABEL[k]} <span style="color:#cbd5e0">(${grupos[k].qtd} un)</span></td><td style="text-align:right;padding:4px 6px;font-size:11px;color:#a0aec0;border-top:1px solid #f0f4f8">${fmtMoeda(grupos[k].valor)}</td></tr>` : '').join('')}
+      ${freteValor > 0 ? `<tr><td colspan="5" style="padding:4px 6px;border-top:1px solid #f0f4f8">Frete</td><td style="text-align:right;padding:4px 6px;border-top:1px solid #f0f4f8">${fmtMoeda(freteValor)}</td></tr>` : ''}
+      <tr><td colspan="5" style="padding-top:10px;font-weight:700;color:#1d327b;border-top:2px solid #1d327b">Total geral</td><td style="text-align:right;padding-top:10px;font-weight:700;color:#1d327b;border-top:2px solid #1d327b">${fmtMoeda(totalFinal)}</td></tr>
+    </tfoot>
+  </table></div>`;
+}
+
 // Pedido do Andre, 2026-11-19: a revisao so mostrava "N item(ns) + total",
 // sem descricao/preco/imposto por item -- o vendedor precisa ver como o ZEN
 // mostra (linha a linha), pra negociar com o cliente sem abrir outra tela.
@@ -1697,11 +1736,20 @@ async function chamarOrcamentoApi(acao, extra) {
 // novo. Quando aprovado, a venda ja virou pedido no Zen; o Hub cria a linha
 // em hub_pedidos pra ela aparecer igual a qualquer outro pedido dali pra
 // frente (ver nota em aprovarOrcamento).
-function abrirOrcamentoDetalhe(id) {
+async function abrirOrcamentoDetalhe(id) {
   const o = _orcamentosCache[id];
   if (!o) return;
   const [label, classe] = ORC_STATUS_LABEL[o.status] || [o.status, ''];
   const aberto = ['enviado', 'visualizado', 'aceito_cliente'].includes(o.status);
+  abrirOrcamentoDetalheHtml(o, label, classe, aberto, '<div style="font-size:13px;color:#718096">Carregando itens...</div>');
+  try {
+    const r = await chamarOrcamentoApi('itens', { id });
+    abrirOrcamentoDetalheHtml(o, label, classe, aberto, renderTabelaItensOrcamento(r.itens, r.frete_valor, r.total_final));
+  } catch (e) {
+    abrirOrcamentoDetalheHtml(o, label, classe, aberto, '<div style="font-size:13px;color:#991b1b">Erro ao carregar itens: ' + esc(e.message) + '</div>');
+  }
+}
+function abrirOrcamentoDetalheHtml(o, label, classe, aberto, itensHtml) {
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
       <div>
@@ -1735,6 +1783,7 @@ function abrirOrcamentoDetalhe(id) {
       <span>Cliente ainda não cadastrado no ZEN — assim que o cadastro existir, o pedido real entra sozinho.</span>
       <button class="btn btn-outline btn-sm" id="btnVerificarCadastro_${o.id}" onclick="verificarCadastroOrcamento('${o.id}')">Verificar cadastro agora</button>
     </div>` : ''}
+    <div style="margin:14px 0">${itensHtml}</div>
     <div style="display:flex;gap:6px;margin:14px 0">
       <input readonly value="${esc(o.link)}" style="flex:1;font-size:12px;padding:8px" onclick="this.select()">
       <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${o.link}');toast('Link copiado')">Copiar</button>
@@ -1761,14 +1810,42 @@ function abrirOrcamentoDetalhe(id) {
 // So representante/funcionario/admin ve o botao (podeEnviarOrcamento) --
 // cliente nunca edita o proprio orcamento.
 let _edicaoOrcamentoItens = [];
-function editarOrcamentoCarrinho(id) {
+// Bug real achado 2026-11-19: `o.itens` nunca existe aqui -- `listar()` em
+// api/_orcamento.js apaga esse campo do retorno de proposito (nao sobrecarregar
+// a lista com o array completo de cada orcamento). `(o.itens||[])` sempre
+// dava [], entao a tela de edicao abria SEMPRE vazia (e salvar batia direto
+// no "precisa ter ao menos um item"). Troca pra buscar os itens cheios na
+// hora (mesma acao 'itens' usada no detalhe), que de quebra ja traz
+// estoque/ipi/icms pra mostrar o resumo por situacao igual as outras telas.
+async function editarOrcamentoCarrinho(id) {
   const o = _orcamentosCache[id];
   if (!o) return;
-  _edicaoOrcamentoItens = (o.itens || []).map(i => Object.assign({}, i));
+  try {
+    const r = await chamarOrcamentoApi('itens', { id });
+    _edicaoOrcamentoItens = (r.itens || []).map(i => Object.assign({}, i));
+  } catch (e) {
+    toast('Erro ao carregar itens do orçamento: ' + e.message, 'error');
+    return;
+  }
   renderModalEdicaoOrcamento(o);
 }
 
+function edicaoOrcAlterarQtd(idx, valor) {
+  const q = Math.max(1, Math.min(999, parseInt(valor) || 1));
+  if (!_edicaoOrcamentoItens[idx]) return;
+  _edicaoOrcamentoItens[idx].qtd = q;
+  _edicaoOrcamentoItens[idx].subtotal = q * (+_edicaoOrcamentoItens[idx].unit || 0);
+  renderModalEdicaoOrcamento(_orcamentosCache[_edicaoOrcEditandoId]);
+}
+function edicaoOrcRemoverItem(idx) {
+  _edicaoOrcamentoItens[idx] = null;
+  renderModalEdicaoOrcamento(_orcamentosCache[_edicaoOrcEditandoId]);
+}
+
+let _edicaoOrcEditandoId = null;
 function renderModalEdicaoOrcamento(o) {
+  _edicaoOrcEditandoId = o.id;
+  const itensAtivos = _edicaoOrcamentoItens.map((i, idx) => ({ i, idx })).filter(x => x.i);
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
       <h3 style="font-size:18px;color:#1d327b">Editar orçamento ${esc(o.codigo)}</h3>
@@ -1778,15 +1855,34 @@ function renderModalEdicaoOrcamento(o) {
       Salvar aqui recalcula os preços, atualiza o PDF/link do orçamento e, se já houver venda no ZEN, atualiza ela também.
       ${o.status === 'aceito_cliente' ? 'Como o cliente já tinha aceito, o orçamento volta para "visualizado" -- ele precisa confirmar de novo.' : ''}
     </div>
-    <div id="edicaoOrcItens" style="display:flex;flex-direction:column;gap:8px;max-height:30vh;overflow-y:auto;margin-bottom:14px">
-      ${_edicaoOrcamentoItens.map((i, idx) => `
-        <div id="edicaoOrcItem_${idx}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#f7fafc;border-radius:8px">
-          <div style="flex:1;font-size:13px">${esc(i.modelo || i.codigo)}<div style="font-size:11px;color:#718096">${esc(i.codigo)}</div></div>
-          <input type="number" min="1" max="999" value="${i.qtd}" style="width:70px;padding:4px 6px"
-                 onchange="_edicaoOrcamentoItens[${idx}].qtd=+this.value">
-          <span style="cursor:pointer;color:#e30613;font-size:18px" onclick="document.getElementById('edicaoOrcItem_${idx}').remove();_edicaoOrcamentoItens[${idx}]=null">&times;</span>
-        </div>`).join('')}
+    <div id="edicaoOrcItens" style="display:flex;flex-direction:column;gap:8px;max-height:30vh;overflow-y:auto;margin-bottom:10px">
+      ${itensAtivos.map(({ i, idx }) => {
+        const [label, cor] = ORC_ESTOQUE_LABEL[i.estoque] || ORC_ESTOQUE_LABEL.sem_info;
+        return `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#f7fafc;border-radius:8px">
+          <div style="flex:1;font-size:13px">${esc(i.modelo || i.codigo)}<div style="font-size:11px;color:#718096">${esc(i.codigo)} · <span style="color:${cor}">${label}</span></div></div>
+          <div style="font-size:11px;color:#718096;white-space:nowrap">${fmtMoeda(i.unit)}/un</div>
+          <input type="number" min="1" max="999" value="${i.qtd}" style="width:60px;padding:4px 6px"
+                 onchange="edicaoOrcAlterarQtd(${idx},this.value)">
+          <div style="font-size:13px;font-weight:600;color:#1d327b;white-space:nowrap;min-width:70px;text-align:right">${fmtMoeda(i.subtotal)}</div>
+          <span style="cursor:pointer;color:#e30613;font-size:18px" onclick="edicaoOrcRemoverItem(${idx})">&times;</span>
+        </div>`;
+      }).join('')}
     </div>
+    ${(() => {
+      const grupos = { ok: { valor: 0, qtd: 0 }, prev: { valor: 0, qtd: 0 }, sem: { valor: 0, qtd: 0 } };
+      let total = 0;
+      itensAtivos.forEach(({ i }) => { total += i.subtotal; if (grupos[i.estoque]) { grupos[i.estoque].valor += i.subtotal; grupos[i.estoque].qtd += i.qtd; } });
+      const GRUPO_LABEL = { ok: 'Itens disponíveis', prev: 'Itens com previsão de chegada', sem: 'Itens sem previsão' };
+      return `<div style="padding:10px 2px;margin-bottom:14px;border-top:1px solid #e2e8f0">
+        ${['ok', 'prev', 'sem'].map(k => grupos[k].valor > 0.004 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:#a0aec0;padding:2px 0">
+          <span>${GRUPO_LABEL[k]} <span style="color:#cbd5e0">(${grupos[k].qtd} un)</span></span><span>${fmtMoeda(grupos[k].valor)}</span>
+        </div>` : '').join('')}
+        <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;color:#1d327b;padding-top:8px;margin-top:4px;border-top:2px solid #1d327b">
+          <span>Total geral</span><span>${fmtMoeda(total)}</span>
+        </div>
+      </div>`;
+    })()}
     <div class="form-row-inline">
       <div class="form-row">
         <label>Pagamento</label>

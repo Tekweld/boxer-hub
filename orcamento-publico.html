@@ -12,6 +12,7 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c;padding-bo
 .top-left{display:flex;align-items:center;gap:10px;color:#fff;font-weight:700;font-size:15px}
 .top-right{color:#93b4d4;font-size:13px;font-weight:600}
 .wrap{max-width:720px;margin:0 auto;padding:20px 16px}
+@media(min-width:900px){.wrap{max-width:980px}}
 .card{background:#fff;border:1px solid #d0d8e8;border-radius:12px;padding:20px;margin-bottom:16px}
 .hero{border-left:4px solid #e30613;position:relative}
 .hero h1{font-size:19px;color:#1d327b;margin-bottom:8px}
@@ -23,7 +24,10 @@ body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c;padding-bo
 table{width:100%;border-collapse:collapse;font-size:13px}
 thead th{padding:6px 8px;text-align:left;color:#718096;font-weight:500;font-size:10px;text-transform:uppercase;border-bottom:2px solid #e2e8f0}
 tbody td{padding:8px;border-bottom:1px solid #e2e8f0;vertical-align:middle}
-tfoot td{padding:8px;font-weight:700;color:#1d327b;border-top:2px solid #1d327b}
+tfoot td{padding:8px;border-top:1px solid #e2e8f0}
+.tfoot-grupo td{font-size:11px;font-weight:500;color:#a0aec0;border-top:1px solid #f0f4f8}
+.tfoot-qtd{font-weight:400;color:#cbd5e0}
+.tfoot-total td{font-size:15px;font-weight:700;color:#1d327b;border-top:2px solid #1d327b;padding-top:12px}
 .est{display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:600}
 .est.ok{background:#dcfce7;color:#166534}
 .est.prev{background:#fff4e5;color:#9a5b00}
@@ -156,8 +160,9 @@ function render() {
   const itens = ORC.itens || [];
   const ESTOQUE = { ok: ['Disponível', 'ok'], prev: ['Previsão de chegada', 'prev'], sem: ['Sem previsão', 'sem'], sem_info: ['A confirmar', 'info'] };
 
-  const grupos = { ok: 0, prev: 0, sem: 0 };
-  itens.forEach(i => { if (grupos[i.estoque] !== undefined) grupos[i.estoque] += i.subtotal; });
+  const grupos = { ok: { valor: 0, qtd: 0 }, prev: { valor: 0, qtd: 0 }, sem: { valor: 0, qtd: 0 } };
+  itens.forEach(i => { if (grupos[i.estoque]) { grupos[i.estoque].valor += i.subtotal; grupos[i.estoque].qtd += i.qtd; } });
+  const GRUPO_LABEL = { ok: 'Itens disponíveis', prev: 'Itens com previsão de chegada', sem: 'Itens sem previsão' };
 
   wrap.innerHTML = `
     ${aceito ? `<div class="aceito-faixa">${ORC.status === 'aprovado' ? '✓ Pedido confirmado pela Boxer' : '✓ Você aceitou este orçamento — aguardando confirmação da Boxer'}${ORC.aceito_em ? ' em ' + fmtDataHora(ORC.aceito_em) : ''}</div>` : ''}
@@ -168,31 +173,27 @@ function render() {
 
     <div class="card">
       <div class="sec-title">Itens do orçamento</div>
-      <div style="overflow-x:auto"><table>
-        <thead><tr><th>Código</th><th>Produto</th><th>Estoque</th><th>Qtd</th><th>IPI</th><th>ICMS</th><th>Unitário</th><th>Total</th></tr></thead>
+      <table>
+        <thead><tr><th>Produto</th><th>Estoque</th><th>Qtd</th><th>Impostos</th><th>Unitário</th><th>Total</th></tr></thead>
         <tbody>${itens.map(i => {
           const [label, cls] = ESTOQUE[i.estoque] || ESTOQUE.sem_info;
           const riscado = i.unit_tabela > 0 && Math.abs(i.unit_tabela - i.unit) > 0.01
             ? `<div style="font-size:11px;color:#a0aec0;text-decoration:line-through">${fmtMoeda(i.unit_tabela)}</div>` : '';
           return `<tr>
-            <td data-l="Código">${esc(i.codigo)}</td>
-            <td data-l="Produto"><span class="prod-cel">${i.imagem_url ? '<span class="prod-foto"><img src="' + esc(i.imagem_url) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></span>' : ''}${esc(i.modelo || i.codigo)}</span></td>
+            <td data-l="Produto"><span class="prod-cel">${i.imagem_url ? '<span class="prod-foto"><img src="' + esc(i.imagem_url) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></span>' : ''}<span><div>${esc(i.modelo || i.codigo)}</div><div style="font-size:10px;color:#a0aec0">${esc(i.codigo)}</div></span></span></td>
             <td data-l="Estoque"><span class="est ${cls}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
             <td data-l="Qtd">${i.qtd}</td>
-            <td data-l="IPI">${i.ipi != null ? i.ipi + '%' : '—'}</td>
-            <td data-l="ICMS">${i.icms != null ? i.icms + '%' : '—'}</td>
+            <td data-l="Impostos" style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'}<br>ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
             <td data-l="Unitário">${riscado}${fmtMoeda(i.unit)}</td>
             <td data-l="Total">${fmtMoeda(i.subtotal)}</td>
           </tr>`;
         }).join('')}</tbody>
         <tfoot>
-          ${grupos.ok > 0.004 ? `<tr><td colspan="7">Itens disponíveis</td><td>${fmtMoeda(grupos.ok)}</td></tr>` : ''}
-          ${grupos.prev > 0.004 ? `<tr><td colspan="7">Itens com previsão de chegada</td><td>${fmtMoeda(grupos.prev)}</td></tr>` : ''}
-          ${grupos.sem > 0.004 ? `<tr><td colspan="7">Itens sem previsão</td><td>${fmtMoeda(grupos.sem)}</td></tr>` : ''}
-          ${ORC.frete_valor > 0 ? `<tr><td colspan="5">Frete</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
-          <tr><td colspan="5">Total geral</td><td>${fmtMoeda(ORC.total_final)}</td></tr>
+          ${['ok', 'prev', 'sem'].map(k => grupos[k].valor > 0.004 ? `<tr class="tfoot-grupo"><td colspan="5">${GRUPO_LABEL[k]} <span class="tfoot-qtd">(${grupos[k].qtd} un)</span></td><td>${fmtMoeda(grupos[k].valor)}</td></tr>` : '').join('')}
+          ${ORC.frete_valor > 0 ? `<tr class="tfoot-grupo"><td colspan="5">Frete</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
+          <tr class="tfoot-total"><td colspan="5">Total geral</td><td>${fmtMoeda(ORC.total_final)}</td></tr>
         </tfoot>
-      </table></div>
+      </table>
     </div>
 
     <div class="card">

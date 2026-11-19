@@ -74,6 +74,7 @@ module.exports = async function orcamento(req, res) {
       case 'arquivar': return res.status(200).json(await arquivar(ctx, user, body.id, body.arquivar !== false));
       case 'enviar_email': return res.status(200).json(await enviarEmailCliente(ctx, user, body.id));
       case 'verificar_cadastro': return res.status(200).json(await verificarCadastro(ctx, user, body.id));
+      case 'itens': return res.status(200).json(await itensDetalhe(ctx, user, body.id));
       default: return res.status(400).json({ error: 'acao invalida' });
     }
   } catch (e) {
@@ -571,6 +572,19 @@ async function listar(ctx, user, leve) {
       return o;
     })
   };
+}
+
+// `listar()` apaga `itens` do retorno de proposito (nao sobrecarregar a lista
+// de ate 150 orcamentos com o array completo de cada um) -- esta acao busca
+// so UM orcamento, com itens cheios (subtotal/ipi/icms/estoque), pra telas
+// internas (detalhe, edicao) mostrarem a mesma tabela que o cliente ve no
+// link publico. Mesmo filtro por user_id que listar() usa, nao RLS (a tabela
+// nao tem policy pra user comum, so service_role).
+async function itensDetalhe(ctx, user, id) {
+  if (!id) throw erro(400, 'id obrigatorio');
+  const row = (await sbGet(ctx, '/orcamentos?id=eq.' + id + '&user_id=eq.' + user.id + '&select=itens,frete_valor,total_final', 'comercial'))[0];
+  if (!row) throw erro(404, 'Orcamento nao encontrado');
+  return { ok: true, itens: row.itens || [], frete_valor: row.frete_valor, total_final: row.total_final };
 }
 
 // orcamento feito com cliente ainda nao cadastrado no ZEN: quando o cadastro aparecer, a venda e criada sozinha

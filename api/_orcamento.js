@@ -118,7 +118,18 @@ async function autenticar(req) {
   if (!a.ok) return null;
   const acesso = await a.json();
   if (!acesso || !acesso.permitido) return null;
-  if (acesso.teste === false) return null; // quem usa o Hub nao usa a tabela teste
+  // ACHADO EM 2026-11-23 (bug critico, derrubava orcamento/pedido pra qualquer
+  // representante/admin/manager de verdade do Hub): esta linha existia aqui
+  // ("if (acesso.teste === false) return null") com o comentario "quem usa o
+  // Hub nao usa a tabela teste" -- mas public.tabela_acesso() devolve
+  // teste:false EXATAMENTE pra quem autentica via comercial.hub_perfis como
+  // representante/admin/manager (tabela_usa_hub(email)=true -> teste = not
+  // true = false). Ou seja, rejeitava justo quem deveria passar. Confirmado
+  // reproduzindo com o jwt da propria Cristina (vendas.3@boxersoldas.com.br):
+  // tabela_acesso() -> {permitido:true, teste:false}, autenticar() rejeitava,
+  // 401 "Sessao invalida ou sem acesso a tabela" -- era o erro real por tras
+  // do "nao consegui enviar orcamento" dela. teste so informa a ORIGEM do
+  // acesso (tabela-teste.html vs Hub), nunca deveria gatear nada aqui.
   return { id: caller.id, email: caller.email, nome: acesso.nome || caller.email, role: acesso.role, empresa: acesso.empresa || null };
 }
 

@@ -8,10 +8,28 @@
 // so ve a propria carteira (pelo proprio hub_perfis.representante_id); admin/
 // manager veem qualquer um (com seletor no front).
 //
-// Fase 2 (validar/aprovar/reprovar/apontar correcao) fica pra depois de
-// alinhar com o time financeiro -- eles sao donos deste schema, e esse fluxo
-// escreveria nele (comissao_exclusoes e uma tabela de contestacao que ainda
-// nao existe).
+// Fase 2 (2026-11-23): conferencia/exclusao/fechamento REAL, espelhando
+// EXATAMENTE o que o proprio comissoes.html deles faz -- nao reinventado.
+// Achado lendo o repo (Tekweld/controle-financeiro, sql/139_producao_comissoes.sql):
+// as acoes de verdade sao as RPCs deles `cm_excluir_linha`/`cm_fechar`/
+// `cm_reabrir`, gateadas por `is_admin()`/`tem_aba('comissoes')` -- funcoes
+// que leem comercial.hub... nao, leem AS TABELAS DELES
+// ("boxer-controle-financeiro".perfis_usuarios/permissoes_usuarios), por
+// auth.uid(). Por isso aqui NUNCA se usa o service_role pra essas 3 acoes --
+// o authHeader de quem chamou e repassado direto pro RPC deles, pra quem
+// decide se pode e quem fica registrado como autor (fechado_por/excluido_por)
+// e exatamente a pessoa certa, igual seria entrando no portal deles.
+// Confirmado: Andre (admin do Hub) ja tem tem_aba('comissoes')=true no
+// sistema deles -- funciona sem pedir nada novo. Quem NAO tiver acesso la
+// recebe a mensagem de erro REAL deles ("Sem acesso à aba Comissões."),
+// nunca uma inventada aqui.
+//
+// Representante NAO tem (nem deveria ganhar por aqui) acesso a estas RPCs --
+// e intencional do lado deles, fechar uma competencia gera titulo a pagar no
+// Zen. "Apontar um problema" pelo representante fica de fora desta rodada:
+// hub_solicitacoes e cliente-centrico de verdade (RLS exige
+// hub_pode_acessar_cliente(cliente_id), nao so a coluna NOT NULL) -- reaproveitar
+// exigiria mudar essa RLS compartilhada, decisao separada, nao included aqui.
 //
 // Despachado via api/push-pedido.js?target=comissoes -- underscore de
 // proposito, nao conta nos 12 do plano Hobby.
@@ -54,6 +72,13 @@ module.exports = async function handler(req, res) {
     if (!ehGestor && !ehRepresentante) return res.status(403).json({ error: 'Sem acesso a comissao' });
 
     const body = req.body || {};
+
+    // Acoes de escrita (Fase 2) -- so gestor, so repassando o JWT de quem
+    // chamou pro RPC deles (nunca service_role aqui, ver comentario do topo).
+    if (body.acao === 'excluir_linha' || body.acao === 'fechar' || body.acao === 'reabrir') {
+      if (!ehGestor) return res.status(403).json({ error: 'Somente admin/manager fazem conferencia de comissao' });
+      return res.status(200).json(await chamarRpcFinanceiro(authHeader, body));
+    }
 
     // Resolve o(s) erp_representante_id permitido(s) pra este chamador.
     let vendedorIds = null; // null = gestor sem filtro, ve todo mundo
@@ -117,3 +142,31 @@ module.exports = async function handler(req, res) {
     return res.status(502).json({ error: e.message });
   }
 };
+
+// Chama literalmente a mesma RPC que o botao deles chama -- zero logica de
+// negocio nova. authHeader e o JWT de quem esta chamando o Hub agora (nao
+// service_role): e assim que is_admin()/tem_aba('comissoes') do lado deles
+// enxergam a pessoa certa, e fechado_por/excluido_por gravam o email certo.
+async function chamarRpcFinanceiro(authHeader, body) {
+  const RPC_POR_ACAO = {
+    excluir_linha: { nome: 'cm_excluir_linha', payload: () => ({ p_id: Number(body.id), p_excluir: body.excluir !== false, p_motivo: body.excluir === false ? null : String(body.motivo || '').trim() || null }) },
+    fechar: { nome: 'cm_fechar', payload: () => ({ p_competencia: body.competencia, p_vendedor_id: Number(body.vendedor_id), p_obs: body.obs ? String(body.obs).trim() : null }) },
+    reabrir: { nome: 'cm_reabrir', payload: () => ({ p_competencia: body.competencia, p_vendedor_id: Number(body.vendedor_id) }) }
+  };
+  const rpc = RPC_POR_ACAO[body.acao];
+  if (body.acao === 'excluir_linha' && body.excluir !== false && !String(body.motivo || '').trim()) {
+    throw new Error('Informe o motivo da exclusão.');
+  }
+  const r = await fetch(HUB_URL + '/rest/v1/rpc/' + rpc.nome, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SB_ANON, Authorization: authHeader, 'Content-Profile': 'boxer-controle-financeiro' },
+    body: JSON.stringify(rpc.payload())
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) {
+    // Propaga a mensagem REAL do erro deles (ex: "Sem acesso à aba Comissões.",
+    // "Competência fechada para este vendedor: reabra antes de alterar.").
+    throw new Error(j?.message || j?.error || 'Falha ao chamar ' + rpc.nome);
+  }
+  return j;
+}

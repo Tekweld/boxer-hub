@@ -51,6 +51,10 @@ tbody tr.excluida{opacity:.55;text-decoration:line-through}
 .com-wrap-tabela{overflow-x:auto}
 .empty-state{text-align:center;padding:60px 20px;color:#718096}
 .empty-state h3{color:#4a5568;margin-bottom:6px}
+.btn{padding:6px 12px;border-radius:7px;border:1px solid;font-family:Outfit;font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap}
+.btn-outline{background:#fff;color:#4a5568;border-color:#c3cfe2}.btn-outline:hover{border-color:#25bbee;color:#1d327b}
+.btn-danger{background:#fff;color:#e30613;border-color:#fecaca}.btn-danger:hover{background:#fee2e2}
+.btn-primary{background:#1d327b;color:#fff;border-color:#1d327b}.btn-primary:hover{background:#162666}
 </style>
 </head>
 <body>
@@ -126,6 +130,8 @@ async function carregarComissoes(vendedorIdForcado) {
 
     const totalGeral = j.linhas.filter(l => !l.excluida).reduce((s, l) => s + (Number(l.valor_comissao) || 0), 0);
     const totalExcluidas = j.linhas.filter(l => l.excluida).length;
+    const competenciasFechadas = new Set(j.resumo.filter(r => r.fechado).map(r => r.competencia));
+    const vendedorAtual = EH_GESTOR ? selecionado : null;
 
     conteudo.innerHTML = `
       <div class="com-cards">
@@ -140,16 +146,23 @@ async function carregarComissoes(vendedorIdForcado) {
             <div class="com-resumo-comp">${fmtCompetencia(r.competencia)}${r.fechado ? '<span class="com-badge-fechado">Fechado</span>' : '<span class="com-badge-aberto">Aberto</span>'}</div>
             <div class="com-resumo-meta">${r.qtd} lancamento(s)${r.qtd_excluidas ? ', ' + r.qtd_excluidas + ' excluido(s)' : ''}</div>
           </div>
-          <div class="com-resumo-valor">${fmtMoeda(r.valor_comissao)}</div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <div class="com-resumo-valor">${fmtMoeda(r.valor_comissao)}</div>
+            ${EH_GESTOR ? (r.fechado
+              ? `<button class="btn btn-outline" onclick="comReabrirCompetencia('${r.competencia}', '${vendedorAtual}')">Reabrir</button>`
+              : `<button class="btn btn-primary" onclick="comFecharCompetencia('${r.competencia}', '${vendedorAtual}')">Fechar (aprovar)</button>`) : ''}
+          </div>
         </div>
       `).join('')}
 
       <div class="com-sec">Lancamentos</div>
       <div class="com-wrap-tabela">
         <table>
-          <thead><tr><th>Data</th><th>Cliente</th><th>NF / Titulo</th><th>Valor evento</th><th>Taxa</th><th>Comissao</th></tr></thead>
+          <thead><tr><th>Data</th><th>Cliente</th><th>NF / Titulo</th><th>Valor evento</th><th>Taxa</th><th>Comissao</th>${EH_GESTOR ? '<th></th>' : ''}</tr></thead>
           <tbody>
-            ${j.linhas.map(l => `
+            ${j.linhas.map(l => {
+              const fech = competenciasFechadas.has(l.competencia);
+              return `
               <tr class="${l.excluida ? 'excluida' : ''}" title="${l.excluida && l.motivo_exclusao ? escHub(l.motivo_exclusao) : ''}">
                 <td>${fmtData(l.data_evento)}</td>
                 <td>${escHub(l.cliente_nome || '-')}</td>
@@ -157,8 +170,11 @@ async function carregarComissoes(vendedorIdForcado) {
                 <td>${fmtMoeda(l.valor_evento)}</td>
                 <td>${l.taxa != null ? Number(l.taxa).toFixed(2) + '%' : '-'}</td>
                 <td><strong>${fmtMoeda(l.valor_comissao)}</strong></td>
-              </tr>
-            `).join('')}
+                ${EH_GESTOR ? `<td>${fech ? '' : (l.excluida
+                  ? `<button class="btn btn-outline" onclick="comRestaurarLinha(${l.id})">Restaurar</button>`
+                  : `<button class="btn btn-danger" onclick="comExcluirLinha(${l.id})">Reprovar</button>`)}</td>` : ''}
+              </tr>`;
+            }).join('')}
           </tbody>
         </table>
       </div>
@@ -166,6 +182,43 @@ async function carregarComissoes(vendedorIdForcado) {
   } catch (e) {
     conteudo.innerHTML = '<div class="empty-state"><h3>Nao foi possivel carregar</h3><p>' + escHub(e.message) + '</p></div>';
   }
+}
+
+async function comExcluirLinha(id) {
+  const motivo = prompt('Motivo da reprovacao desta linha (obrigatorio):');
+  if (!motivo || !motivo.trim()) return;
+  try {
+    await chamarComissaoApi({ acao: 'excluir_linha', id, excluir: true, motivo: motivo.trim() });
+    toast('Linha reprovada');
+    await carregarComissoes(document.getElementById('comVendedorSel')?.value);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function comRestaurarLinha(id) {
+  if (!(await confirmModal('Restaurar esta linha de comissao (volta a contar normalmente)?'))) return;
+  try {
+    await chamarComissaoApi({ acao: 'excluir_linha', id, excluir: false });
+    toast('Linha restaurada');
+    await carregarComissoes(document.getElementById('comVendedorSel')?.value);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function comFecharCompetencia(competencia, vendedorId) {
+  if (!(await confirmModal('Fechar (aprovar) a competencia ' + fmtCompetencia(competencia) + '? Isso trava novas exclusoes e libera o titulo de comissao pro Zen.'))) return;
+  try {
+    await chamarComissaoApi({ acao: 'fechar', competencia, vendedor_id: vendedorId });
+    toast('Competencia fechada');
+    await carregarComissoes(document.getElementById('comVendedorSel')?.value);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function comReabrirCompetencia(competencia, vendedorId) {
+  if (!(await confirmModal('Reabrir a competencia ' + fmtCompetencia(competencia) + '? So administrador consegue fazer isso.'))) return;
+  try {
+    await chamarComissaoApi({ acao: 'reabrir', competencia, vendedor_id: vendedorId });
+    toast('Competencia reaberta');
+    await carregarComissoes(document.getElementById('comVendedorSel')?.value);
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 function fmtCompetencia(iso) {

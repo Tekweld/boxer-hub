@@ -28,6 +28,8 @@ module.exports = async function handler(req, res) {
   if (req.query && req.query.target === 'indicadores') return require('./_indicadores')(req, res);
   // Historico de compras por cliente (pedido do Andre 2026-11-17): mesmo motivo
   if (req.query && req.query.target === 'historico') return require('./_historico')(req, res);
+  // Log de autenticacao (achado na auditoria de 2026-11-19): mesmo motivo
+  if (req.query && req.query.target === 'authlog') return require('./_authlog')(req, res);
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;

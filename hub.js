@@ -178,6 +178,19 @@ async function fetchDisponibilidadePrevistaSku(sku, quantidade, estoqueAtual) {
 
 // === AUTH ===
 
+// Log de auditoria (comercial.hub_log_autenticacao, RLS sem policy -- so entra
+// via este endpoint com service_role). Nunca deixa a chamada quebrar
+// login/logout de verdade: sempre sob try/catch, silenciosa no erro.
+async function registrarAuthLog(evento, email, tokenParaResolverUsuario) {
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (tokenParaResolverUsuario) headers.Authorization = 'Bearer ' + tokenParaResolverUsuario;
+    await fetch('/api/push-pedido?target=authlog', {
+      method: 'POST', headers, body: JSON.stringify({ evento, email })
+    });
+  } catch (_) { /* so auditoria, nunca bloqueia o fluxo real */ }
+}
+
 async function doLogin() {
   const email = document.getElementById('loginEmail').value.trim();
   const pass = document.getElementById('loginPass').value;
@@ -199,18 +212,21 @@ async function doLogin() {
 
     if (data.error || !data.access_token) {
       showLoginErr('Email ou senha incorretos');
+      await registrarAuthLog('login_falha', email, null);
       return;
     }
 
     SESSION = data;
     sessionStorage.setItem('hub_session', JSON.stringify(data));
+    await registrarAuthLog('login_sucesso', email, data.access_token);
     onLoginSuccess();
   } catch (e) {
     showLoginErr('Erro de conexao. Tente novamente.');
   }
 }
 
-function doLogout() {
+async function doLogout() {
+  await registrarAuthLog('logout', getUserEmail(), SESSION?.access_token);
   SESSION = null;
   sessionStorage.removeItem('hub_session');
   window.location.href = 'index.html';
@@ -690,7 +706,10 @@ function renderTopbar(titulo) {
             : `<span class="atuando-chip atuando-vazio" onclick="abrirSeletorCliente()">Selecionar revenda</span>`
         ) : ''}
         <span id="topCartBadge"></span>
-        <span class="notif-badge" id="notifBadge" style="display:none" title="Notificacoes pendentes"></span>
+        <span class="notif-wrap" id="notifWrap" style="position:relative">
+          <span class="notif-badge" id="notifBadge" style="display:none" title="Notificacoes" onclick="toggleNotifPanel(event)"></span>
+          <div class="notif-panel" id="notifPanel" style="display:none"></div>
+        </span>
         <span class="user-badge" id="userBadgeDesktop"><strong id="userName"></strong></span>
         <span class="logout-btn" id="logoutDesktop" onclick="doLogout()">Sair</span>
         <button class="hub-menu-btn" id="hubMenuBtn" onclick="toggleMobileMenu()" aria-label="Menu">&#9776;</button>
@@ -716,6 +735,18 @@ function renderTopbar(titulo) {
       .hub-menu-btn{display:none;background:none;border:1px solid rgba(255,255,255,.3);color:#fff;font-size:20px;padding:4px 10px;border-radius:6px;cursor:pointer;font-family:Outfit;line-height:1}
       .top-cart-badge{background:#e30613;color:#fff;font-size:12px;font-weight:600;padding:6px 12px;border-radius:14px;cursor:pointer;white-space:nowrap}
       .top-cart-badge:hover{background:#c20410}
+      .notif-badge{background:#e30613;color:#fff;font-size:11px;font-weight:600;min-width:18px;height:18px;padding:0 5px;border-radius:10px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+      .notif-panel{position:absolute;top:calc(100% + 10px);right:0;width:340px;max-height:420px;overflow-y:auto;background:#fff;border:1px solid #d0d8e8;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.18);z-index:500;font-family:Outfit,sans-serif}
+      .notif-panel-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #e2e8f0}
+      .notif-panel-head strong{font-size:13px;color:#1d327b}
+      .notif-panel-head span{font-size:12px;color:#25bbee;cursor:pointer}
+      .notif-item{display:block;padding:10px 14px;border-bottom:1px solid #f0f4f8;cursor:pointer;color:inherit;text-decoration:none}
+      .notif-item:hover{background:#f7fafc}
+      .notif-item.nao-lida{background:#f0f7ff}
+      .notif-item-titulo{font-size:13px;font-weight:600;color:#1a202c;margin-bottom:2px}
+      .notif-item-msg{font-size:12px;color:#4a5568;line-height:1.4;margin-bottom:4px}
+      .notif-item-hora{font-size:11px;color:#a0aec0}
+      .notif-panel-vazio{padding:28px 14px;text-align:center;font-size:13px;color:#a0aec0}
       .hub-mobile-user{display:none}
       @media(max-width:768px){
         .topbar h1{font-size:15px}
@@ -727,6 +758,11 @@ function renderTopbar(titulo) {
         .hub-nav-active{border-left-color:#1d327b;border-bottom-color:transparent;background:#f0f4f8}
         .hub-mobile-user{display:none;padding:10px 20px;background:#f7fafc;border-bottom:1px solid #d0d8e8;justify-content:space-between;align-items:center}
         .hub-mobile-user.open{display:flex}
+        /* O badge fica no meio do topbar em telas estreitas (nao mais perto
+           da borda direita) -- um painel absoluto ancorado nele (right:0)
+           estoura a tela pra esquerda. Vira um "sheet" fixo, largura da tela
+           menos a margem, independente de onde o badge esta. */
+        .notif-panel{position:fixed;top:56px;left:12px;right:12px;width:auto}
       }
     </style>`;
 
@@ -801,12 +837,105 @@ function atualizarCartBadgeTopo() {
 
 async function loadNotifCount() {
   try {
-    const rows = await sb('/hub_v_notif_pendentes?select=id&limit=1', 'GET');
+    const rows = await sb('/hub_v_notif_pendentes?select=id&limit=50', 'GET');
     const badge = document.getElementById('notifBadge');
-    if (badge && rows.length > 0) {
+    if (!badge) return;
+    if (rows.length > 0) {
       badge.style.display = 'inline-block';
+      badge.textContent = rows.length > 9 ? '9+' : String(rows.length);
+    } else {
+      badge.style.display = 'none';
+      badge.textContent = '';
     }
   } catch {}
+}
+
+// Pra onde a notificacao leva ao clicar, por referencia_tipo. So as telas que
+// de fato existem hoje -- sem link pra quem nao tem pagina propria ainda.
+const NOTIF_ROTA = {
+  onboarding: 'admin.html',
+  pedido: 'pedidos.html',
+  orcamento: 'pedidos.html',
+  solicitacao: 'solicitacoes.html',
+  titulo: 'financeiro.html',
+  nota_fiscal: 'financeiro.html'
+};
+
+function notifTempoRelativo(iso) {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return 'agora';
+  if (min < 60) return 'há ' + min + ' min';
+  const h = Math.floor(min / 60);
+  if (h < 24) return 'há ' + h + (h === 1 ? ' hora' : ' horas');
+  const d = Math.floor(h / 24);
+  return 'há ' + d + (d === 1 ? ' dia' : ' dias');
+}
+
+let _notifPanelAberto = false;
+
+async function toggleNotifPanel(ev) {
+  if (ev) ev.stopPropagation();
+  const panel = document.getElementById('notifPanel');
+  if (!panel) return;
+  _notifPanelAberto = !_notifPanelAberto;
+  if (!_notifPanelAberto) { panel.style.display = 'none'; return; }
+
+  panel.style.display = 'block';
+  // Fecha ao clicar fora -- registrado so na primeira abertura da pagina.
+  if (!window._notifPanelListenerOk) {
+    window._notifPanelListenerOk = true;
+    document.addEventListener('click', () => {
+      if (_notifPanelAberto) { _notifPanelAberto = false; panel.style.display = 'none'; }
+    });
+  }
+  await renderNotifPanelConteudo();
+}
+
+async function renderNotifPanelConteudo() {
+  const panel = document.getElementById('notifPanel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="notif-panel-vazio">Carregando...</div>';
+  try {
+    const rows = await sb('/hub_notificacoes?select=*&order=criado_em.desc&limit=30');
+    if (!rows.length) {
+      panel.innerHTML = '<div class="notif-panel-vazio">Nenhuma notificação ainda.</div>';
+      return;
+    }
+    const temNaoLida = rows.some(n => !n.lida);
+    panel.innerHTML = `
+      <div class="notif-panel-head">
+        <strong>Notificações</strong>
+        ${temNaoLida ? '<span onclick="marcarTodasNotifLidas(event)">Marcar todas como lidas</span>' : ''}
+      </div>
+      ${rows.map(n => {
+        const rota = NOTIF_ROTA[n.referencia_tipo] || null;
+        return `<a href="${rota || 'javascript:void(0)'}" class="notif-item${n.lida ? '' : ' nao-lida'}" onclick="marcarNotifLida('${n.id}')">
+          <div class="notif-item-titulo">${escHub(n.titulo || 'Notificação')}</div>
+          <div class="notif-item-msg">${escHub(n.mensagem || '')}</div>
+          <div class="notif-item-hora">${notifTempoRelativo(n.criado_em)}</div>
+        </a>`;
+      }).join('')}
+    `;
+  } catch (e) {
+    panel.innerHTML = '<div class="notif-panel-vazio">Erro ao carregar notificações.</div>';
+  }
+}
+
+async function marcarNotifLida(id) {
+  try {
+    await sb('/hub_notificacoes?id=eq.' + id, 'PATCH', { lida: true, lida_em: new Date().toISOString() });
+    loadNotifCount();
+  } catch (_) { /* navegacao ja acontece pelo href, nao bloquear por isso */ }
+}
+
+async function marcarTodasNotifLidas(ev) {
+  if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+  try {
+    await sb('/hub_notificacoes?lida=eq.false', 'PATCH', { lida: true, lida_em: new Date().toISOString() });
+    loadNotifCount();
+    await renderNotifPanelConteudo();
+  } catch (_) {}
 }
 
 // === TOAST ===

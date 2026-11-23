@@ -158,7 +158,7 @@ function gateHtml(titulo, texto, corpo, msg, ok) {
     (msg ? '<div class="field-err show" style="' + (ok ? 'background:#dcfce7;color:#166534;border-color:#bbf7d0' : '') + '">' + esc(msg) + '</div>' : '') + corpo + '</div>';
 }
 function telaEmail(msg, ok) {
-  gateHtml('Acesso ao orçamento', 'Para a sua segurança, confirme o e-mail para o qual este orçamento foi enviado. Enviaremos um código de 6 dígitos.',
+  gateHtml('Acesso ao orçamento', 'Para a sua segurança, confirme o seu e-mail. Enviaremos um código de 6 dígitos. O acesso fica registrado com o seu e-mail.',
     '<div class="field"><label>E-mail</label><input id="gEmail" type="email" autocomplete="email" placeholder="seu@email.com" value="' + esc(EMAIL_GATE) + '" onkeydown="if(event.key===\'Enter\')gatePedir()"></div>' +
     '<button class="btn btn-primary" id="gBtn" style="width:100%;justify-content:center" onclick="gatePedir()">Enviar código</button>', msg, ok);
 }

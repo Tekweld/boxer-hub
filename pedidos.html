@@ -216,7 +216,36 @@ if (getCart().length > 0) {
   renderTopbar('Pedidos');
   await loadPedidos();
   renderCarrinho();
+  await retomarRascunhoAposReload();
 })();
+
+// "Continuar rascunho" troca cliente/prospect ativo (setClienteAtivo/
+// setProspectAtivo), que SEMPRE recarrega a pagina -- nao da pra abrir o
+// modal de revisao antes disso (o contexto novo so existe depois do reload).
+// Por isso o pedido de retomar fica guardado na sessionStorage e e lido aqui,
+// logo apos o carrinho (ja restaurado antes do reload) estar renderizado.
+async function retomarRascunhoAposReload() {
+  const bruto = sessionStorage.getItem('hub_rascunho_resumir');
+  if (!bruto) return;
+  sessionStorage.removeItem('hub_rascunho_resumir');
+  let dados;
+  try { dados = JSON.parse(bruto); } catch { return; }
+  _rascunhoOrigemId = dados.id;
+  await enviarPedido();
+  // O modal de revisao so existe depois do fetch de politica/credito la
+  // dentro (async) -- espera os campos aparecerem em vez de supor um tempo
+  // fixo, com um teto curto pra nao travar se algo der errado.
+  for (let tentativas = 0; tentativas < 30; tentativas++) {
+    const campoNome = document.getElementById('orcDestNome');
+    if (campoNome) {
+      if (dados.destinatario?.nome) campoNome.value = dados.destinatario.nome;
+      if (dados.destinatario?.email) document.getElementById('orcDestEmail').value = dados.destinatario.email;
+      if (dados.destinatario?.celular) document.getElementById('orcDestCelular').value = dados.destinatario.celular;
+      break;
+    }
+    await new Promise(r => setTimeout(r, 150));
+  }
+}
 
 // === CARRINHO ===
 
@@ -513,8 +542,10 @@ async function renderCarrinho() {
   }
 
   if (!cart.length) {
-    wrap.innerHTML = '<div class="empty-state"><h3>Carrinho vazio</h3><p>Adicione produtos pelo <a href="catalogo.html" style="color:#1d327b">catalogo</a>.</p></div>';
+    wrap.innerHTML = '<div class="empty-state"><h3>Carrinho vazio</h3><p>Adicione produtos pelo <a href="catalogo.html" style="color:#1d327b">catalogo</a>.</p></div>'
+      + '<div id="rascunhosWrap"></div>';
     document.getElementById('cartActionsBar')?.remove();
+    if (getUserTipo() !== 'cliente') renderRascunhosOrcamento();
     return;
   }
 
@@ -981,6 +1012,10 @@ async function _enviarPedidoInterno() {
 // mensagem de recusa e tarde demais -- ele tem que ver antes de tentar.
 
 let _revisao = null;
+// Id do rascunho (comercial.hub_orcamento_rascunhos) que originou a revisao
+// atual, quando ela veio de "Continuar rascunho" -- apagado sozinho quando o
+// orcamento de verdade e enviado, pra nao sobrar rascunho fantasma.
+let _rascunhoOrigemId = null;
 
 // Rotulo legivel da forma de pagamento escolhida na tela do carrinho -- so
 // para recapitular aqui, o campo em si mora em getDetalhesPedido() agora.
@@ -1006,7 +1041,8 @@ async function abrirRevisaoProspect(cart) {
 
     _revisao = {
       pedidoId: null, subtotal: total, valorFrete: 0, total, frete: null,
-      cliente: { cnpj: prospect.cnpj, razao_social: prospect.nome, nome_fantasia: '', uf: prospect.uf, email_principal: '', telefone: '' }
+      cliente: { cnpj: prospect.cnpj, razao_social: prospect.nome, nome_fantasia: '', uf: prospect.uf, email_principal: '', telefone: '' },
+      _precosCache: precos
     };
 
     openModal(`
@@ -1042,6 +1078,8 @@ async function abrirRevisaoProspect(cart) {
       </div>
       <div class="form-actions">
         <button class="btn btn-outline" onclick="closeModal()">Voltar ao carrinho</button>
+        <button class="btn btn-outline" onclick="gerarPdfPreliminar()">Gerar PDF (prévia)</button>
+        <button class="btn btn-outline" onclick="salvarRascunhoOrcamento()">Salvar rascunho</button>
         <button class="btn" style="background:#25bbee;color:#fff;border-color:#25bbee" id="btnEnviarOrcamento" onclick="enviarOrcamento()">Enviar Link do Orçamento</button>
       </div>
     `);
@@ -1145,7 +1183,8 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
     pedidoId, subtotal, valorFrete, total, frete, cliente,
     classeAplicada: politica.classe_aplicada ?? null,
     segmentoAplicado: politica.segmento_aplicado ?? null,
-    ufAplicada: politica.uf_aplicada ?? null
+    ufAplicada: politica.uf_aplicada ?? null,
+    _precosCache: precos
   };
 
   const violacoes = politica.violacoes || [];
@@ -1250,6 +1289,8 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
 
     <div class="form-actions">
       <button class="btn btn-outline" onclick="closeModal()">Voltar ao carrinho</button>
+      ${podeEnviarOrcamento() ? `<button class="btn btn-outline" onclick="gerarPdfPreliminar()">Gerar PDF (prévia)</button>` : ''}
+      ${podeEnviarOrcamento() ? `<button class="btn btn-outline" onclick="salvarRascunhoOrcamento()">Salvar rascunho</button>` : ''}
       ${podeEnviarOrcamento() ? `<button class="btn btn-outline" style="color:#0e7490;border-color:#67c6e8" id="btnEnviarOrcamento" onclick="enviarOrcamento()">Enviar Orçamento</button>` : ''}
       <button class="btn btn-primary" id="btnConfirmarEnvio" onclick="confirmarEnvio()"
               ${bloqueado ? 'disabled title="Resolva os bloqueios acima"' : ''}>Confirmar e Enviar Pedido${getUserTipo() === 'cliente' ? '' : ' para ZEN'}</button>
@@ -1348,6 +1389,7 @@ async function enviarOrcamento() {
     // sem uso; apaga pra nao acumular rascunho orfao a cada orcamento
     // enviado. CNPJ novo (prospect) nunca cria esse rascunho (pedidoId null).
     if (_revisao.pedidoId) { try { await sb('/hub_pedidos?id=eq.' + _revisao.pedidoId, 'DELETE'); } catch (_) {} }
+    if (_rascunhoOrigemId) { try { await sb('/hub_orcamento_rascunhos?id=eq.' + _rascunhoOrigemId, 'DELETE'); } catch (_) {} _rascunhoOrigemId = null; }
     clearPedidoEmEdicao();
     clearCart();
     _revisao = null;
@@ -1377,6 +1419,164 @@ function mostrarOrcamentoCriado(j) {
       <div style="margin-top:18px"><button class="btn btn-outline" onclick="closeModal();document.querySelectorAll('.tab')[1].click();loadPedidos()">Fechar</button></div>
     </div>
   `);
+}
+
+// === RASCUNHO DE ORCAMENTO (Cristina, 2026-11-23) ===
+// "Deixa o orcamento salvo nas opcoes dele, pra terminar depois" -- nunca
+// toca no ZEN nem em comercial.orcamentos (o orcamento real so nasce quando
+// ela clicar "Enviar Orcamento" de verdade); so guarda cliente/prospect +
+// carrinho + condicoes numa tabela propria do Hub (comercial.hub_orcamento_
+// rascunhos, RLS por dono) pra reabrir exatamente de onde parou.
+function lerDestinatarioAtual() {
+  const nome = document.getElementById('orcDestNome')?.value?.trim() || null;
+  const email = document.getElementById('orcDestEmail')?.value?.trim() || null;
+  const celular = document.getElementById('orcDestCelular')?.value?.trim() || null;
+  return (nome || email || celular) ? { nome, email, celular } : null;
+}
+
+async function salvarRascunhoOrcamento() {
+  if (!_revisao) return;
+  const cart = getCart();
+  if (!cart.length) { toast('Carrinho vazio, nada para salvar', 'error'); return; }
+
+  const prospect = getProspectAtivo();
+  const clienteId = getClienteAtivo();
+  const payload = {
+    criado_por: getUserId(),
+    titulo: (_revisao.cliente?.razao_social || _revisao.cliente?.nome_fantasia || 'Sem nome') + ' — ' + new Date().toLocaleDateString('pt-BR'),
+    modo: prospect ? 'prospect' : 'cliente',
+    cliente_id: clienteId || null,
+    prospect: prospect || null,
+    cart,
+    detalhes: getDetalhesPedido(),
+    destinatario: lerDestinatarioAtual(),
+    atualizado_em: new Date().toISOString()
+  };
+
+  try {
+    if (_rascunhoOrigemId) {
+      await sb('/hub_orcamento_rascunhos?id=eq.' + _rascunhoOrigemId, 'PATCH', payload);
+    } else {
+      const [novo] = await sb('/hub_orcamento_rascunhos', 'POST', payload);
+      _rascunhoOrigemId = novo.id;
+    }
+    toast('Rascunho salvo — você acha ele depois em Novo Pedido, com o carrinho vazio');
+  } catch (e) {
+    toast('Erro ao salvar rascunho: ' + erroLegivel(e), 'error');
+  }
+}
+
+async function renderRascunhosOrcamento() {
+  const wrap = document.getElementById('rascunhosWrap');
+  if (!wrap) return;
+  let rascunhos;
+  try { rascunhos = await sb('/hub_orcamento_rascunhos?select=id,titulo,modo,criado_em,atualizado_em&order=atualizado_em.desc&limit=20'); }
+  catch { return; }
+  if (!rascunhos.length) { wrap.innerHTML = ''; return; }
+
+  wrap.innerHTML = `
+    <div style="margin-top:24px;max-width:480px;margin-left:auto;margin-right:auto;text-align:left">
+      <h4 style="font-size:13px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Rascunhos de orçamento</h4>
+      ${rascunhos.map(r => `
+        <div style="display:flex;align-items:center;justify-content:space-between;background:#fff;border:1px solid #d0d8e8;border-radius:8px;padding:10px 14px;margin-bottom:8px">
+          <div>
+            <div style="font-size:13px;font-weight:500;color:#1a202c">${escHub(r.titulo)}</div>
+            <div style="font-size:11px;color:#a0aec0">Atualizado ${fmtData(r.atualizado_em)}</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-outline btn-sm" onclick="continuarRascunho('${r.id}')">Continuar</button>
+            <button class="btn btn-danger btn-sm" onclick="excluirRascunho('${r.id}')">Excluir</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function continuarRascunho(id) {
+  let row;
+  try { [row] = await sb('/hub_orcamento_rascunhos?id=eq.' + id + '&select=*'); } catch (e) { toast('Erro ao abrir rascunho: ' + erroLegivel(e), 'error'); return; }
+  if (!row) { toast('Rascunho não encontrado', 'error'); return; }
+
+  sessionStorage.setItem('hub_rascunho_resumir', JSON.stringify({ id: row.id, destinatario: row.destinatario || null }));
+
+  // setClienteAtivo/setProspectAtivo chamam location.reload() -- mas reload()
+  // so AGENDA a navegacao, o resto desta funcao ainda roda antes dela
+  // acontecer de verdade. E por isso que da pra gravar carrinho/detalhes
+  // DEPOIS de trocar o contexto e eles sobreviverem ao reload.
+  if (row.modo === 'prospect') {
+    setProspectAtivo(row.prospect);
+  } else {
+    let nomeCliente = row.titulo;
+    try { const [c] = await sb('/hub_clientes?id=eq.' + row.cliente_id + '&select=nome_exibicao,razao_social'); if (c) nomeCliente = c.nome_exibicao || c.razao_social; } catch (_) {}
+    setClienteAtivo(row.cliente_id, nomeCliente);
+  }
+  saveCart(row.cart || []);
+  if (row.detalhes) salvarDetalhesPedido(row.detalhes);
+}
+
+async function excluirRascunho(id) {
+  if (!(await confirmModal('Excluir este rascunho de orçamento? Não dá para desfazer.'))) return;
+  try {
+    await sb('/hub_orcamento_rascunhos?id=eq.' + id, 'DELETE');
+    renderRascunhosOrcamento();
+  } catch (e) { toast('Erro ao excluir rascunho: ' + erroLegivel(e), 'error'); }
+}
+
+// === PDF (prévia) DO ORCAMENTO ===
+// Pedido da Cristina: mostrar algo pro cliente na hora, antes de confirmar o
+// envio de verdade. Reaproveita o MESMO template visual que o cliente ve no
+// link oficial (orcamento-publico.html) em vez de inventar um layout novo --
+// so que alimentado pelos dados da revisao atual (ainda sem numero/link
+// oficial, por isso "preliminar"). window.print() em vez de lib de PDF: o
+// proprio navegador ja sabe salvar como PDF na caixa de impressao, sem
+// dependencia nova.
+function gerarPdfPreliminar() {
+  if (!_revisao) return;
+  const cart = getCart();
+  if (!cart.length) { toast('Carrinho vazio, nada para gerar', 'error'); return; }
+
+  const precos = _revisao._precosCache || {};
+  const itens = cart.map(i => {
+    const p = precos[i.produto_id];
+    const unit = i.precoManual != null ? i.precoManual : +(p?.preco_final ?? i.preco_base ?? 0);
+    return { codigo: i.sku, modelo: i.nome, qtd: i.quantidade, unit, subtotal: unit * i.quantidade, estoque: 'sem_info', ipi: p?.ipi ?? null, icms: p?.icms ?? null };
+  });
+  const total = itens.reduce((s, i) => s + i.subtotal, 0);
+  const destinatario = lerDestinatarioAtual() || {};
+  const cliente = _revisao.cliente || {};
+
+  const janela = window.open('', '_blank');
+  if (!janela) { toast('O navegador bloqueou a nova aba — permita pop-ups pra ver a prévia', 'error'); return; }
+  janela.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
+    <title>Prévia de orçamento — ${escHub(cliente.razao_social || '')}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Outfit,sans-serif;color:#1a202c;padding:32px;max-width:820px;margin:0 auto}
+      .marca{color:#e30613;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px}
+      h1{font-size:20px;color:#1d327b;margin:4px 0 2px}
+      .aviso{background:#fff7ed;border:1px solid #fed7aa;color:#92400e;padding:10px 14px;border-radius:8px;font-size:12px;margin:14px 0}
+      .info{font-size:13px;color:#4a5568;margin-bottom:4px}
+      table{width:100%;border-collapse:collapse;font-size:13px;margin-top:16px}
+      th{text-align:left;padding:6px 8px;color:#718096;font-size:11px;text-transform:uppercase;border-bottom:2px solid #e2e8f0}
+      td{padding:7px 8px;border-bottom:1px solid #e2e8f0}
+      .num{text-align:right}
+      .total{font-weight:700;color:#1d327b;font-size:15px;border-top:2px solid #1d327b}
+      @media print{.no-print{display:none}}
+    </style></head><body>
+    <div class="marca">Boxer Soldas</div>
+    <h1>Prévia de orçamento (preliminar)</h1>
+    <div class="aviso">Documento informativo, sem número oficial nem link rastreável ainda — gerado a partir do que está no carrinho agora. Quando o orçamento de verdade for enviado, o cliente recebe o link oficial para aceitar.</div>
+    <div class="info"><strong>Cliente:</strong> ${escHub(cliente.razao_social || cliente.nome_fantasia || '—')}${cliente.cnpj ? ' · ' + escHub(cliente.cnpj) : ''}</div>
+    ${destinatario.nome || destinatario.email ? `<div class="info"><strong>Contato:</strong> ${escHub(destinatario.nome || '')} ${destinatario.email ? '· ' + escHub(destinatario.email) : ''} ${destinatario.celular ? '· ' + escHub(destinatario.celular) : ''}</div>` : ''}
+    <div class="info"><strong>Data:</strong> ${new Date().toLocaleDateString('pt-BR')}</div>
+    <table><thead><tr><th>Produto</th><th class="num">Qtd</th><th class="num">Unitário</th><th class="num">Subtotal</th></tr></thead>
+    <tbody>${itens.map(i => `<tr><td>${escHub(i.modelo)}<br><span style="font-size:10px;color:#a0aec0">${escHub(i.codigo)}</span></td><td class="num">${i.qtd}</td><td class="num">${fmtMoeda(i.unit)}</td><td class="num">${fmtMoeda(i.subtotal)}</td></tr>`).join('')}
+    </tbody><tfoot><tr class="total"><td colspan="3">Total</td><td class="num">${fmtMoeda(total)}</td></tr></tfoot></table>
+    <div class="no-print" style="margin-top:20px"><button onclick="window.print()" style="font-family:Outfit;padding:10px 18px;border-radius:8px;border:1px solid #1d327b;background:#1d327b;color:#fff;cursor:pointer">Salvar como PDF</button></div>
+    </body></html>`);
+  janela.document.close();
 }
 
 // Mesmo backend do WhatsApp (link direto), so que por e-mail via Resend --

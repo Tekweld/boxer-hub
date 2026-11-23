@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Comissao - Boxer Hub</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
+.topbar{background:linear-gradient(135deg,#1d327b,#162666);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;border-bottom:3px solid #25bbee}
+.topbar-left{display:flex;align-items:center;gap:12px}
+.topbar h1{color:#fff;font-size:18px;font-weight:700}
+.topbar-right{display:flex;align-items:center;gap:16px}
+.user-badge{color:#93b4d4;font-size:13px}.user-badge strong{color:#fff}
+.logout-btn{color:#93b4d4;font-size:13px;padding:6px 12px;border:1px solid rgba(255,255,255,.2);border-radius:6px;cursor:pointer}
+.logout-btn:hover{background:rgba(255,255,255,.1);color:#fff}
+.toast{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;color:#fff;font-family:Outfit;font-size:13px;font-weight:500;z-index:2000;animation:slideIn .3s;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+.toast-success{background:#16a34a}.toast-error{background:#dc2626}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+.page-wrap{max-width:1100px;margin:0 auto;padding:20px 24px 60px}
+.page-head{margin-bottom:18px}
+.page-head h2{font-size:20px;font-weight:700;color:#1d327b}
+.page-head p{font-size:13px;color:#718096;margin-top:2px}
+
+.com-filtros{display:flex;gap:10px;align-items:center;margin-bottom:20px;flex-wrap:wrap}
+.com-filtros select,.com-filtros input{font-family:Outfit;font-size:13px;padding:9px 12px;border:1px solid #c3cfe2;border-radius:8px;outline:none}
+.com-filtros select:focus,.com-filtros input:focus{border-color:#25bbee}
+.com-filtros select{min-width:260px}
+
+.com-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:24px}
+.com-card{background:#fff;border:1px solid #d0d8e8;border-radius:10px;padding:16px}
+.com-card-label{font-size:11px;font-weight:500;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.com-card-valor{font-size:20px;font-weight:700;color:#1d327b}
+.com-card-sub{font-size:12px;color:#a0aec0;margin-top:4px}
+
+.com-sec{font-size:14px;font-weight:600;color:#1d327b;margin:24px 0 10px}
+.com-resumo-row{display:flex;align-items:center;justify-content:space-between;background:#fff;border:1px solid #d0d8e8;border-radius:10px;padding:12px 16px;margin-bottom:8px}
+.com-resumo-comp{font-size:14px;font-weight:600;color:#1a202c}
+.com-resumo-meta{font-size:12px;color:#718096;margin-top:2px}
+.com-resumo-valor{font-size:16px;font-weight:700;color:#1d327b;text-align:right}
+.com-badge-fechado{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;background:#dcfce7;color:#16a34a;margin-left:8px}
+.com-badge-aberto{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;background:#fef3c7;color:#d97706;margin-left:8px}
+
+table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;border:1px solid #d0d8e8;border-radius:10px;overflow:hidden}
+thead th{padding:8px 12px;text-align:left;color:#718096;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #e2e8f0;background:#f7fafc}
+tbody td{padding:8px 12px;border-bottom:1px solid #e2e8f0;vertical-align:middle}
+tbody tr:hover{background:#f0f7ff}
+tbody tr.excluida{opacity:.55;text-decoration:line-through}
+.com-wrap-tabela{overflow-x:auto}
+.empty-state{text-align:center;padding:60px 20px;color:#718096}
+.empty-state h3{color:#4a5568;margin-bottom:6px}
+</style>
+</head>
+<body>
+
+<div class="page-wrap">
+  <div class="page-head">
+    <h2>Comissao</h2>
+    <p>Historico de comissao direto do financeiro -- automatico, sem planilha solta.</p>
+  </div>
+  <div class="com-filtros" id="comFiltros"></div>
+  <div id="comConteudo"><div class="empty-state"><h3>Carregando...</h3></div></div>
+</div>
+
+<script src="hub.js"></script>
+<script>
+if (!requireAuth()) throw 'auth';
+
+let EH_GESTOR = false;
+let VENDEDORES = [];
+
+(async () => {
+  await loadPerfil();
+  renderTopbar('Comissao');
+  EH_GESTOR = ['admin', 'manager'].includes(getUserRole());
+  await carregarComissoes();
+})();
+
+async function chamarComissaoApi(body) {
+  const r = await fetch('/api/push-pedido?target=comissoes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (SESSION?.access_token || '') },
+    body: JSON.stringify(body || {})
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'Erro ao carregar comissao');
+  return j;
+}
+
+function renderFiltros() {
+  const el = document.getElementById('comFiltros');
+  if (!EH_GESTOR) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <select id="comVendedorSel" onchange="carregarComissoes(this.value)">
+      <option value="">Selecione um representante...</option>
+      ${VENDEDORES.map(v => `<option value="${v.erp_representante_id}">${escHub(v.nome)}</option>`).join('')}
+    </select>
+  `;
+}
+
+async function carregarComissoes(vendedorIdForcado) {
+  const conteudo = document.getElementById('comConteudo');
+  const selecionado = vendedorIdForcado !== undefined ? vendedorIdForcado : document.getElementById('comVendedorSel')?.value;
+
+  if (EH_GESTOR && !selecionado) {
+    conteudo.innerHTML = '';
+  } else {
+    conteudo.innerHTML = '<div class="empty-state"><h3>Carregando...</h3></div>';
+  }
+
+  try {
+    const j = await chamarComissaoApi(EH_GESTOR ? { vendedor_id: selecionado || null } : {});
+    if (EH_GESTOR && VENDEDORES.length === 0 && j.vendedores) { VENDEDORES = j.vendedores; renderFiltros(); if (selecionado) document.getElementById('comVendedorSel').value = selecionado; }
+
+    if (EH_GESTOR && !selecionado) {
+      conteudo.innerHTML = '<div class="empty-state"><h3>Selecione um representante</h3><p>Escolha quem voce quer acompanhar no filtro acima.</p></div>';
+      return;
+    }
+
+    if (!j.linhas.length) {
+      conteudo.innerHTML = '<div class="empty-state"><h3>Nenhuma comissao encontrada</h3><p>Ainda nao ha lancamentos de comissao pra este representante.</p></div>';
+      return;
+    }
+
+    const totalGeral = j.linhas.filter(l => !l.excluida).reduce((s, l) => s + (Number(l.valor_comissao) || 0), 0);
+    const totalExcluidas = j.linhas.filter(l => l.excluida).length;
+
+    conteudo.innerHTML = `
+      <div class="com-cards">
+        <div class="com-card"><div class="com-card-label">Comissao total (geral)</div><div class="com-card-valor">${fmtMoeda(totalGeral)}</div><div class="com-card-sub">${j.linhas.length} lancamento(s)${totalExcluidas ? ', ' + totalExcluidas + ' excluido(s)/corrigido(s)' : ''}</div></div>
+        <div class="com-card"><div class="com-card-label">Competencias</div><div class="com-card-valor">${j.resumo.length}</div><div class="com-card-sub">${j.fechamentos.length} fechamento(s) registrado(s)</div></div>
+      </div>
+
+      <div class="com-sec">Por competencia</div>
+      ${j.resumo.map(r => `
+        <div class="com-resumo-row">
+          <div>
+            <div class="com-resumo-comp">${fmtCompetencia(r.competencia)}${r.fechado ? '<span class="com-badge-fechado">Fechado</span>' : '<span class="com-badge-aberto">Aberto</span>'}</div>
+            <div class="com-resumo-meta">${r.qtd} lancamento(s)${r.qtd_excluidas ? ', ' + r.qtd_excluidas + ' excluido(s)' : ''}</div>
+          </div>
+          <div class="com-resumo-valor">${fmtMoeda(r.valor_comissao)}</div>
+        </div>
+      `).join('')}
+
+      <div class="com-sec">Lancamentos</div>
+      <div class="com-wrap-tabela">
+        <table>
+          <thead><tr><th>Data</th><th>Cliente</th><th>NF / Titulo</th><th>Valor evento</th><th>Taxa</th><th>Comissao</th></tr></thead>
+          <tbody>
+            ${j.linhas.map(l => `
+              <tr class="${l.excluida ? 'excluida' : ''}" title="${l.excluida && l.motivo_exclusao ? escHub(l.motivo_exclusao) : ''}">
+                <td>${fmtData(l.data_evento)}</td>
+                <td>${escHub(l.cliente_nome || '-')}</td>
+                <td>${escHub(l.nf_numero || l.titulo_codigo || '-')}</td>
+                <td>${fmtMoeda(l.valor_evento)}</td>
+                <td>${l.taxa != null ? (Number(l.taxa) <= 1 ? (Number(l.taxa) * 100).toFixed(1) + '%' : Number(l.taxa).toFixed(1) + '%') : '-'}</td>
+                <td><strong>${fmtMoeda(l.valor_comissao)}</strong></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) {
+    conteudo.innerHTML = '<div class="empty-state"><h3>Nao foi possivel carregar</h3><p>' + escHub(e.message) + '</p></div>';
+  }
+}
+
+function fmtCompetencia(iso) {
+  if (!iso) return '-';
+  const [ano, mes] = iso.split('-');
+  const MESES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+  return MESES[Number(mes) - 1] + '/' + ano;
+}
+</script>
+</body>
+</html>

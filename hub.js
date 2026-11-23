@@ -659,6 +659,12 @@ function renderTopbar(titulo) {
   if (tipo === 'representante') {
     navItems.push({ href: 'cadastro-representante.html', label: 'Novo Cliente', icon: boxerNavIcon('#dc2626') });
   }
+  // Comissao (Fase 1, Andre 2026-11-19/23): representante ve a propria
+  // carteira, admin/manager veem com seletor -- nunca dealer/analyst/financial
+  // (mesmo gate de api/_comissoes.js, nao so visual).
+  if (tipo === 'representante' || ['admin', 'manager'].includes(role)) {
+    navItems.push({ href: 'comissoes.html', label: 'Comissao', icon: boxerNavIcon('#16a34a') });
+  }
   // Financeiro nunca aparecia para a equipe interna, mesmo com RLS liberando
   // admin/manager/financial (ver CLAUDE.md, tabela de RLS) -- so dava pra
   // acessar digitando a URL direto. Analyst fica de fora, igual a RLS.

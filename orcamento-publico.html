@@ -76,6 +76,14 @@ tfoot td{padding:8px;border-top:1px solid #e2e8f0}
 .field input,.field textarea{width:100%;padding:9px 12px;border:1px solid #c3cfe2;border-radius:8px;font-family:Outfit;font-size:13px}
 .aceito-faixa{background:#dcfce7;color:#166534;padding:12px 16px;border-radius:8px;font-size:13px;margin-bottom:16px;text-align:center}
 .empty{text-align:center;padding:60px 20px;color:#718096}
+
+body.noc,body.noc *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+body.noc input,body.noc textarea{-webkit-user-select:text;user-select:text}
+body.noc img{-webkit-user-drag:none}
+.avoc{display:none}
+body.noc.oculto .avoc{display:block;position:fixed;left:0;right:0;top:40%;text-align:center;font:700 15px Outfit,Arial,sans-serif;color:#1d327b;z-index:60}
+@media print{body.noc>*{display:none!important}body.noc::before{content:'Impressão e cópia não são permitidas neste documento.';display:block;padding:60px;font:700 18px Arial,sans-serif;color:#1d327b}}
+body.noc.oculto #corpo,body.noc.oculto .top,body.noc.oculto .cta{visibility:hidden}
 .wm{position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:45;background-repeat:repeat;background-size:760px 380px}
 @media print{.wm{position:fixed;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style>
@@ -203,6 +211,33 @@ function aplicarMarca() {
   if (!w) { w = document.createElement('div'); w.id = 'wm'; w.className = 'wm'; document.body.appendChild(w); }
   w.style.backgroundImage = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(svg) + '")';
 }
+
+// ---- protecao de leitura: sem imprimir/PDF, sem copiar/selecionar, conteudo some sem foco (print de tela nao tem como impedir; a marca d'agua rastreia) ----
+let _protegido = false;
+function protegerLeitura(alvos, frame) {
+  if (_protegido) return; _protegido = true;
+  document.body.classList.add('noc');
+  const permitido = e => { const t = e.target && e.target.tagName; return t === 'INPUT' || t === 'TEXTAREA'; };
+  const bloqueia = e => { if (permitido(e)) return; e.preventDefault(); return false; };
+  const teclas = e => {
+    const k = (e.key || '').toLowerCase();
+    if (k === 'printscreen') { try { navigator.clipboard && navigator.clipboard.writeText(''); } catch (x) {} ocultar(true); setTimeout(checarFoco, 1800); e.preventDefault(); return; }
+    if ((e.ctrlKey || e.metaKey) && ['p', 's', 'u'].indexOf(k) >= 0) { e.preventDefault(); e.stopPropagation(); return false; }
+    if ((e.ctrlKey || e.metaKey) && ['c', 'a', 'x'].indexOf(k) >= 0 && !permitido(e)) { e.preventDefault(); e.stopPropagation(); return false; }
+    if (k === 'f12' || (e.ctrlKey && e.shiftKey && ['i', 'j', 'c', 's'].indexOf(k) >= 0)) { e.preventDefault(); return false; }
+    if (e.metaKey && e.shiftKey && ['3', '4', '5'].indexOf(k) >= 0) { ocultar(true); setTimeout(checarFoco, 1800); }
+  };
+  const ligar = d => { ['copy', 'cut', 'contextmenu', 'dragstart', 'selectstart'].forEach(ev => d.addEventListener(ev, bloqueia, true)); d.addEventListener('keydown', teclas, true); };
+  const ocultar = v => document.body.classList.toggle('oculto', v);
+  const checarFoco = () => ocultar(document.hidden || !document.hasFocus());
+  ligar(document);
+  window.addEventListener('blur', () => setTimeout(checarFoco, 80));
+  window.addEventListener('focus', checarFoco);
+  document.addEventListener('visibilitychange', checarFoco);
+  window.__ligarProtecao = ligar;
+  checarFoco();
+}
+
 async function abrirOrcamento(contar) {
   try {
     ORC = await rpc('buscar_orcamento_publico_v2', { p_token: token, p_sessao: SESSAO, p_ua: navigator.userAgent, p_contar: contar !== false });
@@ -218,6 +253,8 @@ async function abrirOrcamento(contar) {
   VISUALIZADOR = ORC.visualizador || EMAIL_GATE;
   render();
   aplicarMarca();
+  if (!document.querySelector('.avoc')) { const av = document.createElement('div'); av.className = 'avoc'; av.textContent = 'Conteúdo oculto enquanto esta janela não estiver em foco.'; document.body.appendChild(av); }
+  protegerLeitura();
   return true;
 }
 
@@ -331,12 +368,10 @@ function render() {
   cta.className = 'cta';
   cta.innerHTML = `
     <div class="cta-total">${fmtMoeda(ORC.total_final)}</div>
-    <button class="btn btn-outline" onclick="window.print()">Imprimir / PDF</button>
     ${ORC.vendedor_telefone ? `<a class="btn btn-outline" href="https://wa.me/55${ORC.vendedor_telefone.replace(/\D/g,'')}" target="_blank" rel="noopener">Falar com ${esc((ORC.vendedor_nome || '').split(' ')[0] || 'vendedor')}</a>` : ''}
     ${!aceito && !ORC.expirado ? `<button class="btn btn-primary" onclick="abrirAceite()">Aceitar orçamento</button>` : ''}
   `;
   document.body.appendChild(cta);
-  if (new URLSearchParams(location.search).get('pdf') === '1') setTimeout(() => window.print(), 700);
 }
 
 function abrirAceite() {

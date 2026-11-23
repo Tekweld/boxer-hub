@@ -76,6 +76,16 @@ tfoot td{padding:8px;border-top:1px solid #e2e8f0}
 .field input,.field textarea{width:100%;padding:9px 12px;border:1px solid #c3cfe2;border-radius:8px;font-family:Outfit;font-size:13px}
 .aceito-faixa{background:#dcfce7;color:#166534;padding:12px 16px;border-radius:8px;font-size:13px;margin-bottom:16px;text-align:center}
 .empty{text-align:center;padding:60px 20px;color:#718096}
+
+body.noc,body.noc *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+body.noc input,body.noc textarea{-webkit-user-select:text;user-select:text}
+body.noc img{-webkit-user-drag:none}
+.avoc{display:none}
+body.noc.oculto .avoc{display:block;position:fixed;left:0;right:0;top:40%;text-align:center;font:700 15px Outfit,Arial,sans-serif;color:#1d327b;z-index:60}
+@media print{body.noc>*{display:none!important}body.noc::before{content:'Impressão e cópia não são permitidas neste documento.';display:block;padding:60px;font:700 18px Arial,sans-serif;color:#1d327b}}
+body.noc.oculto #corpo,body.noc.oculto .top,body.noc.oculto .cta{visibility:hidden}
+.wm{position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:45;background-repeat:repeat;background-size:760px 380px}
+@media print{.wm{position:fixed;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style>
 </head>
 <body>
@@ -124,23 +134,139 @@ async function rpc(nome, params) {
 const params = new URLSearchParams(location.search);
 const token = params.get('t');
 let ORC = null;
+let SESSAO = null, VISUALIZADOR = '', EMAIL_GATE = '';
+const HUB_ACESSO = '/api/disponibilidade?target=acesso';
+const SESS_KEY = 'orc_sess_' + token;
+
+async function rpcPub(nome, p) {
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + nome, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SB_ANON, Authorization: 'Bearer ' + SB_ANON, 'Content-Profile': 'public' },
+    body: JSON.stringify(p)
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function lerSessao() {
+  try { const o = JSON.parse(sessionStorage.getItem(SESS_KEY) || 'null'); if (o && o.s && (!o.x || new Date(o.x) > new Date())) { EMAIL_GATE = o.e || ''; return o.s; } } catch (e) {}
+  return null;
+}
+function limparSessao() { try { sessionStorage.removeItem(SESS_KEY); } catch (e) {} SESSAO = null; }
+function gateHtml(titulo, texto, corpo, msg, ok) {
+  document.getElementById('corpo').innerHTML = '<div class="card" style="max-width:420px;margin:30px auto"><h1 style="font-size:18px;color:#1d327b;margin-bottom:6px">' + titulo + '</h1>' +
+    '<p style="font-size:13px;color:#4a5568;margin-bottom:14px">' + texto + '</p>' +
+    (msg ? '<div class="field-err show" style="' + (ok ? 'background:#dcfce7;color:#166534;border-color:#bbf7d0' : '') + '">' + esc(msg) + '</div>' : '') + corpo + '</div>';
+}
+function telaEmail(msg, ok) {
+  gateHtml('Acesso ao orçamento', 'Para a sua segurança, confirme o seu e-mail. Enviaremos um código de 6 dígitos. O acesso fica registrado com o seu e-mail.',
+    '<div class="field"><label>E-mail</label><input id="gEmail" type="email" autocomplete="email" placeholder="seu@email.com" value="' + esc(EMAIL_GATE) + '" onkeydown="if(event.key===\'Enter\')gatePedir()"></div>' +
+    '<button class="btn btn-primary" id="gBtn" style="width:100%;justify-content:center" onclick="gatePedir()">Enviar código</button>', msg, ok);
+}
+function telaCodigo(msg, ok) {
+  gateHtml('Digite o código', 'Enviamos um código de 6 dígitos para <strong>' + esc(EMAIL_GATE) + '</strong>. Confira também a caixa de spam. Ele vale por 10 minutos.',
+    '<div class="field"><label>Código</label><input id="gCod" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="000000" onkeydown="if(event.key===\'Enter\')gateConfirmar()"></div>' +
+    '<button class="btn btn-primary" id="gBtn" style="width:100%;justify-content:center" onclick="gateConfirmar()">Entrar</button>' +
+    '<a class="recusar" onclick="telaEmail()">Usar outro e-mail</a>', msg, ok);
+}
+const MSG_GATE = {
+  nao_autorizado: 'Este e-mail não é o destinatário deste orçamento. Use o e-mail que recebeu o link.',
+  expirado: 'Este orçamento expirou. Peça um novo ao seu representante Boxer.',
+  cancelado: 'Este orçamento foi cancelado. Fale com o seu representante Boxer.',
+  nao_encontrado: 'Link inválido ou não encontrado. Confira o endereço com o seu representante Boxer.',
+  limite: 'Muitas tentativas. Aguarde alguns minutos e tente de novo.',
+  erro: 'Não foi possível enviar o código agora. Tente novamente em instantes.'
+};
+async function gatePedir() {
+  const email = (document.getElementById('gEmail').value || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { EMAIL_GATE = email; telaEmail('Informe um e-mail válido.'); return; }
+  EMAIL_GATE = email;
+  const b = document.getElementById('gBtn'); b.disabled = true; b.textContent = 'Enviando...';
+  try {
+    const r = await fetch(HUB_ACESSO, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'link_codigo', origem: 'orcamento', token, email }) });
+    const j = await r.json().catch(() => ({}));
+    const st = (r.ok && j.status) || 'erro';
+    if (st === 'enviado') { telaCodigo('Código enviado!', true); return; }
+    let m = MSG_GATE[st] || MSG_GATE.erro;
+    if (st === 'nao_autorizado' && j.dica) m += ' (cadastrado: ' + j.dica + ')';
+    telaEmail(m);
+  } catch (e) { telaEmail(MSG_GATE.erro); }
+}
+async function gateConfirmar() {
+  const cod = (document.getElementById('gCod').value || '').replace(/\D/g, '');
+  if (cod.length < 6) { telaCodigo('Digite o código recebido por e-mail.'); return; }
+  const b = document.getElementById('gBtn'); b.disabled = true; b.textContent = 'Entrando...';
+  try {
+    const rr = await fetch(HUB_ACESSO, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'link_validar', origem: 'orcamento', token, email: EMAIL_GATE, codigo: cod, ua: navigator.userAgent }) });
+    const d = await rr.json().catch(() => ({}));
+    if (!d || !d.ok) { telaCodigo(d && d.motivo === 'bloqueado' ? 'Muitas tentativas. Peça um novo código.' : (d && d.motivo === 'expirado' ? 'Este orçamento expirou.' : 'Código inválido ou expirado. Peça um novo código.')); return; }
+    SESSAO = d.sessao;
+    try { sessionStorage.setItem(SESS_KEY, JSON.stringify({ s: d.sessao, e: d.email, x: d.expira_em })); } catch (e) {}
+    await abrirOrcamento(true);
+  } catch (e) { telaCodigo('Erro de conexão. Tente novamente.'); }
+}
+function aplicarMarca() {
+  const cut = (x, n) => { x = String(x || ''); return x.length > n ? x.slice(0, n - 1) + '…' : x; };
+  const t1 = esc(cut('BOXER · ' + (ORC.codigo || '') + ' · ' + (ORC.cliente_nome || ''), 44)), t2 = esc(cut('Acesso de ' + VISUALIZADOR + ' · válido até ' + fmtData(ORC.validade_em), 60));
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380"><g transform="rotate(-26 380 190)" fill="#1d327b" fill-opacity="0.10" font-family="Arial,sans-serif" font-weight="700" text-anchor="middle"><text x="380" y="180" font-size="20">' + t1 + '</text><text x="380" y="208" font-size="13">' + t2 + '</text></g></svg>';
+  let w = document.getElementById('wm');
+  if (!w) { w = document.createElement('div'); w.id = 'wm'; w.className = 'wm'; document.body.appendChild(w); }
+  w.style.backgroundImage = 'url("data:image/svg+xml;utf8,' + encodeURIComponent(svg) + '")';
+}
+
+// ---- protecao de leitura: sem imprimir/PDF, sem copiar/selecionar, conteudo some sem foco (print de tela nao tem como impedir; a marca d'agua rastreia) ----
+let _protegido = false;
+function protegerLeitura(alvos, frame) {
+  if (_protegido) return; _protegido = true;
+  document.body.classList.add('noc');
+  const permitido = e => { const t = e.target && e.target.tagName; return t === 'INPUT' || t === 'TEXTAREA'; };
+  const bloqueia = e => { if (permitido(e)) return; e.preventDefault(); return false; };
+  const teclas = e => {
+    const k = (e.key || '').toLowerCase();
+    if (k === 'printscreen') { try { navigator.clipboard && navigator.clipboard.writeText(''); } catch (x) {} ocultar(true); setTimeout(checarFoco, 1800); e.preventDefault(); return; }
+    if ((e.ctrlKey || e.metaKey) && ['p', 's', 'u'].indexOf(k) >= 0) { e.preventDefault(); e.stopPropagation(); return false; }
+    if ((e.ctrlKey || e.metaKey) && ['c', 'a', 'x'].indexOf(k) >= 0 && !permitido(e)) { e.preventDefault(); e.stopPropagation(); return false; }
+    if (k === 'f12' || (e.ctrlKey && e.shiftKey && ['i', 'j', 'c', 's'].indexOf(k) >= 0)) { e.preventDefault(); return false; }
+    if (e.metaKey && e.shiftKey && ['3', '4', '5'].indexOf(k) >= 0) { ocultar(true); setTimeout(checarFoco, 1800); }
+  };
+  const ligar = d => { ['copy', 'cut', 'contextmenu', 'dragstart', 'selectstart'].forEach(ev => d.addEventListener(ev, bloqueia, true)); d.addEventListener('keydown', teclas, true); };
+  const ocultar = v => document.body.classList.toggle('oculto', v);
+  const checarFoco = () => ocultar(document.hidden || !document.hasFocus());
+  ligar(document);
+  window.addEventListener('blur', () => setTimeout(checarFoco, 80));
+  window.addEventListener('focus', checarFoco);
+  document.addEventListener('visibilitychange', checarFoco);
+  window.__ligarProtecao = ligar;
+  checarFoco();
+}
+
+async function abrirOrcamento(contar) {
+  try {
+    ORC = await rpc('buscar_orcamento_publico_v2', { p_token: token, p_sessao: SESSAO, p_ua: navigator.userAgent, p_contar: contar !== false });
+  } catch (e) {
+    document.getElementById('corpo').innerHTML = '<div class="empty"><h3>Não foi possível abrir o orçamento</h3></div>';
+    return false;
+  }
+  if (ORC.sessao === false) { limparSessao(); telaEmail('Sua sessão terminou. Confirme o e-mail para abrir de novo.'); return false; }
+  if (!ORC.encontrado) {
+    document.getElementById('corpo').innerHTML = '<div class="empty"><h3>Orçamento não encontrado</h3></div>';
+    return false;
+  }
+  VISUALIZADOR = ORC.visualizador || EMAIL_GATE;
+  render();
+  aplicarMarca();
+  if (!document.querySelector('.avoc')) { const av = document.createElement('div'); av.className = 'avoc'; av.textContent = 'Conteúdo oculto enquanto esta janela não estiver em foco.'; document.body.appendChild(av); }
+  protegerLeitura();
+  return true;
+}
 
 (async () => {
   if (!token || !/^[0-9a-f-]{36}$/i.test(token)) {
     document.getElementById('corpo').innerHTML = '<div class="empty"><h3>Link inválido</h3></div>';
     return;
   }
-  try {
-    ORC = await rpc('buscar_orcamento_publico', { p_token: token });
-  } catch (e) {
-    document.getElementById('corpo').innerHTML = '<div class="empty"><h3>Não foi possível abrir o orçamento</h3></div>';
-    return;
-  }
-  if (!ORC.encontrado) {
-    document.getElementById('corpo').innerHTML = '<div class="empty"><h3>Orçamento não encontrado</h3></div>';
-    return;
-  }
-  render();
+  SESSAO = lerSessao();
+  if (!SESSAO) { telaEmail(); return; }
+  await abrirOrcamento(true);
 })();
 
 function render() {
@@ -243,12 +369,10 @@ function render() {
   cta.className = 'cta';
   cta.innerHTML = `
     <div class="cta-total">${fmtMoeda(ORC.total_final)}</div>
-    <button class="btn btn-outline" onclick="window.print()">Imprimir / PDF</button>
     ${ORC.vendedor_telefone ? `<a class="btn btn-outline" href="https://wa.me/55${ORC.vendedor_telefone.replace(/\D/g,'')}" target="_blank" rel="noopener">Falar com ${esc((ORC.vendedor_nome || '').split(' ')[0] || 'vendedor')}</a>` : ''}
     ${!aceito && !ORC.expirado ? `<button class="btn btn-primary" onclick="abrirAceite()">Aceitar orçamento</button>` : ''}
   `;
   document.body.appendChild(cta);
-  if (new URLSearchParams(location.search).get('pdf') === '1') setTimeout(() => window.print(), 700);
 }
 
 function abrirAceite() {
@@ -288,10 +412,10 @@ async function confirmarAceite() {
   const btn = document.getElementById('btnConfirmarAceite');
   btn.disabled = true; btn.textContent = 'Enviando...';
   try {
-    await rpc('aceitar_orcamento_publico', { p_token: token, p_nome: nome });
+    const ac = await rpc('aceitar_orcamento_publico_v2', { p_token: token, p_nome: nome, p_sessao: SESSAO, p_ua: navigator.userAgent });
+    if (ac && ac.motivo === 'sessao') { fecharModal(); limparSessao(); telaEmail('Sua sessão terminou. Confirme o e-mail para continuar.'); return; }
     fecharModal();
-    ORC = await rpc('buscar_orcamento_publico', { p_token: token });
-    render();
+    await abrirOrcamento(false);
     avisarRepresentante();
   } catch (e) {
     mostrarErroModal('aceiteErro', 'Não foi possível registrar o aceite. Tente novamente.');
@@ -316,10 +440,10 @@ async function confirmarRecusa() {
   const btn = document.getElementById('btnConfirmarRecusa');
   btn.disabled = true; btn.textContent = 'Enviando...';
   try {
-    await rpc('recusar_orcamento_publico', { p_token: token, p_motivo: motivo || null });
+    const rc = await rpc('recusar_orcamento_publico_v2', { p_token: token, p_motivo: motivo || null, p_sessao: SESSAO, p_ua: navigator.userAgent });
+    if (rc && rc.motivo === 'sessao') { fecharModal(); limparSessao(); telaEmail('Sua sessão terminou. Confirme o e-mail para continuar.'); return; }
     fecharModal();
-    ORC = await rpc('buscar_orcamento_publico', { p_token: token });
-    render();
+    await abrirOrcamento(false);
     avisarRepresentante();
   } catch (e) {
     mostrarErroModal('recusaErro', 'Não foi possível registrar. Tente novamente.');

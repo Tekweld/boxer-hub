@@ -468,6 +468,36 @@ async function acessoTabela(req, res) {
       return okEnvio ? res.status(200).json({ ok: true, status: 'enviado' }) : respostaStatus('erro');
     }
 
+    // ---- link de proposta/orcamento: valida o codigo no servidor (para avisar o vendedor quando um e-mail de FORA do cadastro abrir) ----
+    if (acao === 'link_validar') {
+      const origem = String(body.origem || '');
+      const token = String(body.token || '').trim();
+      const codigoDig = String(body.codigo || '').replace(/\D/g, '').slice(0, 8);
+      const ua = String(body.ua || '').slice(0, 300);
+      if (!['diamante', 'orcamento', 'proposta'].includes(origem) || !/^[0-9a-zA-Z-]{8,64}$/.test(token)) return res.status(200).json({ ok: false, motivo: 'indisponivel' });
+      const rv = await fetch(HUB_URL + '/rest/v1/rpc/link_validar_codigo_srv', { method: 'POST', headers: H, body: JSON.stringify({ p_origem: origem, p_token: token, p_email: email, p_codigo: codigoDig, p_ua: ua, p_ip: ip }) });
+      const v = await rv.json().catch(() => ({}));
+      if (!rv.ok || !v || typeof v.ok !== 'boolean') { console.error('link_validar_codigo_srv falhou', rv.status, JSON.stringify(v).slice(0, 200)); return res.status(200).json({ ok: false, motivo: 'erro' }); }
+      if (v.ok && v.fora) {
+        // aviso ao vendedor: uma vez por e-mail de fora em cada link
+        try {
+          const ra = await fetch(HUB_URL + '/rest/v1/rpc/link_aviso_preparar', { method: 'POST', headers: H, body: JSON.stringify({ p_origem: origem, p_token: token, p_email: email, p_ip: ip, p_ua: ua }) });
+          const a = await ra.json().catch(() => null);
+          if (ra.ok && a && a.para_email) {
+            const quando = new Date(a.quando).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+            const linha = (r1, r2) => '<tr><td style="padding:4px 12px 4px 0;color:#718096;font-size:13px;white-space:nowrap">' + r1 + '</td><td style="padding:4px 0;color:#1a202c;font-size:13px">' + r2 + '</td></tr>';
+            await resendEnviar(a.para_email, 'Alerta: outro e-mail abriu ' + (a.rotulo === 'orçamento' ? 'o' : 'a') + ' ' + a.rotulo + ' ' + a.referencia,
+              emailShell('<p style="font-size:15px;color:#1a202c;margin:0 0 12px">Olá' + (a.para_nome ? ', <strong>' + escHtml(a.para_nome) + '</strong>' : '') + '!</p>' +
+                '<p style="font-size:14px;color:#1a202c;margin:0 0 12px"><strong>' + escHtml(a.email_acesso) + '</strong> abriu ' + (a.rotulo === 'orçamento' ? 'o' : 'a') + ' <strong>' + a.rotulo + ' ' + escHtml(a.referencia) + '</strong> (' + escHtml(a.cliente || '') + '), mas esse e-mail <strong>não está entre os destinatários cadastrados</strong>.</p>' +
+                '<table style="border-collapse:collapse;margin:0 0 14px">' + linha('Tipo', escHtml(a.tipo)) + linha('Destinatário cadastrado', escHtml(a.cadastrado || '—')) + linha('Quem abriu', escHtml(a.email_acesso)) + linha('Quando', escHtml(quando)) + linha('IP', escHtml(a.ip || '—')) + linha('Aparelho', escHtml(a.aparelho || '—')) + '</table>' +
+                '<p style="font-size:13px;color:#4a5568;margin:0 0 8px">Pode ser alguém da própria revenda. Se você não reconhece esse acesso, cancele o link na tela de propostas.</p>' +
+                '<p style="text-align:center;margin:18px 0"><a href="' + a.url + '" style="background:#1d327b;color:#fff;text-decoration:none;padding:11px 24px;border-radius:8px;font-size:14px;font-weight:600">Abrir o sistema</a></p>'));
+          }
+        } catch (e) { console.error('aviso outro e-mail falhou', e && e.message); }
+      }
+      return res.status(200).json({ ok: v.ok, motivo: v.motivo || null, sessao: v.sessao || null, email: v.email || null, expira_em: v.expira_em || null });
+    }
+
     // ---- admin: define o perfil do painel (admin / editor / usuario) de uma pessoa, a partir da aba Acessos ----
 
     if (acao === 'perfil_painel') {

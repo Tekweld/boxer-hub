@@ -196,7 +196,8 @@ async function gateConfirmar() {
   if (cod.length < 6) { telaCodigo('Digite o código recebido por e-mail.'); return; }
   const b = document.getElementById('gBtn'); b.disabled = true; b.textContent = 'Entrando...';
   try {
-    const d = await rpcPub('link_validar_codigo', { p_origem: 'orcamento', p_token: token, p_email: EMAIL_GATE, p_codigo: cod, p_ua: navigator.userAgent });
+    const rr = await fetch(HUB_ACESSO, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'link_validar', origem: 'orcamento', token, email: EMAIL_GATE, codigo: cod, ua: navigator.userAgent }) });
+    const d = await rr.json().catch(() => ({}));
     if (!d || !d.ok) { telaCodigo(d && d.motivo === 'bloqueado' ? 'Muitas tentativas. Peça um novo código.' : (d && d.motivo === 'expirado' ? 'Este orçamento expirou.' : 'Código inválido ou expirado. Peça um novo código.')); return; }
     SESSAO = d.sessao;
     try { sessionStorage.setItem(SESS_KEY, JSON.stringify({ s: d.sessao, e: d.email, x: d.expira_em })); } catch (e) {}

@@ -155,7 +155,7 @@ async function carregarComissoes(vendedorIdForcado) {
                 <td>${escHub(l.cliente_nome || '-')}</td>
                 <td>${escHub(l.nf_numero || l.titulo_codigo || '-')}</td>
                 <td>${fmtMoeda(l.valor_evento)}</td>
-                <td>${l.taxa != null ? (Number(l.taxa) <= 1 ? (Number(l.taxa) * 100).toFixed(1) + '%' : Number(l.taxa).toFixed(1) + '%') : '-'}</td>
+                <td>${l.taxa != null ? Number(l.taxa).toFixed(2) + '%' : '-'}</td>
                 <td><strong>${fmtMoeda(l.valor_comissao)}</strong></td>
               </tr>
             `).join('')}

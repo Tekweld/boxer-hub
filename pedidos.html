@@ -1180,7 +1180,7 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
   const detalhes = getDetalhesPedido();
 
   _revisao = {
-    pedidoId, subtotal, valorFrete, total, frete, cliente,
+    pedidoId, subtotal, valorFrete, total, frete, cliente, endereco,
     classeAplicada: politica.classe_aplicada ?? null,
     segmentoAplicado: politica.segmento_aplicado ?? null,
     ufAplicada: politica.uf_aplicada ?? null,
@@ -1524,13 +1524,28 @@ async function excluirRascunho(id) {
 }
 
 // === PDF (prévia) DO ORCAMENTO ===
-// Pedido da Cristina: mostrar algo pro cliente na hora, antes de confirmar o
-// envio de verdade. Reaproveita o MESMO template visual que o cliente ve no
-// link oficial (orcamento-publico.html) em vez de inventar um layout novo --
-// so que alimentado pelos dados da revisao atual (ainda sem numero/link
-// oficial, por isso "preliminar"). window.print() em vez de lib de PDF: o
-// proprio navegador ja sabe salvar como PDF na caixa de impressao, sem
-// dependencia nova.
+// Pedido da Cristina (23/11): mostrar algo pro cliente na hora, antes de
+// confirmar o envio de verdade. Ajustado em 24/11 apos feedback de um
+// vendedor comparando com o "Pedido de venda" padrao que o ZEN gera: faltava
+// dado da Boxer (empresa emitente), numero do documento, condicao de
+// pagamento/disponibilidade, frete e endereco de entrega -- agora traz tudo
+// isso, no mesmo layout de grade label/valor do pedido de venda oficial, em
+// cima do carrinho atual (ainda sem numero oficial nem link, por isso seguue
+// "prevista"). window.print() em vez de lib de PDF: o proprio navegador ja
+// sabe salvar como PDF na caixa de impressao, sem dependencia nova.
+const BOXER_EMPRESA = {
+  nome: 'Boxer Soldas', cnpj: '13.881.630/0001-64',
+  endereco: 'Rua Alvino Cristo, 36 — Parque Industrial Experts, Nova Odessa/SP, 13387-793',
+  email: 'admin@boxersoldas.com.br', telefone: '(19) 3469-1876'
+};
+function numeroPreviaOrcamento() {
+  const base = _revisao?.pedidoId ? String(_revisao.pedidoId).replace(/-/g, '').slice(0, 6).toUpperCase() : Math.random().toString(36).slice(2, 8).toUpperCase();
+  return 'PRV-' + base;
+}
+function fmtEnderecoRevisao(e) {
+  if (!e) return null;
+  return [[e.logradouro, e.numero].filter(Boolean).join(', '), e.complemento, e.bairro, [e.cidade, e.uf].filter(Boolean).join('/'), e.cep ? 'CEP ' + e.cep : null].filter(x => x && String(x).trim()).join(' — ');
+}
 function gerarPdfPreliminar() {
   if (!_revisao) return;
   const cart = getCart();
@@ -1540,40 +1555,101 @@ function gerarPdfPreliminar() {
   const itens = cart.map(i => {
     const p = precos[i.produto_id];
     const unit = i.precoManual != null ? i.precoManual : +(p?.preco_final ?? i.preco_base ?? 0);
-    return { codigo: i.sku, modelo: i.nome, qtd: i.quantidade, unit, subtotal: unit * i.quantidade, estoque: 'sem_info', ipi: p?.ipi ?? null, icms: p?.icms ?? null };
+    return { codigo: i.sku, modelo: i.nome, qtd: i.quantidade, unit, subtotal: unit * i.quantidade, ipi: p?.ipi ?? null, icms: p?.icms ?? null };
   });
-  const total = itens.reduce((s, i) => s + i.subtotal, 0);
+  const subtotalItens = itens.reduce((s, i) => s + i.subtotal, 0);
+  const valorFrete = +(_revisao.valorFrete || 0);
+  const total = subtotalItens + valorFrete;
   const destinatario = lerDestinatarioAtual() || {};
   const cliente = _revisao.cliente || {};
+  const detalhes = getDetalhesPedido();
+  const numero = numeroPreviaOrcamento();
+
+  let modalidadeFrete = document.querySelector('input[name="revFrete"]:checked')?.value
+    || document.getElementById('revFreteExcecao')?.value || null;
+  if (!modalidadeFrete && _revisao.frete) {
+    modalidadeFrete = _revisao.frete.envio_disponivel ? 'envio' : _revisao.frete.retirada_disponivel ? 'retirada' : null;
+  }
+  const freteLabel = modalidadeFrete === 'retirada' ? 'Retirada por conta do cliente' : modalidadeFrete === 'envio' ? 'Boxer envia (CIF)' : '—';
+  const pagamentoLabel = (PAGAMENTO_LABEL[detalhes.forma_pagamento] || '—') + (detalhes.parcelas > 1 ? ' em ' + detalhes.parcelas + 'x' : '');
+  const enderecoEntrega = fmtEnderecoRevisao(_revisao.endereco);
+
+  const campo = (label, valor) => valor ? `<div class="campo"><span class="lbl">${label}</span><span class="val">${escHub(String(valor))}</span></div>` : '';
 
   const janela = window.open('', '_blank');
   if (!janela) { toast('O navegador bloqueou a nova aba — permita pop-ups pra ver a prévia', 'error'); return; }
   janela.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
-    <title>Prévia de orçamento — ${escHub(cliente.razao_social || '')}</title>
+    <title>Orçamento ${escHub(numero)} — ${escHub(cliente.razao_social || '')}</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       *{box-sizing:border-box;margin:0;padding:0}
-      body{font-family:Outfit,sans-serif;color:#1a202c;padding:32px;max-width:820px;margin:0 auto}
-      .marca{color:#e30613;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px}
-      h1{font-size:20px;color:#1d327b;margin:4px 0 2px}
-      .aviso{background:#fff7ed;border:1px solid #fed7aa;color:#92400e;padding:10px 14px;border-radius:8px;font-size:12px;margin:14px 0}
-      .info{font-size:13px;color:#4a5568;margin-bottom:4px}
-      table{width:100%;border-collapse:collapse;font-size:13px;margin-top:16px}
+      body{font-family:Outfit,sans-serif;color:#1a202c;padding:32px;max-width:900px;margin:0 auto}
+      .topo{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #e30613;padding-bottom:14px;margin-bottom:16px}
+      .marca{color:#e30613;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:1px}
+      h1{font-size:19px;color:#1d327b;margin:4px 0 0}
+      .numero{font-size:13px;color:#718096;margin-top:2px}
+      .aviso{background:#fff7ed;border:1px solid #fed7aa;color:#92400e;padding:10px 14px;border-radius:8px;font-size:12px;margin-bottom:18px}
+      .secao{margin-bottom:14px}
+      .secao h2{font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;border-bottom:1px solid #e2e8f0;padding-bottom:4px}
+      .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px 18px}
+      .grid.c2{grid-template-columns:repeat(2,1fr)}
+      .campo .lbl{display:block;font-size:10px;color:#a0aec0;text-transform:uppercase;letter-spacing:.4px}
+      .campo .val{display:block;font-size:13px;color:#1a202c;font-weight:500}
+      table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
       th{text-align:left;padding:6px 8px;color:#718096;font-size:11px;text-transform:uppercase;border-bottom:2px solid #e2e8f0}
       td{padding:7px 8px;border-bottom:1px solid #e2e8f0}
       .num{text-align:right}
-      .total{font-weight:700;color:#1d327b;font-size:15px;border-top:2px solid #1d327b}
+      tfoot .total td{font-weight:700;color:#1d327b;font-size:15px;border-top:2px solid #1d327b;border-bottom:none}
       @media print{.no-print{display:none}}
     </style></head><body>
-    <div class="marca">Boxer Soldas</div>
-    <h1>Prévia de orçamento (preliminar)</h1>
+    <div class="topo">
+      <div>
+        <div class="marca">${escHub(BOXER_EMPRESA.nome)}</div>
+        <h1>Orçamento (prévia)</h1>
+        <div class="numero">Nº ${escHub(numero)} · ${new Date().toLocaleDateString('pt-BR')}</div>
+      </div>
+      <div style="text-align:right;font-size:11px;color:#718096">
+        <div>${escHub(BOXER_EMPRESA.cnpj)}</div>
+        <div>${escHub(BOXER_EMPRESA.endereco)}</div>
+        <div>${escHub(BOXER_EMPRESA.email)} · ${escHub(BOXER_EMPRESA.telefone)}</div>
+      </div>
+    </div>
+
     <div class="aviso">Documento informativo, sem número oficial nem link rastreável ainda — gerado a partir do que está no carrinho agora. Quando o orçamento de verdade for enviado, o cliente recebe o link oficial para aceitar.</div>
-    <div class="info"><strong>Cliente:</strong> ${escHub(cliente.razao_social || cliente.nome_fantasia || '—')}${cliente.cnpj ? ' · ' + escHub(cliente.cnpj) : ''}</div>
-    ${destinatario.nome || destinatario.email ? `<div class="info"><strong>Contato:</strong> ${escHub(destinatario.nome || '')} ${destinatario.email ? '· ' + escHub(destinatario.email) : ''} ${destinatario.celular ? '· ' + escHub(destinatario.celular) : ''}</div>` : ''}
-    <div class="info"><strong>Data:</strong> ${new Date().toLocaleDateString('pt-BR')}</div>
-    <table><thead><tr><th>Produto</th><th class="num">Qtd</th><th class="num">Unitário</th><th class="num">Subtotal</th></tr></thead>
-    <tbody>${itens.map(i => `<tr><td>${escHub(i.modelo)}<br><span style="font-size:10px;color:#a0aec0">${escHub(i.codigo)}</span></td><td class="num">${i.qtd}</td><td class="num">${fmtMoeda(i.unit)}</td><td class="num">${fmtMoeda(i.subtotal)}</td></tr>`).join('')}
-    </tbody><tfoot><tr class="total"><td colspan="3">Total</td><td class="num">${fmtMoeda(total)}</td></tr></tfoot></table>
+
+    <div class="secao">
+      <h2>Cliente</h2>
+      <div class="grid c2">
+        ${campo('Razão social', cliente.razao_social || cliente.nome_fantasia)}
+        ${campo('CNPJ', cliente.cnpj)}
+        ${campo('Telefone', cliente.telefone || cliente.email_principal)}
+        ${campo('Endereço de entrega', enderecoEntrega)}
+        ${campo('Contato (orçamento)', [destinatario.nome, destinatario.email, destinatario.celular].filter(Boolean).join(' · ') || null)}
+      </div>
+    </div>
+
+    <div class="secao">
+      <h2>Condições</h2>
+      <div class="grid">
+        ${campo(getUserTipo() === 'cliente' ? 'Emitido por' : 'Vendedor', getUserNome())}
+        ${campo('Forma de pagamento', pagamentoLabel)}
+        ${detalhes.ordem_compra ? campo('Ordem de compra', detalhes.ordem_compra) : ''}
+        ${campo('Frete', freteLabel)}
+        ${valorFrete > 0 ? campo('Valor do frete', fmtMoeda(valorFrete)) : ''}
+        ${campo('Validade da prévia', '7 dias')}
+      </div>
+    </div>
+
+    <div class="secao">
+      <h2>Itens</h2>
+      <table><thead><tr><th>Produto</th><th class="num">Qtd</th><th class="num">Unitário</th><th>Impostos</th><th class="num">Subtotal</th></tr></thead>
+      <tbody>${itens.map(i => `<tr><td>${escHub(i.modelo)}<br><span style="font-size:10px;color:#a0aec0">${escHub(i.codigo)}</span></td><td class="num">${i.qtd}</td><td class="num">${fmtMoeda(i.unit)}</td><td style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'} · ICMS ${i.icms != null ? i.icms + '%' : '—'}</td><td class="num">${fmtMoeda(i.subtotal)}</td></tr>`).join('')}
+      </tbody><tfoot>
+        ${valorFrete > 0 ? `<tr><td colspan="4">Frete</td><td class="num">${fmtMoeda(valorFrete)}</td></tr>` : ''}
+        <tr class="total"><td colspan="4">Total</td><td class="num">${fmtMoeda(total)}</td></tr>
+      </tfoot></table>
+    </div>
+
     <div class="no-print" style="margin-top:20px"><button onclick="window.print()" style="font-family:Outfit;padding:10px 18px;border-radius:8px;border:1px solid #1d327b;background:#1d327b;color:#fff;cursor:pointer">Salvar como PDF</button></div>
     </body></html>`);
   janela.document.close();

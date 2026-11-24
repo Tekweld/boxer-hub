@@ -2443,7 +2443,7 @@ async function arquivarOrcamento(id) {
 async function openPedido(id) {
   try {
     const [pedido] = await sb('/hub_pedidos?id=eq.' + id + '&select=*,hub_clientes(razao_social,cnpj),hub_enderecos(logradouro,numero,cidade,uf)');
-    const itens = await sb('/hub_pedido_itens?pedido_id=eq.' + id + '&select=*,hub_produtos(nome,sku)&order=criado_em.asc');
+    const itens = await sb('/hub_pedido_itens?pedido_id=eq.' + id + '&select=*,hub_produtos(nome,sku,estoque_disponivel)&order=criado_em.asc');
     if (!pedido) return;
     const eventos = await sb('/hub_pedido_eventos?pedido_id=eq.' + id + '&select=etapa,origem,detalhe,criado_em&order=criado_em.asc')
       .catch(() => []);
@@ -2498,7 +2498,7 @@ async function openPedido(id) {
           const riscado = tabela > 0 && Math.abs(tabela - final) >= 0.01
             ? `<span style="color:#a0aec0;text-decoration:line-through;font-size:11px;margin-right:5px">${fmtMoeda(tabela)}</span>` : '';
           return `<tr>
-          <td>${i.sku || i.hub_produtos?.sku || ''}</td>
+          <td>${i.sku || i.hub_produtos?.sku || ''}<br><span id="pedItemPrev-${i.id}" style="font-size:10px;color:#2563eb"></span></td>
           <td>${i.nome_produto || i.hub_produtos?.nome || ''}</td>
           <td>${i.quantidade}</td>
           <td>${riscado}${fmtMoeda(final)}</td>
@@ -2512,6 +2512,22 @@ async function openPedido(id) {
         <button class="btn btn-outline" onclick="closeModal()">Fechar</button>
       </div>
     `);
+    // Previsao por item, so quando a qtd pedida excede o estoque atual --
+    // nao e dado gravado no pedido (mudaria com o tempo), entao consulta o
+    // FUP ao vivo igual catalogo/carrinho ja fazem (fetchDisponibilidadePrevistaSku,
+    // hub.js). Pedido do Andre, 2026-11-24: estender a mesma previsao de
+    // quinzena (ver project-bcp-previsao-quinzena) pro historico de pedidos,
+    // que antes so mostrava SKU/produto/qtd/preco.
+    itens.forEach(async i => {
+      const el = document.getElementById('pedItemPrev-' + i.id);
+      if (!el) return;
+      const sku = i.sku || i.hub_produtos?.sku;
+      if (!sku) return;
+      try {
+        const prev = await fetchDisponibilidadePrevistaSku(sku, i.quantidade, i.hub_produtos?.estoque_disponivel);
+        if (prev) el.textContent = prev.iso ? fmtPrevisaoQuinzena(prev.iso) : 'Sem previsão de chegada';
+      } catch (_) { /* previsao e so complemento informativo, nunca quebra o modal */ }
+    });
   } catch (e) {
     toast('Erro ao abrir pedido', 'error');
   }

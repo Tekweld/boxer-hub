@@ -618,6 +618,7 @@ async function loadPerfil() {
 function getUserRole() { return PERFIL?.role || ''; }
 function getUserTipo() { return PERFIL?.tipo || ''; }
 function getUserNome() { return PERFIL?.nome || getUserEmail(); }
+function getUserTelefone() { return PERFIL?.telefone || ''; }
 function getUserClienteId() { return PERFIL?.cliente_id || null; }
 function getUserRepresentanteId() { return PERFIL?.representante_id || null; }
 function getUserArea() { return PERFIL?.area || null; }

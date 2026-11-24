@@ -118,7 +118,7 @@ textarea:focus{border-color:#25bbee}
 .cart-item-remove{background:none;border:none;color:#dc2626;cursor:pointer;font-size:16px;padding:4px 8px}
 .cart-item-remove:hover{background:#fef2f2;border-radius:4px}
 .cart-item-grade{display:flex;gap:6px;flex-shrink:0}
-.grade-tabela{background:#1d327b;color:#fff;font-weight:700;font-size:11px;border:none;border-radius:6px;padding:0 8px;text-align:center;text-align-last:center;cursor:pointer;width:74px;height:40px;font-family:Outfit}
+.grade-tabela{background:#1d327b;color:#fff;font-weight:700;font-size:9px;letter-spacing:-.2px;border:none;border-radius:6px;padding:0 4px;text-align:center;text-align-last:center;cursor:pointer;width:74px;height:40px;font-family:Outfit}
 .grade-tabela option{color:#1a202c;font-weight:400;background:#fff}
 .grade-desconto-box{background:#ea580c;border-radius:6px;padding:3px 6px;display:flex;flex-direction:column;align-items:center;justify-content:center;width:74px;height:40px}
 .grade-desconto-box label{color:#fff;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;line-height:1.2}
@@ -1095,7 +1095,7 @@ async function abrirRevisaoProspect(cart) {
       </div>
       <div class="form-actions">
         <button class="btn btn-outline" onclick="closeModal()">Voltar ao carrinho</button>
-        <button class="btn btn-outline" onclick="gerarPdfPreliminar()">Gerar PDF (prévia)</button>
+        <button class="btn btn-outline" id="btnGerarPdfOrcamento" onclick="gerarPdfPreliminar()">Gerar PDF (prévia)</button>
         <button class="btn btn-outline" onclick="salvarRascunhoOrcamento()">Salvar rascunho</button>
         <button class="btn" style="background:#25bbee;color:#fff;border-color:#25bbee" id="btnEnviarOrcamento" onclick="enviarOrcamento()">Enviar Link do Orçamento</button>
       </div>
@@ -1306,7 +1306,7 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
 
     <div class="form-actions">
       <button class="btn btn-outline" onclick="closeModal()">Voltar ao carrinho</button>
-      ${podeEnviarOrcamento() ? `<button class="btn btn-outline" onclick="gerarPdfPreliminar()">Gerar PDF (prévia)</button>` : ''}
+      ${podeEnviarOrcamento() ? `<button class="btn btn-outline" id="btnGerarPdfOrcamento" onclick="gerarPdfPreliminar()">Gerar PDF (prévia)</button>` : ''}
       ${podeEnviarOrcamento() ? `<button class="btn btn-outline" onclick="salvarRascunhoOrcamento()">Salvar rascunho</button>` : ''}
       ${podeEnviarOrcamento() ? `<button class="btn btn-outline" style="color:#0e7490;border-color:#67c6e8" id="btnEnviarOrcamento" onclick="enviarOrcamento()">Enviar Orçamento</button>` : ''}
       <button class="btn btn-primary" id="btnConfirmarEnvio" onclick="confirmarEnvio()"
@@ -1329,70 +1329,92 @@ function podeEnviarOrcamento() {
 // api/push-pedido.js com ?target=orcamento). O preco e calculado la, com o
 // cenario de politica comercial escolhido em catalogo.html (ver
 // aplicarAjustePolitica) quando houver, senao a politica real da revenda.
-async function enviarOrcamento() {
-  if (!_revisao) return;
-  const btn = document.getElementById('btnEnviarOrcamento');
+// Le e valida os campos de destinatario do modal de revisao -- mesma regra
+// usada tanto pra "Enviar Link do Orcamento" quanto pra "Gerar PDF" (desde
+// 24/11 o PDF tambem cria um orcamento de verdade, com codigo, entao precisa
+// do mesmo destinatario valido). Retorna null (e ja mostra o toast) se
+// invalido, nunca lanca excecao.
+function validarDestinatarioOrcamento() {
   const nome = document.getElementById('orcDestNome').value.trim();
   const email = document.getElementById('orcDestEmail').value.trim();
   const celular = document.getElementById('orcDestCelular').value.trim();
-  if (!email || !/^\S+@\S+\.\S+$/.test(email)) { toast('Informe um e-mail valido para quem recebe o orcamento', 'error'); return; }
+  if (!email || !/^\S+@\S+\.\S+$/.test(email)) { toast('Informe um e-mail valido para quem recebe o orcamento', 'error'); return null; }
   // Mesma regra do backend (telOk em api/_orcamento.js) checada aqui ANTES de
   // chamar o servidor -- achado real (Andre, 2026-11-19): o campo so checava
   // "nao vazio", entao um numero com 1 digito faltando passava na tela e so
   // quebrava depois do roundtrip, com o vendedor sem saber o motivo exato.
   const soDigitosCel = celular.replace(/\D/g, '');
-  if (soDigitosCel.length !== 10 && soDigitosCel.length !== 11) { toast('Celular invalido: informe DDD + numero, ex. (41) 99999-9999', 'error'); return; }
+  if (soDigitosCel.length !== 10 && soDigitosCel.length !== 11) { toast('Celular invalido: informe DDD + numero, ex. (41) 99999-9999', 'error'); return null; }
+  return { nome, email, celular };
+}
+
+// Resolve uf/segmento/classe (override do catalogo ou politica do cadastro)
+// e monta o payload de 'criar' -- compartilhado entre "Enviar Link do
+// Orcamento" e "Gerar PDF" (ambos criam o MESMO tipo de registro agora,
+// so que o PDF pula a criacao da venda no Zen -- ver pdf_preview no back).
+// Telefone do vendedor vem do proprio cadastro (hub_perfis.telefone,
+// sincronizado do Zen pra representante) -- nunca pedido de novo na tela.
+async function montarPayloadOrcamento(destinatario, extra) {
+  const clienteId = getClienteAtivo();
+  const cliente = _revisao.cliente;
+  const cart = getCart();
+
+  const override = lerOverridePolitica();
+  let uf = override?.uf, segmento = override?.segmento, classe = override?.classe;
+  if ((!uf || !segmento || !classe) && clienteId) {
+    // p_valor_pedido=0 sempre devolve a classe MAIS CARA (1) -- "preco
+    // publicado" antes de qualquer desconto por volume (ver comentario em
+    // hub_fn_precos_cliente). Pra achar a classe de verdade do carrinho,
+    // repete o mesmo passo-duplo que carregarPrecosCarrinho ja faz: mede o
+    // subtotal a preco de TABELA primeiro, so depois pede a classe naquela
+    // faixa. Sem isso, todo orcamento saia incorretamente classificado
+    // como classe 1 (bug visto ao vivo em teste, 2026-11-03).
+    const tabelaBase = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: 0 });
+    const porId = {}; tabelaBase.forEach(l => { porId[l.produto_id] = l; });
+    const subtotalTabela = cart.reduce((s, i) => s + (+(porId[i.produto_id]?.preco_tabela || 0) * i.quantidade), 0);
+    const base = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: subtotalTabela });
+    const ref = base[0];
+    if (!ref) { toast('Nao foi possivel calcular a politica comercial desta revenda', 'error'); return null; }
+    uf = uf || ref.uf; segmento = segmento || ref.segmento; classe = classe || ref.classe;
+  }
+  // CNPJ novo (prospect): nao tem hub_fn_precos_cliente pra cair de volta --
+  // uf/segmento/classe tem que vir do ajuste feito em catalogo.html.
+  if (!uf || !segmento || !classe) { toast('Escolha UF/Segmento/Classe no catálogo antes de enviar o orçamento', 'error'); return null; }
+
+  const detalhes = getDetalhesPedido();
+  return Object.assign({
+    acao: 'criar', tabela: 1,
+    uf, segmento, classe: Number(classe),
+    itens: cart.map(i => {
+      const item = Object.assign({ codigo: i.sku, qtd: i.quantidade }, dispDoItem(i));
+      if (i.precoManual != null) item.preco = i.precoManual;
+      return item;
+    }),
+    cliente: {
+      cnpj: cliente.cnpj, nome: cliente.razao_social, fantasia: cliente.nome_fantasia || '',
+      email: destinatario.email, celular: destinatario.celular, contato: destinatario.nome || null, cidade: null, uf: cliente.uf
+    },
+    vendedor: { telefone: getUserTelefone() },
+    pagamento: {
+      tipo: detalhes.forma_pagamento === 'pix' ? 'avista' : 'boleto',
+      parcelas: Number(detalhes.parcelas) || 1,
+      dias_pagamento: Array.isArray(detalhes.dias_pagamento) ? detalhes.dias_pagamento : null
+    },
+    observacoes: (detalhes.observacoes || '').trim() || null
+  }, extra || {});
+}
+
+async function enviarOrcamento() {
+  if (!_revisao) return;
+  const btn = document.getElementById('btnEnviarOrcamento');
+  const destinatario = validarDestinatarioOrcamento();
+  if (!destinatario) return;
 
   const textoOriginal = btn.textContent;
   btn.disabled = true; btn.textContent = 'Enviando...';
   try {
-    const clienteId = getClienteAtivo();
-    const cliente = _revisao.cliente;
-    const cart = getCart();
-
-    const override = lerOverridePolitica();
-    let uf = override?.uf, segmento = override?.segmento, classe = override?.classe;
-    if ((!uf || !segmento || !classe) && clienteId) {
-      // p_valor_pedido=0 sempre devolve a classe MAIS CARA (1) -- "preco
-      // publicado" antes de qualquer desconto por volume (ver comentario em
-      // hub_fn_precos_cliente). Pra achar a classe de verdade do carrinho,
-      // repete o mesmo passo-duplo que carregarPrecosCarrinho ja faz: mede o
-      // subtotal a preco de TABELA primeiro, so depois pede a classe naquela
-      // faixa. Sem isso, todo orcamento saia incorretamente classificado
-      // como classe 1 (bug visto ao vivo em teste, 2026-11-03).
-      const tabelaBase = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: 0 });
-      const porId = {}; tabelaBase.forEach(l => { porId[l.produto_id] = l; });
-      const subtotalTabela = cart.reduce((s, i) => s + (+(porId[i.produto_id]?.preco_tabela || 0) * i.quantidade), 0);
-      const base = await sbRpc('hub_fn_precos_cliente', { p_cliente_id: clienteId, p_valor_pedido: subtotalTabela });
-      const ref = base[0];
-      if (!ref) { toast('Nao foi possivel calcular a politica comercial desta revenda', 'error'); return; }
-      uf = uf || ref.uf; segmento = segmento || ref.segmento; classe = classe || ref.classe;
-    }
-    // CNPJ novo (prospect): nao tem hub_fn_precos_cliente pra cair de volta --
-    // uf/segmento/classe tem que vir do ajuste feito em catalogo.html.
-    if (!uf || !segmento || !classe) { toast('Escolha UF/Segmento/Classe no catálogo antes de enviar o orçamento', 'error'); return; }
-
-    const detalhes = getDetalhesPedido();
-    const payload = {
-      acao: 'criar', tabela: 1,
-      uf, segmento, classe: Number(classe),
-      itens: cart.map(i => {
-        const item = Object.assign({ codigo: i.sku, qtd: i.quantidade }, dispDoItem(i));
-        if (i.precoManual != null) item.preco = i.precoManual;
-        return item;
-      }),
-      cliente: {
-        cnpj: cliente.cnpj, nome: cliente.razao_social, fantasia: cliente.nome_fantasia || '',
-        email, celular, contato: nome || null, cidade: null, uf: cliente.uf
-      },
-      vendedor: { telefone: '' },
-      pagamento: {
-        tipo: detalhes.forma_pagamento === 'pix' ? 'avista' : 'boleto',
-        parcelas: Number(detalhes.parcelas) || 1,
-        dias_pagamento: Array.isArray(detalhes.dias_pagamento) ? detalhes.dias_pagamento : null
-      },
-      observacoes: (detalhes.observacoes || '').trim() || null
-    };
+    const payload = await montarPayloadOrcamento(destinatario);
+    if (!payload) return;
 
     const r = await fetch('/api/push-pedido?target=orcamento', {
       method: 'POST',
@@ -1543,73 +1565,52 @@ async function excluirRascunho(id) {
 
 // === PDF (prévia) DO ORCAMENTO ===
 // Pedido da Cristina (23/11): mostrar algo pro cliente na hora, antes de
-// confirmar o envio de verdade. Ajustado em 24/11, duas rodadas de feedback:
-// (1) faltava dado da Boxer/numero/condicao/frete/endereco -- resolvido; (2)
-// "o formato da previa e do link continuam diferentes" -- a previa tinha
-// CSS/estrutura proprios, so parecidos. Agora usa o MESMO HTML/CSS de
-// orcamento-publico.html (copiado aqui, 1:1 -- paginas estaticas sem build
-// step, nao da pra importar modulo) alimentado por um objeto no formato ORC
-// montado a partir do carrinho, pra previa e link oficial serem visualmente
-// identicos de verdade, nao so parecidos. Sem gate/protecao/marca-d'agua/CTA
-// de aceite (isso so existe no link de verdade, com token e numero oficial).
-function fmtEnderecoRevisao(e) {
-  if (!e) return null;
-  return [[e.logradouro, e.numero].filter(Boolean).join(', '), e.complemento, e.bairro, [e.cidade, e.uf].filter(Boolean).join('/'), e.cep ? 'CEP ' + e.cep : null].filter(x => x && String(x).trim()).join(' · ');
-}
-function gerarPdfPreliminar() {
+// confirmar o envio de verdade. 3 rodadas de ajuste em 24/11: (1) faltava
+// dado da Boxer/numero/condicao/frete/endereco; (2) formato diferente do
+// link oficial -- resolvido reaproveitando o mesmo HTML/CSS (renderOrcamentoHtml,
+// copia literal de orcamento-publico.html); (3) "mesmo que previa, tem que
+// ter numero pra rastreio" -- agora "Gerar PDF" CRIA um orcamento de verdade
+// (mesma acao 'criar' do "Enviar Link", com pdf_preview:true) e ganha codigo
+// real da sequencia -- so que sem criar venda no Zen (isso fica pro envio de
+// verdade) e com status proprio ('rascunho_pdf', ver api/_orcamento.js).
+async function gerarPdfPreliminar() {
   if (!_revisao) return;
   const cart = getCart();
   if (!cart.length) { toast('Carrinho vazio, nada para gerar', 'error'); return; }
+  const destinatario = validarDestinatarioOrcamento();
+  if (!destinatario) return;
 
-  const precos = _revisao._precosCache || {};
-  const itens = cart.map(i => {
-    const p = precos[i.produto_id];
-    const unit = i.precoManual != null ? i.precoManual : +(p?.preco_final ?? i.preco_base ?? 0);
-    const d = dispDoItem(i);
-    return {
-      codigo: i.sku, modelo: i.nome, qtd: i.quantidade, unit, unit_tabela: +(p?.preco_base ?? unit),
-      subtotal: unit * i.quantidade, ipi: p?.ipi ?? null, icms: p?.icms ?? null,
-      estoque: d.disp, previsao: d.previsao, imagem_url: i.imagem_url || null
-    };
-  });
-  const totalItens = itens.reduce((s, i) => s + i.subtotal, 0);
-  const valorFrete = +(_revisao.valorFrete || 0);
-  const destinatario = lerDestinatarioAtual() || {};
-  const cliente = _revisao.cliente || {};
-  const detalhes = getDetalhesPedido();
+  const btn = document.getElementById('btnGerarPdfOrcamento');
+  const textoOriginal = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = 'Gerando...'; }
+  try {
+    const payload = await montarPayloadOrcamento(destinatario, { pdf_preview: true });
+    if (!payload) return;
 
-  let modalidadeFrete = document.querySelector('input[name="revFrete"]:checked')?.value
-    || document.getElementById('revFreteExcecao')?.value || null;
-  if (!modalidadeFrete && _revisao.frete) {
-    modalidadeFrete = _revisao.frete.envio_disponivel ? 'envio' : _revisao.frete.retirada_disponivel ? 'retirada' : null;
+    const r = await fetch('/api/push-pedido?target=orcamento', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (SESSION?.access_token || '') },
+      body: JSON.stringify(payload)
+    });
+    const j = await r.json();
+    if (!r.ok) { toast(j.error || 'Erro ao gerar PDF do orçamento', 'error'); return; }
+
+    const janela = window.open('', '_blank');
+    if (!janela) { toast('O navegador bloqueou a nova aba — permita pop-ups pra ver a prévia', 'error'); return; }
+    janela.document.write(renderOrcamentoHtml(j.orcamento));
+    janela.document.close();
+    toast('Orçamento ' + j.codigo + ' gerado em PDF (rascunho, ainda não enviado ao cliente)');
+  } catch (e) {
+    toast('Erro ao gerar PDF do orçamento: ' + erroLegivel(e), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
   }
-  const freteTipo = modalidadeFrete === 'retirada' ? 'FOB' : modalidadeFrete === 'envio' ? 'CIF' : null;
-
-  // Mesmo formato ORC que buscar_orcamento_publico_v2 devolve -- o render()
-  // abaixo e copia literal do de orcamento-publico.html, pra garantir que
-  // qualquer ajuste futuro de layout feito lá seja replicado aqui tambem.
-  const ORC = {
-    codigo: 'PRÉVIA', criado_em: new Date().toISOString(), validade_em: null, expirado: false, status: 'previa',
-    vendedor_nome: getUserTipo() === 'cliente' ? null : getUserNome(), vendedor_email: null, vendedor_telefone: null, vendedor_empresa: null,
-    cliente_nome: cliente.razao_social, cliente_fantasia: cliente.nome_fantasia || cliente.razao_social, cliente_cnpj: cliente.cnpj,
-    cliente_contato: destinatario.nome || null, cliente_cidade: null, cliente_uf: cliente.uf || null,
-    cliente_endereco: fmtEnderecoRevisao(_revisao.endereco),
-    pagamento_tipo: detalhes.forma_pagamento === 'pix' ? 'avista' : 'boleto', parcelas: detalhes.parcelas || 1,
-    dias_pagamento: detalhes.dias_pagamento || null, desconto_vista_pct: 0,
-    frete_tipo: freteTipo, frete_valor: valorFrete, observacoes: null,
-    itens, total_itens: totalItens, total_final: totalItens + valorFrete
-  };
-
-  const janela = window.open('', '_blank');
-  if (!janela) { toast('O navegador bloqueou a nova aba — permita pop-ups pra ver a prévia', 'error'); return; }
-  janela.document.write(renderOrcamentoHtml(ORC, destinatario));
-  janela.document.close();
 }
 
 // Copia do CSS/HTML de orcamento-publico.html (secoes hero/itens/condicoes/
 // dados), sem top bar de navegacao/gate/protecao/CTA de aceite -- so pra
 // previa interna ter o MESMO visual do link que o cliente recebe de verdade.
-function renderOrcamentoHtml(ORC, destinatario) {
+function renderOrcamentoHtml(ORC) {
   const ESTOQUE = { ok: ['Disponível', '#166534', '#dcfce7'], prev: ['Previsão de chegada', '#9a5b00', '#fff4e5'], sem: ['Sem previsão', '#991b1b', '#fee2e2'], sem_info: ['A confirmar', '#4a5568', '#e2e8f0'] };
   const grupos = { ok: { valor: 0, qtd: 0 }, prev: { valor: 0, qtd: 0 }, sem: { valor: 0, qtd: 0 } };
   ORC.itens.forEach(i => { if (grupos[i.estoque]) { grupos[i.estoque].valor += i.subtotal; grupos[i.estoque].qtd += i.qtd; } });
@@ -1671,12 +1672,12 @@ function renderOrcamentoHtml(ORC, destinatario) {
         </svg>
         Boxer Soldas
       </div>
-      <div class="top-right">PRÉVIA</div>
+      <div class="top-right">${escHub(ORC.codigo || '')}</div>
     </div>
     <div class="wrap">
       <div class="card hero">
         <h1>Orçamento para ${escHub(ORC.cliente_fantasia || ORC.cliente_nome || '')}</h1>
-        <span class="chip laranja">Prévia — sem número oficial ainda</span> <span class="chip">Gerado em ${new Date(ORC.criado_em).toLocaleDateString('pt-BR')}</span>
+        ${ORC.status === 'rascunho_pdf' ? '<span class="chip laranja">Prévia em PDF — ainda não enviado ao cliente</span> ' : ''}<span class="chip">Gerado em ${new Date(ORC.criado_em).toLocaleDateString('pt-BR')}</span>
       </div>
 
       <div class="card">
@@ -1725,7 +1726,10 @@ function renderOrcamentoHtml(ORC, destinatario) {
           </div>
           <div class="dados-bloco">
             <div class="t">Enviado por</div>
-            <div class="nome">${escHub(ORC.vendedor_nome || 'Boxer Soldas')}</div>
+            ${ORC.vendedor_empresa ? `<div class="nome">${escHub(ORC.vendedor_empresa)}</div>` : ''}
+            <div class="${ORC.vendedor_empresa ? 'linha' : 'nome'}">${escHub(ORC.vendedor_nome || 'Boxer Soldas')}</div>
+            ${ORC.vendedor_email ? `<div class="linha">${escHub(ORC.vendedor_email)}</div>` : ''}
+            ${ORC.vendedor_telefone ? `<div class="linha">${escHub(ORC.vendedor_telefone)}</div>` : ''}
           </div>
           <div class="dados-bloco">
             <div class="t">Boxer Soldas</div>
@@ -1942,7 +1946,11 @@ function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt
 const ORC_STATUS_LABEL = {
   enviado: ['Enviado', ''], visualizado: ['Visto pelo cliente', 'azul'],
   aceito_cliente: ['Aceito pelo cliente', 'laranja'], aprovado: ['No Zen', 'verde'],
-  cancelado: ['Cancelado', 'verm'], erro: ['Erro', 'verm']
+  cancelado: ['Cancelado', 'verm'], erro: ['Erro', 'verm'],
+  // "Gerar PDF" (24/11): criado so pra ter codigo/rastreio, nunca enviado
+  // ao cliente nem lancado no Zen -- rotulo proprio pra nao confundir com
+  // um orcamento de verdade ja em andamento.
+  rascunho_pdf: ['Só PDF (não enviado)', '']
 };
 let _orcamentosCache = {};
 

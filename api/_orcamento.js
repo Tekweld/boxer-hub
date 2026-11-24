@@ -898,7 +898,14 @@ async function criar(ctx, user, b, edit) {
 
     avisos, itens, total_itens: totalItens, total_final: r2(totalItens + freteValor), teto_excedido: tetoEx.length ? tetoEx : null,
 
-    validade_em: new Date(Date.now() + VALIDADE_DIAS * 86400000).toISOString()
+    validade_em: new Date(Date.now() + VALIDADE_DIAS * 86400000).toISOString(),
+
+    // "Gerar PDF" (pedidos.html) pedido do Andre, 2026-11-24: "mesmo que ele
+    // seja previa, ele tem que ter numero... tudo tem que vir com codigo
+    // pra rastreio" -- a previa agora cria um orcamento de verdade (ganha
+    // codigo/token da sequencia real), so que com status proprio e SEM
+    // criar venda no Zen (ver "if (b.pdf_preview)" logo depois do insert).
+    status: b.pdf_preview ? 'rascunho_pdf' : undefined
 
   };
 
@@ -920,7 +927,16 @@ async function criar(ctx, user, b, edit) {
 
   const [orc] = await orcWrite(ctx, 'POST', '/orcamentos', row);
 
-  const out = { ok: true, id: orc.id, codigo: orc.codigo, link: LINK_ORCAMENTO + orc.token, validade_em: orc.validade_em, avisos, total_final: orc.total_final, teto_excedido: row.teto_excedido || null };
+  // "Gerar PDF" so precisa do registro + numero de rastreio, nunca da venda
+  // no Zen (essa so nasce quando o orcamento e enviado de verdade pro
+  // cliente aceitar). orc ja vem com TODOS os campos (Supabase retorna a
+  // linha inteira no POST) -- devolve ele inteiro pra tela renderizar o
+  // mesmo layout do link oficial sem precisar de uma segunda chamada.
+  if (b.pdf_preview) {
+    return { ok: true, id: orc.id, codigo: orc.codigo, link: LINK_ORCAMENTO + orc.token, validade_em: orc.validade_em, avisos, total_final: orc.total_final, teto_excedido: row.teto_excedido || null, orcamento: orc };
+  }
+
+  const out = { ok: true, id: orc.id, codigo: orc.codigo, link: LINK_ORCAMENTO + orc.token, validade_em: orc.validade_em, avisos, total_final: orc.total_final, teto_excedido: row.teto_excedido || null, orcamento: orc };
 
 
 

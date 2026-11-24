@@ -1299,7 +1299,7 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
         </div>
         <div class="form-row">
           <label>Celular / WhatsApp</label>
-          <input id="orcDestCelular" type="text" value="${esc(cliente.telefone || '')}" placeholder="(11) 99999-9999">
+          <input id="orcDestCelular" type="text" value="${esc(fmtTel(cliente.telefone || ''))}" placeholder="(11) 99999-9999">
         </div>
       </div>
     </div>` : ''}
@@ -1729,7 +1729,7 @@ function renderOrcamentoHtml(ORC) {
             ${ORC.vendedor_empresa ? `<div class="nome">${escHub(ORC.vendedor_empresa)}</div>` : ''}
             <div class="${ORC.vendedor_empresa ? 'linha' : 'nome'}">${escHub(ORC.vendedor_nome || 'Boxer Soldas')}</div>
             ${ORC.vendedor_email ? `<div class="linha">${escHub(ORC.vendedor_email)}</div>` : ''}
-            ${ORC.vendedor_telefone ? `<div class="linha">${escHub(ORC.vendedor_telefone)}</div>` : ''}
+            ${ORC.vendedor_telefone ? `<div class="linha">${escHub(fmtTel(ORC.vendedor_telefone))}</div>` : ''}
           </div>
           <div class="dados-bloco">
             <div class="t">Boxer Soldas</div>

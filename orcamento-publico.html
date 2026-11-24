@@ -118,6 +118,9 @@ function fmtData(d) { return d ? new Date(d).toLocaleDateString('pt-BR') : '—'
 function fmtDataHora(d) { return d ? new Date(d).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function fmtCnpj(c) { const d = String(c || '').replace(/\D/g, ''); return d.length === 14 ? d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5') : (c || ''); }
+// Telefone sempre formatado na exibicao -- o banco guarda so digitos
+// (soDigitos em api/_orcamento.js), nunca formatado (achado real, Andre, 2026-11-24).
+function fmtTel(t) { const d = String(t || '').replace(/\D/g, ''); return d.length === 11 ? '(' + d.slice(0, 2) + ') ' + d.slice(2, 7) + '-' + d.slice(7) : d.length === 10 ? '(' + d.slice(0, 2) + ') ' + d.slice(2, 6) + '-' + d.slice(6) : (t || ''); }
 function abrirModal(html) { document.getElementById('modalContent').innerHTML = html; document.getElementById('modalOverlay').classList.add('show'); }
 function fecharModal() { document.getElementById('modalOverlay').classList.remove('show'); }
 
@@ -354,7 +357,7 @@ function render() {
           ${ORC.vendedor_empresa ? `<div class="nome">${esc(ORC.vendedor_empresa)}</div>` : ''}
           <div class="${ORC.vendedor_empresa ? 'linha' : 'nome'}">${esc(ORC.vendedor_nome || 'Representante Boxer')}</div>
           ${ORC.vendedor_email ? `<div class="linha">${esc(ORC.vendedor_email)}</div>` : ''}
-          ${ORC.vendedor_telefone ? `<div class="linha">${esc(ORC.vendedor_telefone)}</div>` : ''}
+          ${ORC.vendedor_telefone ? `<div class="linha">${esc(fmtTel(ORC.vendedor_telefone))}</div>` : ''}
         </div>
         <div class="dados-bloco">
           <div class="t">Boxer Soldas</div>

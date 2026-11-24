@@ -518,6 +518,8 @@ async function aplicarEdicao(ctx, o, row, itens, avisos) {
 
     uf: row.uf, segmento: row.segmento, classe: row.classe, pagamento_tipo: row.pagamento_tipo, parcelas: row.parcelas,
 
+    dias_pagamento: row.dias_pagamento,
+
     desconto_vista_pct: row.desconto_vista_pct, frete_tipo: row.frete_tipo, frete_valor: row.frete_valor, observacoes: row.observacoes,
 
     avisos, itens, total_itens: row.total_itens, total_final: row.total_final,
@@ -888,6 +890,8 @@ async function criar(ctx, user, b, edit) {
 
     pagamento_tipo: avista ? 'avista' : 'boleto', parcelas, desconto_vista_pct: avista ? cond.vista : 0,
 
+    dias_pagamento: (!avista && Array.isArray(b.pagamento && b.pagamento.dias_pagamento) && b.pagamento.dias_pagamento.length) ? b.pagamento.dias_pagamento.map(d => parseInt(d)).filter(d => d > 0) : null,
+
     frete_tipo: freteTipo, frete_valor: freteValor,
 
     observacoes: b.observacoes ? String(b.observacoes).slice(0, 1500) : null,
@@ -1012,7 +1016,7 @@ async function montarVendaZen(o, orc, itens) {
 
     'Contato do cliente: ' + [o.cliente_contato, o.cliente_email, fmtTel(o.cliente_celular)].filter(Boolean).join(' · '),
 
-    'Pagamento: ' + (o.pagamento_tipo === 'avista' ? 'à vista (' + o.desconto_vista_pct + '% de desconto)' : 'boleto em ' + o.parcelas + 'x'),
+    'Pagamento: ' + (o.pagamento_tipo === 'avista' ? 'à vista (' + o.desconto_vista_pct + '% de desconto)' : (Array.isArray(o.dias_pagamento) && o.dias_pagamento.length ? 'boleto ' + o.dias_pagamento.join('/') + ' dias' : 'boleto em ' + o.parcelas + 'x')),
 
     'Frete: ' + (o.frete_tipo || 'a combinar') + (o.frete_valor ? ' (' + brl(o.frete_valor) + ')' : ''),
 

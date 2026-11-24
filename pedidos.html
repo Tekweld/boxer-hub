@@ -1021,6 +1021,23 @@ let _rascunhoOrigemId = null;
 // para recapitular aqui, o campo em si mora em getDetalhesPedido() agora.
 const PAGAMENTO_LABEL = { boleto: 'Boleto / Duplicata a prazo', cartao_credito: 'Cartão de crédito', pix: 'PIX / à vista', transferencia: 'Transferência', credix: 'Credix' };
 
+// Pedido do Andre, 2026-11-24: a tela mostrava "em 3x" generico mesmo pro
+// boleto, que desde 16/11 usa plano de PRAZO EM DIAS (28/56/84 etc, ver
+// carregarPlanosPrazoBoleto) -- "nunca 3x", tem que descrever exatamente o
+// que foi preenchido (dias do boleto, ou a vista, ou a condicao de verdade).
+// Cartao/Credix continuam em "Nx" porque ali Nx E a condicao real preenchida.
+function fmtPagamentoDetalhes(detalhes) {
+  const forma = detalhes.forma_pagamento || 'boleto';
+  if (forma === 'boleto') {
+    if (Array.isArray(detalhes.dias_pagamento) && detalhes.dias_pagamento.length) {
+      return 'Boleto ' + detalhes.dias_pagamento.join('/') + ' dias';
+    }
+    return PAGAMENTO_LABEL.boleto + (detalhes.parcelas > 1 ? ' em ' + detalhes.parcelas + 'x' : '');
+  }
+  if (forma === 'pix' || forma === 'transferencia') return PAGAMENTO_LABEL[forma] + ' — à vista';
+  return (PAGAMENTO_LABEL[forma] || PAGAMENTO_LABEL.boleto) + (detalhes.parcelas > 1 ? ' em ' + detalhes.parcelas + 'x sem juros' : ' à vista');
+}
+
 // Revisao do orcamento para CNPJ novo (prospect) -- caminho bem mais curto
 // que abrirRevisao: nao ha rascunho em hub_pedidos, nao ha endereco/credito/
 // frete reais (o cliente ainda nao existe), e "Confirmar e Enviar para ZEN"
@@ -1061,7 +1078,7 @@ async function abrirRevisaoProspect(cart) {
       </div>
       <div class="rev-sec">
         <h4>Confirmação</h4>
-        <div class="rev-linha"><span>Pagamento</span><span class="v">${esc(PAGAMENTO_LABEL[detalhes.forma_pagamento] || PAGAMENTO_LABEL.boleto)}${detalhes.parcelas > 1 ? ' em ' + detalhes.parcelas + 'x' : ''}</span></div>
+        <div class="rev-linha"><span>Pagamento</span><span class="v">${esc(fmtPagamentoDetalhes(detalhes))}</span></div>
         ${detalhes.ordem_compra ? `<div class="rev-linha"><span>OC</span><span class="v">${esc(detalhes.ordem_compra)}</span></div>` : ''}
         <div style="font-size:11px;color:#718096;margin-top:6px">Para ajustar isso, <a href="javascript:void(0)" onclick="closeModal()" style="color:#25bbee">volte ao carrinho</a>.</div>
       </div>
@@ -1260,7 +1277,7 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
 
     <div class="rev-sec">
       <h4>Confirmação</h4>
-      <div class="rev-linha"><span>Pagamento</span><span class="v">${esc(PAGAMENTO_LABEL[detalhes.forma_pagamento] || PAGAMENTO_LABEL.boleto)}${detalhes.parcelas > 1 ? ' em ' + detalhes.parcelas + 'x' : ''}</span></div>
+      <div class="rev-linha"><span>Pagamento</span><span class="v">${esc(fmtPagamentoDetalhes(detalhes))}</span></div>
       ${detalhes.ordem_compra ? `<div class="rev-linha"><span>OC</span><span class="v">${esc(detalhes.ordem_compra)}</span></div>` : ''}
       ${detalhes.observacoes ? `<div class="rev-linha" style="align-items:flex-start"><span>Observações</span><span class="v" style="font-weight:400;text-align:right;max-width:65%">${esc(detalhes.observacoes)}</span></div>` : ''}
       <div style="font-size:11px;color:#718096;margin-top:6px">Para ajustar isso, <a href="javascript:void(0)" onclick="closeModal()" style="color:#25bbee">volte ao carrinho</a>.</div>
@@ -1371,7 +1388,8 @@ async function enviarOrcamento() {
       vendedor: { telefone: '' },
       pagamento: {
         tipo: detalhes.forma_pagamento === 'pix' ? 'avista' : 'boleto',
-        parcelas: Number(detalhes.parcelas) || 1
+        parcelas: Number(detalhes.parcelas) || 1,
+        dias_pagamento: Array.isArray(detalhes.dias_pagamento) ? detalhes.dias_pagamento : null
       },
       observacoes: (detalhes.observacoes || '').trim() || null
     };
@@ -1571,7 +1589,7 @@ function gerarPdfPreliminar() {
     modalidadeFrete = _revisao.frete.envio_disponivel ? 'envio' : _revisao.frete.retirada_disponivel ? 'retirada' : null;
   }
   const freteLabel = modalidadeFrete === 'retirada' ? 'Retirada por conta do cliente' : modalidadeFrete === 'envio' ? 'Boxer envia (CIF)' : '—';
-  const pagamentoLabel = (PAGAMENTO_LABEL[detalhes.forma_pagamento] || '—') + (detalhes.parcelas > 1 ? ' em ' + detalhes.parcelas + 'x' : '');
+  const pagamentoLabel = fmtPagamentoDetalhes(detalhes);
   const enderecoEntrega = fmtEnderecoRevisao(_revisao.endereco);
 
   const campo = (label, valor) => valor ? `<div class="campo"><span class="lbl">${label}</span><span class="val">${escHub(String(valor))}</span></div>` : '';
@@ -1614,8 +1632,6 @@ function gerarPdfPreliminar() {
         <div>${escHub(BOXER_EMPRESA.email)} · ${escHub(BOXER_EMPRESA.telefone)}</div>
       </div>
     </div>
-
-    <div class="aviso">Documento informativo, sem número oficial nem link rastreável ainda — gerado a partir do que está no carrinho agora. Quando o orçamento de verdade for enviado, o cliente recebe o link oficial para aceitar.</div>
 
     <div class="secao">
       <h2>Cliente</h2>

@@ -329,7 +329,7 @@ function render() {
     <div class="card">
       <div class="sec-title">Condições</div>
       <div class="cond-grid">
-        <div class="cond-item"><b>Pagamento</b><span>${ORC.pagamento_tipo === 'avista' ? 'À vista (' + (ORC.desconto_vista_pct || 0) + '% de desconto)' : 'Boleto em ' + ORC.parcelas + 'x'}</span></div>
+        <div class="cond-item"><b>Pagamento</b><span>${ORC.pagamento_tipo === 'avista' ? 'À vista' + (ORC.desconto_vista_pct ? ' (' + ORC.desconto_vista_pct + '% de desconto)' : '') : (Array.isArray(ORC.dias_pagamento) && ORC.dias_pagamento.length ? 'Boleto ' + ORC.dias_pagamento.join('/') + ' dias' : 'Boleto em ' + ORC.parcelas + 'x')}</span></div>
         <div class="cond-item"><b>Frete</b><span>${ORC.frete_tipo === 'CIF' ? 'Incluso (CIF)' : ORC.frete_tipo === 'FOB' ? 'Por conta do cliente (FOB)' : 'A combinar'}</span></div>
         <div class="cond-item"><b>Entrega</b><span>Sujeita à disponibilidade</span></div>
       </div>

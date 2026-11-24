@@ -1713,6 +1713,8 @@ function renderOrcamentoHtml(ORC) {
         </div>
       </div>
 
+      ${ORC.observacoes ? `<div class="card"><div class="sec-title">Observações</div><p style="font-size:13px;color:#4a5568">${escHub(ORC.observacoes)}</p></div>` : ''}
+
       <div class="card">
         <div class="sec-title">Dados</div>
         <div class="dados-grid">

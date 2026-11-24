@@ -1543,26 +1543,18 @@ async function excluirRascunho(id) {
 
 // === PDF (prévia) DO ORCAMENTO ===
 // Pedido da Cristina (23/11): mostrar algo pro cliente na hora, antes de
-// confirmar o envio de verdade. Ajustado em 24/11 apos feedback de um
-// vendedor comparando com o "Pedido de venda" padrao que o ZEN gera: faltava
-// dado da Boxer (empresa emitente), numero do documento, condicao de
-// pagamento/disponibilidade, frete e endereco de entrega -- agora traz tudo
-// isso, no mesmo layout de grade label/valor do pedido de venda oficial, em
-// cima do carrinho atual (ainda sem numero oficial nem link, por isso seguue
-// "prevista"). window.print() em vez de lib de PDF: o proprio navegador ja
-// sabe salvar como PDF na caixa de impressao, sem dependencia nova.
-const BOXER_EMPRESA = {
-  nome: 'Boxer Soldas', cnpj: '13.881.630/0001-64',
-  endereco: 'Rua Alvino Cristo, 36 — Parque Industrial Experts, Nova Odessa/SP, 13387-793',
-  email: 'admin@boxersoldas.com.br', telefone: '(19) 3469-1876'
-};
-function numeroPreviaOrcamento() {
-  const base = _revisao?.pedidoId ? String(_revisao.pedidoId).replace(/-/g, '').slice(0, 6).toUpperCase() : Math.random().toString(36).slice(2, 8).toUpperCase();
-  return 'PRV-' + base;
-}
+// confirmar o envio de verdade. Ajustado em 24/11, duas rodadas de feedback:
+// (1) faltava dado da Boxer/numero/condicao/frete/endereco -- resolvido; (2)
+// "o formato da previa e do link continuam diferentes" -- a previa tinha
+// CSS/estrutura proprios, so parecidos. Agora usa o MESMO HTML/CSS de
+// orcamento-publico.html (copiado aqui, 1:1 -- paginas estaticas sem build
+// step, nao da pra importar modulo) alimentado por um objeto no formato ORC
+// montado a partir do carrinho, pra previa e link oficial serem visualmente
+// identicos de verdade, nao so parecidos. Sem gate/protecao/marca-d'agua/CTA
+// de aceite (isso so existe no link de verdade, com token e numero oficial).
 function fmtEnderecoRevisao(e) {
   if (!e) return null;
-  return [[e.logradouro, e.numero].filter(Boolean).join(', '), e.complemento, e.bairro, [e.cidade, e.uf].filter(Boolean).join('/'), e.cep ? 'CEP ' + e.cep : null].filter(x => x && String(x).trim()).join(' — ');
+  return [[e.logradouro, e.numero].filter(Boolean).join(', '), e.complemento, e.bairro, [e.cidade, e.uf].filter(Boolean).join('/'), e.cep ? 'CEP ' + e.cep : null].filter(x => x && String(x).trim()).join(' · ');
 }
 function gerarPdfPreliminar() {
   if (!_revisao) return;
@@ -1573,102 +1565,181 @@ function gerarPdfPreliminar() {
   const itens = cart.map(i => {
     const p = precos[i.produto_id];
     const unit = i.precoManual != null ? i.precoManual : +(p?.preco_final ?? i.preco_base ?? 0);
-    return { codigo: i.sku, modelo: i.nome, qtd: i.quantidade, unit, subtotal: unit * i.quantidade, ipi: p?.ipi ?? null, icms: p?.icms ?? null };
+    const d = dispDoItem(i);
+    return {
+      codigo: i.sku, modelo: i.nome, qtd: i.quantidade, unit, unit_tabela: +(p?.preco_base ?? unit),
+      subtotal: unit * i.quantidade, ipi: p?.ipi ?? null, icms: p?.icms ?? null,
+      estoque: d.disp, previsao: d.previsao, imagem_url: i.imagem_url || null
+    };
   });
-  const subtotalItens = itens.reduce((s, i) => s + i.subtotal, 0);
+  const totalItens = itens.reduce((s, i) => s + i.subtotal, 0);
   const valorFrete = +(_revisao.valorFrete || 0);
-  const total = subtotalItens + valorFrete;
   const destinatario = lerDestinatarioAtual() || {};
   const cliente = _revisao.cliente || {};
   const detalhes = getDetalhesPedido();
-  const numero = numeroPreviaOrcamento();
 
   let modalidadeFrete = document.querySelector('input[name="revFrete"]:checked')?.value
     || document.getElementById('revFreteExcecao')?.value || null;
   if (!modalidadeFrete && _revisao.frete) {
     modalidadeFrete = _revisao.frete.envio_disponivel ? 'envio' : _revisao.frete.retirada_disponivel ? 'retirada' : null;
   }
-  const freteLabel = modalidadeFrete === 'retirada' ? 'Retirada por conta do cliente' : modalidadeFrete === 'envio' ? 'Boxer envia (CIF)' : '—';
-  const pagamentoLabel = fmtPagamentoDetalhes(detalhes);
-  const enderecoEntrega = fmtEnderecoRevisao(_revisao.endereco);
+  const freteTipo = modalidadeFrete === 'retirada' ? 'FOB' : modalidadeFrete === 'envio' ? 'CIF' : null;
 
-  const campo = (label, valor) => valor ? `<div class="campo"><span class="lbl">${label}</span><span class="val">${escHub(String(valor))}</span></div>` : '';
+  // Mesmo formato ORC que buscar_orcamento_publico_v2 devolve -- o render()
+  // abaixo e copia literal do de orcamento-publico.html, pra garantir que
+  // qualquer ajuste futuro de layout feito lá seja replicado aqui tambem.
+  const ORC = {
+    codigo: 'PRÉVIA', criado_em: new Date().toISOString(), validade_em: null, expirado: false, status: 'previa',
+    vendedor_nome: getUserTipo() === 'cliente' ? null : getUserNome(), vendedor_email: null, vendedor_telefone: null, vendedor_empresa: null,
+    cliente_nome: cliente.razao_social, cliente_fantasia: cliente.nome_fantasia || cliente.razao_social, cliente_cnpj: cliente.cnpj,
+    cliente_contato: destinatario.nome || null, cliente_cidade: null, cliente_uf: cliente.uf || null,
+    cliente_endereco: fmtEnderecoRevisao(_revisao.endereco),
+    pagamento_tipo: detalhes.forma_pagamento === 'pix' ? 'avista' : 'boleto', parcelas: detalhes.parcelas || 1,
+    dias_pagamento: detalhes.dias_pagamento || null, desconto_vista_pct: 0,
+    frete_tipo: freteTipo, frete_valor: valorFrete, observacoes: null,
+    itens, total_itens: totalItens, total_final: totalItens + valorFrete
+  };
 
   const janela = window.open('', '_blank');
   if (!janela) { toast('O navegador bloqueou a nova aba — permita pop-ups pra ver a prévia', 'error'); return; }
-  janela.document.write(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
-    <title>Orçamento ${escHub(numero)} — ${escHub(cliente.razao_social || '')}</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  janela.document.write(renderOrcamentoHtml(ORC, destinatario));
+  janela.document.close();
+}
+
+// Copia do CSS/HTML de orcamento-publico.html (secoes hero/itens/condicoes/
+// dados), sem top bar de navegacao/gate/protecao/CTA de aceite -- so pra
+// previa interna ter o MESMO visual do link que o cliente recebe de verdade.
+function renderOrcamentoHtml(ORC, destinatario) {
+  const ESTOQUE = { ok: ['Disponível', '#166534', '#dcfce7'], prev: ['Previsão de chegada', '#9a5b00', '#fff4e5'], sem: ['Sem previsão', '#991b1b', '#fee2e2'], sem_info: ['A confirmar', '#4a5568', '#e2e8f0'] };
+  const grupos = { ok: { valor: 0, qtd: 0 }, prev: { valor: 0, qtd: 0 }, sem: { valor: 0, qtd: 0 } };
+  ORC.itens.forEach(i => { if (grupos[i.estoque]) { grupos[i.estoque].valor += i.subtotal; grupos[i.estoque].qtd += i.qtd; } });
+  const GRUPO_LABEL = { ok: 'Itens disponíveis', prev: 'Itens com previsão de chegada', sem: 'Itens sem previsão' };
+  const fmtCnpjLocal = c => { const d = String(c || '').replace(/\D/g, ''); return d.length === 14 ? d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5') : (c || ''); };
+
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
+    <title>Orçamento (prévia) — ${escHub(ORC.cliente_fantasia || ORC.cliente_nome || '')}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
       *{box-sizing:border-box;margin:0;padding:0}
-      body{font-family:Outfit,sans-serif;color:#1a202c;padding:32px;max-width:900px;margin:0 auto}
-      .topo{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #e30613;padding-bottom:14px;margin-bottom:16px}
-      .marca{color:#e30613;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:1px}
-      h1{font-size:19px;color:#1d327b;margin:4px 0 0}
-      .numero{font-size:13px;color:#718096;margin-top:2px}
-      .aviso{background:#fff7ed;border:1px solid #fed7aa;color:#92400e;padding:10px 14px;border-radius:8px;font-size:12px;margin-bottom:18px}
-      .secao{margin-bottom:14px}
-      .secao h2{font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;border-bottom:1px solid #e2e8f0;padding-bottom:4px}
-      .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px 18px}
-      .grid.c2{grid-template-columns:repeat(2,1fr)}
-      .campo .lbl{display:block;font-size:10px;color:#a0aec0;text-transform:uppercase;letter-spacing:.4px}
-      .campo .val{display:block;font-size:13px;color:#1a202c;font-weight:500}
-      table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
-      th{text-align:left;padding:6px 8px;color:#718096;font-size:11px;text-transform:uppercase;border-bottom:2px solid #e2e8f0}
-      td{padding:7px 8px;border-bottom:1px solid #e2e8f0}
-      .num{text-align:right}
-      tfoot .total td{font-weight:700;color:#1d327b;font-size:15px;border-top:2px solid #1d327b;border-bottom:none}
-      @media print{.no-print{display:none}}
+      body{font-family:'Outfit',sans-serif;background:#f0f4f8;color:#1a202c}
+      .top{background:linear-gradient(135deg,#1d327b,#162666);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:3px solid #25bbee}
+      .top-left{display:flex;align-items:center;gap:10px;color:#fff;font-weight:700;font-size:15px}
+      .top-right{color:#93b4d4;font-size:13px;font-weight:600}
+      .wrap{max-width:720px;margin:0 auto;padding:20px 16px}
+      @media(min-width:900px){.wrap{max-width:980px}}
+      .card{background:#fff;border:1px solid #d0d8e8;border-radius:12px;padding:20px;margin-bottom:16px}
+      .hero{border-left:4px solid #e30613}
+      .hero h1{font-size:19px;color:#1d327b;margin-bottom:8px}
+      .chip{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;background:#e2e8f0;color:#4a5568;margin-right:6px}
+      .chip.laranja{background:#fff4e5;color:#9a5b00}
+      .sec-title{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#1d327b;font-weight:600;margin-bottom:10px}
+      table{width:100%;border-collapse:collapse;font-size:13px}
+      thead th{padding:6px 8px;text-align:left;color:#718096;font-weight:500;font-size:10px;text-transform:uppercase;border-bottom:2px solid #e2e8f0}
+      tbody td{padding:8px;border-bottom:1px solid #e2e8f0;vertical-align:middle}
+      tfoot td{padding:8px;border-top:1px solid #e2e8f0}
+      .tfoot-grupo td{font-size:11px;font-weight:500;color:#a0aec0;border-top:1px solid #f0f4f8}
+      .tfoot-qtd{font-weight:400;color:#cbd5e0}
+      .tfoot-total td{font-size:15px;font-weight:700;color:#1d327b;border-top:2px solid #1d327b;padding-top:12px}
+      .est{display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:600}
+      .cond-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+      .cond-item b{display:block;font-size:13px;color:#1a202c;margin-bottom:2px}
+      .cond-item span{font-size:12px;color:#718096}
+      .dados-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px}
+      .dados-bloco .t{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#718096;font-weight:600;margin-bottom:6px}
+      .dados-bloco .nome{font-size:14px;font-weight:700;color:#1d327b;line-height:1.3}
+      .dados-bloco .linha{font-size:12px;color:#4a5568;margin-top:3px;line-height:1.4}
+      @media(max-width:640px){.dados-grid{grid-template-columns:1fr;gap:16px}.cond-grid{grid-template-columns:1fr}}
+      .prod-foto{width:40px;height:40px;border-radius:6px;background:#f7fafc;border:1px solid #e2e8f0;display:inline-flex;align-items:center;justify-content:center;overflow:hidden;flex:none;vertical-align:middle;margin-right:8px}
+      .prod-foto img{max-width:100%;max-height:100%;object-fit:contain}
+      .prod-cel{display:flex;align-items:center}
+      @media(max-width:640px){
+        table,thead,tbody,tr,td{display:block;width:100%}
+        thead{display:none}
+        tbody tr{padding:10px 0;border-bottom:1px solid #e2e8f0;display:grid;grid-template-columns:1fr 1fr;gap:4px 10px}
+        tbody td{padding:0;border:none}
+        tbody td:first-child{grid-column:1/-1}
+        tbody td[data-l]::before{content:attr(data-l) ' ';font-size:10px;color:#718096;text-transform:uppercase;display:block}
+      }
+      @media print{@page{size:A4;margin:10mm}body{background:#fff;padding:0}.no-print{display:none!important}.card{border-color:#cbd5e0;break-inside:avoid}.top{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
     </style></head><body>
-    <div class="topo">
-      <div>
-        <div class="marca">${escHub(BOXER_EMPRESA.nome)}</div>
-        <h1>Orçamento (prévia)</h1>
-        <div class="numero">Nº ${escHub(numero)} · ${new Date().toLocaleDateString('pt-BR')}</div>
+    <div class="top">
+      <div class="top-left">
+        <svg width="26" height="26" viewBox="0 0 200 200">
+          <rect x="10" y="10" width="180" height="180" rx="30" fill="#e30613"/>
+          <line x1="30" y1="30" x2="82" y2="95" stroke="#fff" stroke-width="10" stroke-linecap="round"/>
+          <polygon points="100,38 108,80 145,55 118,88 158,92 120,105 148,138 108,118 100,162 92,118 52,138 80,105 42,92 82,88 55,55 92,80" fill="#fff"/>
+        </svg>
+        Boxer Soldas
       </div>
-      <div style="text-align:right;font-size:11px;color:#718096">
-        <div>${escHub(BOXER_EMPRESA.cnpj)}</div>
-        <div>${escHub(BOXER_EMPRESA.endereco)}</div>
-        <div>${escHub(BOXER_EMPRESA.email)} · ${escHub(BOXER_EMPRESA.telefone)}</div>
+      <div class="top-right">PRÉVIA</div>
+    </div>
+    <div class="wrap">
+      <div class="card hero">
+        <h1>Orçamento para ${escHub(ORC.cliente_fantasia || ORC.cliente_nome || '')}</h1>
+        <span class="chip laranja">Prévia — sem número oficial ainda</span> <span class="chip">Gerado em ${new Date(ORC.criado_em).toLocaleDateString('pt-BR')}</span>
       </div>
-    </div>
 
-    <div class="secao">
-      <h2>Cliente</h2>
-      <div class="grid c2">
-        ${campo('Razão social', cliente.razao_social || cliente.nome_fantasia)}
-        ${campo('CNPJ', cliente.cnpj)}
-        ${campo('Telefone', cliente.telefone || cliente.email_principal)}
-        ${campo('Endereço de entrega', enderecoEntrega)}
-        ${campo('Contato (orçamento)', [destinatario.nome, destinatario.email, destinatario.celular].filter(Boolean).join(' · ') || null)}
+      <div class="card">
+        <div class="sec-title">Itens do orçamento</div>
+        <table>
+          <thead><tr><th>Produto</th><th>Estoque</th><th>Qtd</th><th>Impostos</th><th>Unitário</th><th>Total</th></tr></thead>
+          <tbody>${ORC.itens.map(i => {
+            const [label, cor] = ESTOQUE[i.estoque] || ESTOQUE.sem_info;
+            const riscado = i.unit_tabela > 0 && Math.abs(i.unit_tabela - i.unit) > 0.01 ? `<div style="font-size:11px;color:#a0aec0;text-decoration:line-through">${fmtMoeda(i.unit_tabela)}</div>` : '';
+            return `<tr>
+              <td data-l="Produto"><span class="prod-cel">${i.imagem_url ? '<span class="prod-foto"><img src="' + escHub(i.imagem_url) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></span>' : ''}<span><div>${escHub(i.modelo || i.codigo)}</div><div style="font-size:10px;color:#a0aec0">${escHub(i.codigo)}</div></span></span></td>
+              <td data-l="Estoque"><span class="est" style="color:${cor}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
+              <td data-l="Qtd">${i.qtd}</td>
+              <td data-l="Impostos" style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'}<br>ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
+              <td data-l="Unitário">${riscado}${fmtMoeda(i.unit)}</td>
+              <td data-l="Total">${fmtMoeda(i.subtotal)}</td>
+            </tr>`;
+          }).join('')}</tbody>
+          <tfoot>
+            ${['ok', 'prev', 'sem'].map(k => grupos[k].valor > 0.004 ? `<tr class="tfoot-grupo"><td colspan="5">${GRUPO_LABEL[k]} <span class="tfoot-qtd">(${grupos[k].qtd} un)</span></td><td>${fmtMoeda(grupos[k].valor)}</td></tr>` : '').join('')}
+            ${ORC.frete_valor > 0 ? `<tr class="tfoot-grupo"><td colspan="5">Frete</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
+            <tr class="tfoot-total"><td colspan="5">Total geral</td><td>${fmtMoeda(ORC.total_final)}</td></tr>
+          </tfoot>
+        </table>
       </div>
-    </div>
 
-    <div class="secao">
-      <h2>Condições</h2>
-      <div class="grid">
-        ${campo(getUserTipo() === 'cliente' ? 'Emitido por' : 'Vendedor', getUserNome())}
-        ${campo('Forma de pagamento', pagamentoLabel)}
-        ${detalhes.ordem_compra ? campo('Ordem de compra', detalhes.ordem_compra) : ''}
-        ${campo('Frete', freteLabel)}
-        ${valorFrete > 0 ? campo('Valor do frete', fmtMoeda(valorFrete)) : ''}
-        ${campo('Validade da prévia', '7 dias')}
+      <div class="card">
+        <div class="sec-title">Condições</div>
+        <div class="cond-grid">
+          <div class="cond-item"><b>Pagamento</b><span>${ORC.pagamento_tipo === 'avista' ? 'À vista' : (Array.isArray(ORC.dias_pagamento) && ORC.dias_pagamento.length ? 'Boleto ' + ORC.dias_pagamento.join('/') + ' dias' : 'Boleto em ' + ORC.parcelas + 'x')}</span></div>
+          <div class="cond-item"><b>Frete</b><span>${ORC.frete_tipo === 'CIF' ? 'Incluso (CIF)' : ORC.frete_tipo === 'FOB' ? 'Por conta do cliente (FOB)' : 'A combinar'}</span></div>
+          <div class="cond-item"><b>Entrega</b><span>Sujeita à disponibilidade</span></div>
+        </div>
       </div>
-    </div>
 
-    <div class="secao">
-      <h2>Itens</h2>
-      <table><thead><tr><th>Produto</th><th class="num">Qtd</th><th class="num">Unitário</th><th>Impostos</th><th class="num">Subtotal</th></tr></thead>
-      <tbody>${itens.map(i => `<tr><td>${escHub(i.modelo)}<br><span style="font-size:10px;color:#a0aec0">${escHub(i.codigo)}</span></td><td class="num">${i.qtd}</td><td class="num">${fmtMoeda(i.unit)}</td><td style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'} · ICMS ${i.icms != null ? i.icms + '%' : '—'}</td><td class="num">${fmtMoeda(i.subtotal)}</td></tr>`).join('')}
-      </tbody><tfoot>
-        ${valorFrete > 0 ? `<tr><td colspan="4">Frete</td><td class="num">${fmtMoeda(valorFrete)}</td></tr>` : ''}
-        <tr class="total"><td colspan="4">Total</td><td class="num">${fmtMoeda(total)}</td></tr>
-      </tfoot></table>
-    </div>
+      <div class="card">
+        <div class="sec-title">Dados</div>
+        <div class="dados-grid">
+          <div class="dados-bloco">
+            <div class="t">Cliente</div>
+            <div class="nome">${escHub(ORC.cliente_fantasia || ORC.cliente_nome)}</div>
+            ${ORC.cliente_fantasia && ORC.cliente_fantasia !== ORC.cliente_nome ? `<div class="linha">${escHub(ORC.cliente_nome)}</div>` : ''}
+            <div class="linha">${fmtCnpjLocal(ORC.cliente_cnpj)}</div>
+            ${ORC.cliente_endereco ? `<div class="linha">${escHub(ORC.cliente_endereco)}</div>` : ''}
+            ${ORC.cliente_contato ? `<div class="linha">A/C ${escHub(ORC.cliente_contato)}</div>` : ''}
+          </div>
+          <div class="dados-bloco">
+            <div class="t">Enviado por</div>
+            <div class="nome">${escHub(ORC.vendedor_nome || 'Boxer Soldas')}</div>
+          </div>
+          <div class="dados-bloco">
+            <div class="t">Boxer Soldas</div>
+            <div class="nome">Tekweld Importação e Comércio de Máquinas Industriais Ltda</div>
+            <div class="linha">CNPJ 13.881.630/0001-64</div>
+            <div class="linha">Rua Alvino Cristo, 36 · Parque Industrial Experts</div>
+            <div class="linha">Nova Odessa/SP · CEP 13387-793</div>
+          </div>
+        </div>
+      </div>
 
-    <div class="no-print" style="margin-top:20px"><button onclick="window.print()" style="font-family:Outfit;padding:10px 18px;border-radius:8px;border:1px solid #1d327b;background:#1d327b;color:#fff;cursor:pointer">Salvar como PDF</button></div>
-    </body></html>`);
-  janela.document.close();
+      <div class="no-print" style="text-align:center;margin-top:8px"><button onclick="window.print()" style="font-family:Outfit;padding:10px 18px;border-radius:8px;border:1px solid #1d327b;background:#1d327b;color:#fff;cursor:pointer;font-size:13px;font-weight:600">Salvar como PDF</button></div>
+    </div>
+    </body></html>`;
 }
 
 // Mesmo backend do WhatsApp (link direto), so que por e-mail via Resend --

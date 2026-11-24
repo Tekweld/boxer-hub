@@ -121,6 +121,19 @@ function fmtCnpj(c) { const d = String(c || '').replace(/\D/g, ''); return d.len
 // Telefone sempre formatado na exibicao -- o banco guarda so digitos
 // (soDigitos em api/_orcamento.js), nunca formatado (achado real, Andre, 2026-11-24).
 function fmtTel(t) { const d = String(t || '').replace(/\D/g, ''); return d.length === 11 ? '(' + d.slice(0, 2) + ') ' + d.slice(2, 7) + '-' + d.slice(7) : d.length === 10 ? '(' + d.slice(0, 2) + ') ' + d.slice(2, 6) + '-' + d.slice(6) : (t || ''); }
+// Previsao de chegada em quinzena, nao data exata (pedido do Andre, 2026-11-24)
+// -- copia standalone, hub.js nao carrega aqui. Ver a mesma funcao em hub.js
+// pro resto do raciocinio (UTC, 1-15 vira 2a quinzena do mesmo mes, 16-31
+// vira 1a quinzena do mes seguinte).
+const MESES_ABREV = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+function fmtPrevisaoQuinzena(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  const dia = dt.getUTCDate();
+  let mes = dt.getUTCMonth(), ano = dt.getUTCFullYear(), semana;
+  if (dia <= 15) { semana = 2; } else { semana = 1; mes++; if (mes > 11) { mes = 0; ano++; } }
+  return 'Previsão de Fat. ' + semana + 'ª Semana ' + MESES_ABREV[mes] + '/' + String(ano).slice(-2);
+}
 function abrirModal(html) { document.getElementById('modalContent').innerHTML = html; document.getElementById('modalOverlay').classList.add('show'); }
 function fecharModal() { document.getElementById('modalOverlay').classList.remove('show'); }
 
@@ -314,7 +327,7 @@ function render() {
             ? `<div style="font-size:11px;color:#a0aec0;text-decoration:line-through">${fmtMoeda(i.unit_tabela)}</div>` : '';
           return `<tr>
             <td data-l="Produto"><span class="prod-cel">${i.imagem_url ? '<span class="prod-foto"><img src="' + esc(i.imagem_url) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></span>' : ''}<span><div>${esc(i.modelo || i.codigo)}</div><div style="font-size:10px;color:#a0aec0">${esc(i.codigo)}</div></span></span></td>
-            <td data-l="Estoque"><span class="est ${cls}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
+            <td data-l="Estoque"><span class="est ${cls}">${label}${i.previsao ? ' · ' + fmtPrevisaoQuinzena(i.previsao) : ''}</span></td>
             <td data-l="Qtd">${i.qtd}</td>
             <td data-l="Impostos" style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'}<br>ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
             <td data-l="Unitário">${riscado}${fmtMoeda(i.unit)}</td>

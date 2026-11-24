@@ -320,7 +320,7 @@ let _planosPrazoBoletoCache = null;
 async function carregarPlanosPrazoBoleto() {
   if (_planosPrazoBoletoCache) return _planosPrazoBoletoCache;
   try {
-    _planosPrazoBoletoCache = await sb('/hub_planos_prazo_boleto?ativo=eq.true&select=id,nome,dias&order=ordem.asc');
+    _planosPrazoBoletoCache = await sb('/hub_planos_prazo_boleto?ativo=eq.true&select=id,nome,dias,ordem&order=ordem.asc');
   } catch { _planosPrazoBoletoCache = []; }
   return _planosPrazoBoletoCache;
 }
@@ -334,8 +334,19 @@ async function atualizarParcelasCarrinho() {
     const planos = await carregarPlanosPrazoBoleto();
     const diasSalvos = JSON.stringify(getDetalhesPedido().dias_pagamento || null);
     const idxSalvo = planos.findIndex(p => JSON.stringify(p.dias) === diasSalvos);
-    sel.innerHTML = planos.map((p, i) =>
-      `<option value="${i}" ${i === (idxSalvo >= 0 ? idxSalvo : 0) ? 'selected' : ''}>${esc(p.nome)}</option>`).join('');
+    const idxEfetivo = idxSalvo >= 0 ? idxSalvo : 0;
+    // Agrupa visualmente por faixa de `ordem` (1-6=28 dias, 10-15=30 dias,
+    // 20-25=15 dias, 30-38=diretos, 40-41=60 dias de 30 em 30) -- so rotulo,
+    // a faixa em si vem do cadastro em admin.html > Regras Comerciais.
+    const GRUPO_PLANO = { 0: '28 dias', 1: '30 dias', 2: '15 dias', 3: 'Diretos', 4: '60 dias (30 em 30)' };
+    let grupoAberto = null, html = '';
+    planos.forEach((p, i) => {
+      const grupo = GRUPO_PLANO[Math.floor((p.ordem ?? 0) / 10)] || 'Outros';
+      if (grupo !== grupoAberto) { if (grupoAberto !== null) html += '</optgroup>'; html += `<optgroup label="${esc(grupo)}">`; grupoAberto = grupo; }
+      html += `<option value="${i}" ${i === idxEfetivo ? 'selected' : ''}>${esc(p.nome)}</option>`;
+    });
+    if (grupoAberto !== null) html += '</optgroup>';
+    sel.innerHTML = html;
     sel.disabled = planos.length <= 1;
     sel.onchange = () => {
       const p = planos[+sel.value];
@@ -621,7 +632,7 @@ async function renderCarrinho() {
         const st = stockMap[item.produto_id];
         const stInfo = st ? stockLabel(st, item.quantidade) : { cls: '', text: '' };
         const prev = prevMap[item.sku];
-        const prevTexto = prev ? (prev.iso ? 'Disponibilidade Prevista para ' + fmtData(prev.iso) : 'Sem Disponibilidade Prevista') : '';
+        const prevTexto = prev ? (prev.iso ? fmtPrevisaoQuinzena(prev.iso) : 'Sem Disponibilidade Prevista') : '';
         // So uma badge de estoque por item -- antes mostravamos stInfo (calculo
         // grosseiro: qtd x estoque_disponivel estatico) E prevTexto (previsao
         // dinamica, mais precisa) ao mesmo tempo, as vezes se contradizendo
@@ -1130,7 +1141,7 @@ function renderTabelaItensOrcamento(itens, freteValor, totalFinal) {
       const [label, cor, bg] = ORC_ESTOQUE_LABEL[i.estoque] || ORC_ESTOQUE_LABEL.sem_info;
       return `<tr style="border-top:1px solid #e2e8f0">
         <td style="padding:5px 6px"><div style="font-weight:500;color:#1a202c">${esc(i.modelo || i.codigo)}</div><div style="font-size:10px;color:#a0aec0">${esc(i.codigo)}</div></td>
-        <td style="padding:5px 6px"><span style="display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:600;color:${cor};background:${bg}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
+        <td style="padding:5px 6px"><span style="display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:600;color:${cor};background:${bg}">${label}${i.previsao ? ' · ' + fmtPrevisaoQuinzena(i.previsao) : ''}</span></td>
         <td style="text-align:right;padding:5px 6px">${i.qtd}</td>
         <td style="padding:5px 6px;font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'} · ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
         <td style="text-align:right;padding:5px 6px">${fmtMoeda(i.unit)}</td>
@@ -1689,7 +1700,7 @@ function renderOrcamentoHtml(ORC) {
             const riscado = i.unit_tabela > 0 && Math.abs(i.unit_tabela - i.unit) > 0.01 ? `<div style="font-size:11px;color:#a0aec0;text-decoration:line-through">${fmtMoeda(i.unit_tabela)}</div>` : '';
             return `<tr>
               <td data-l="Produto"><span class="prod-cel">${i.imagem_url ? '<span class="prod-foto"><img src="' + escHub(i.imagem_url) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></span>' : ''}<span><div>${escHub(i.modelo || i.codigo)}</div><div style="font-size:10px;color:#a0aec0">${escHub(i.codigo)}</div></span></span></td>
-              <td data-l="Estoque"><span class="est" style="color:${cor}">${label}${i.previsao ? ' · ' + fmtData(i.previsao) : ''}</span></td>
+              <td data-l="Estoque"><span class="est" style="color:${cor}">${label}${i.previsao ? ' · ' + fmtPrevisaoQuinzena(i.previsao) : ''}</span></td>
               <td data-l="Qtd">${i.qtd}</td>
               <td data-l="Impostos" style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'}<br>ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
               <td data-l="Unitário">${riscado}${fmtMoeda(i.unit)}</td>

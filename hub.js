@@ -1036,6 +1036,22 @@ function fmtData(d) {
   return new Date(d).toLocaleDateString('pt-BR');
 }
 
+// Previsao de chegada (FUP) em quinzena, nao data exata -- a estimativa muda
+// com frequencia, mostrar o dia preciso passava falsa precisao (pedido do
+// Andre, 2026-11-24). Dia 1-15 vira a 2a quinzena do MESMO mes; dia 16-31
+// vira a 1a quinzena do mes SEGUINTE. Usa campos UTC pra nao sofrer
+// deslocamento de fuso numa data-only do Postgres (new Date('2026-12-01')
+// lido em hora local, fuso -3, mostraria 30/11).
+const MESES_ABREV = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+function fmtPrevisaoQuinzena(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  const dia = dt.getUTCDate();
+  let mes = dt.getUTCMonth(), ano = dt.getUTCFullYear(), semana;
+  if (dia <= 15) { semana = 2; } else { semana = 1; mes++; if (mes > 11) { mes = 0; ano++; } }
+  return 'Previsão de Fat. ' + semana + 'ª Semana ' + MESES_ABREV[mes] + '/' + String(ano).slice(-2);
+}
+
 // Telefone sempre formatado na exibicao -- varias fontes guardam so digitos
 // (soDigitos em api/_orcamento.js, sync do Zen) e aparecia cru tipo
 // "19999990000" (achado real, Andre, 2026-11-24). Numero fora do padrao

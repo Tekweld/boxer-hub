@@ -741,18 +741,25 @@ module.exports = async function handler(req, res) {
     // hub_fn_gerar_numero original, e processa as vendas do lote ao mesmo
     // tempo). 2130 clientes na fila inicial = ~53 rodadas (~13h de catch-up
     // em segundo plano); dali pra frente so processa quem entra novo.
+    // Lote reduzido de 40 pra 10 (Andre, 2026-11-24): carteiras pesadas de
+    // verdade (Cristina/VLM) tem cliente com historico de venda grande o
+    // bastante pra, de vez em quando, um lote de 40 estourar os 120s da
+    // function inteiro (visto ao vivo, "operation aborted due to timeout"
+    // repetindo sempre no mesmo lote -- nao e flutuacao de rede). 40 so era
+    // seguro contra a amostra mais leve testada em 2026-11-17.
+    const BACKFILL_LOTE = 10;
     r.backfill_lotes = 0;
     r.backfill_clientes_processados = 0;
     r.backfill_pedidos_criados = 0;
     r.backfill_erros = [];
     try {
       const filaRes = await fetch(HUB_URL +
-        '/rest/v1/hub_backfill_fila?status=eq.pendente&select=id,cliente_id&order=criado_em.asc&limit=40',
+        '/rest/v1/hub_backfill_fila?status=eq.pendente&select=id,cliente_id&order=criado_em.asc&limit=' + BACKFILL_LOTE,
         { headers: hubH('GET') });
       const fila = filaRes.ok ? await filaRes.json() : [];
 
-      for (let i = 0; i < fila.length; i += 40) {
-        const loteFila = fila.slice(i, i + 40);
+      for (let i = 0; i < fila.length; i += BACKFILL_LOTE) {
+        const loteFila = fila.slice(i, i + BACKFILL_LOTE);
         r.backfill_lotes++;
         try {
           const clientesRes = await fetch(HUB_URL +

@@ -264,8 +264,12 @@ async function abrirOrcamento(contar) {
     document.getElementById('corpo').innerHTML = '<div class="empty"><h3>Link inválido</h3></div>';
     return;
   }
+  // 2026-11-24, pedido explicito do Andre: "o cliente tem que receber link,
+  // clicar e ja acessar" -- o gate de e-mail+codigo travava o acesso real no
+  // primeiro clique. SESSAO so e lida se sobrar de antes (sem quebrar quem
+  // ja tinha passado pelo gate); sem ela, abre direto -- o backend
+  // (buscar_orcamento_publico_v2) ja aceita p_sessao nulo.
   SESSAO = lerSessao();
-  if (!SESSAO) { telaEmail(); return; }
   await abrirOrcamento(true);
 })();
 

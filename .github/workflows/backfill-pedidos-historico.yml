@@ -1,0 +1,80 @@
+# Catch-up PONTUAL do historico de pedidos (comercial.hub_backfill_fila),
+# pedido do Andre em 2026-11-24 pra zerar a fila de 6 representantes sem
+# depender de ninguem disparando na mao. Mesmo padrao ja comprovado em
+# backfill-notas-historico.yml: encadeia chamadas a /api/sync-pedidos-zen
+# dentro de uma janela, ate a fila esvaziar ou a janela acabar; se nao
+# esvaziar, a proxima janela agendada continua sozinha, sem precisar do
+# computador de ninguem ligado -- isto roda inteiro nos servidores do
+# GitHub.
+#
+# Tracas de seguranca (pra nunca ficar "rodando a toa"):
+# - teto de 250 rodadas POR janela (abaixo) + timeout-minutes: 55 no job;
+# - cada rodada chama o endpoint normal, que agora (mesmo commit) empurra
+#   sozinho pro fim da fila qualquer lote que trave 3x seguidas (nao fica
+#   preso pra sempre no mesmo cliente pesado);
+# - para na hora que a fila esvaziar (backfill_lotes volta 0) -- rodadas
+#   seguintes (inclusive as agendadas depois que ja zerou) custam 1 request
+#   rapido e saem, sem reprocessar nada.
+# - concurrency garante que nunca roda 2 janelas ao mesmo tempo.
+#
+# Depois que a fila zerar de vez, este arquivo pode ser apagado (ou so a
+# secao `schedule`, deixando so workflow_dispatch pra uso futuro pontual).
+name: Backfill historico de pedidos (catch-up pontual)
+
+on:
+  schedule:
+    - cron: '0 23 * * *'
+    - cron: '15 1 * * *'
+    - cron: '30 3 * * *'
+    - cron: '45 5 * * *'
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: backfill-pedidos-historico
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Encadear /api/sync-pedidos-zen ate a fila de backfill esvaziar ou a janela acabar
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          rodada=0
+          while [ "$rodada" -lt 250 ]; do
+            rodada=$((rodada + 1))
+            corpo=$(mktemp)
+            codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+              -X POST 'https://hub.boxersoldas.com.br/api/sync-pedidos-zen' \
+              -H "x-cron-secret: $CRON_SECRET" \
+              --max-time 120)
+
+            if [ "$codigo" != "200" ]; then
+              # Nao fatal de proposito -- mesma logica do backfill de NF: a
+              # proxima janela agendada (~2h15 depois) retoma sozinha.
+              echo "::warning::rodada $rodada respondeu HTTP $codigo -- encerrando esta janela mais cedo"
+              cat "$corpo"; echo
+              exit 0
+            fi
+
+            lotes=$(jq -r '.backfill_lotes // 0' "$corpo")
+            processados=$(jq -r '.backfill_clientes_processados // 0' "$corpo")
+            criados=$(jq -r '.backfill_pedidos_criados // 0' "$corpo")
+            erros=$(jq -r '.backfill_erros | length' "$corpo")
+            echo "--- rodada $rodada -> lotes=$lotes processados=$processados pedidos_criados=$criados erros=$erros"
+
+            if [ "$lotes" = "0" ]; then
+              echo "Fila de backfill vazia. Catch-up concluido -- este workflow pode ser desativado/apagado."
+              exit 0
+            fi
+          done
+
+          echo "Teto de $rodada rodadas nesta janela -- continua sozinho na proxima janela agendada."

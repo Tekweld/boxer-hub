@@ -754,7 +754,7 @@ module.exports = async function handler(req, res) {
     r.backfill_erros = [];
     try {
       const filaRes = await fetch(HUB_URL +
-        '/rest/v1/hub_backfill_fila?status=eq.pendente&select=id,cliente_id&order=criado_em.asc&limit=' + BACKFILL_LOTE,
+        '/rest/v1/hub_backfill_fila?status=eq.pendente&select=id,cliente_id,tentativas&order=criado_em.asc&limit=' + BACKFILL_LOTE,
         { headers: hubH('GET') });
       const fila = filaRes.ok ? await filaRes.json() : [];
 
@@ -901,13 +901,25 @@ module.exports = async function handler(req, res) {
           });
           r.backfill_clientes_processados += loteFila.length;
         } catch (e) {
-          // Falha na consulta ao Zen (nao na criacao do pedido) -- nao marca
-          // concluido, so soma tentativa, pra tentar de novo na proxima rodada.
+          // Falha na consulta ao Zen (nao na criacao do pedido). Achado ao
+          // vivo em 2026-11-24: cliente com historico de venda muito grande
+          // pode estourar o timeout TODA vez, travando a fila nesse mesmo
+          // lote pra sempre (FIFO por criado_em nunca avanca). Autocura: conta
+          // tentativa de verdade (antes gravava sempre 1, nunca incrementava);
+          // na 3a falha seguida, empurra o lote pro fim da fila sozinho (soma
+          // 1 ano a criado_em, zera tentativas) em vez de bloquear quem vem
+          // depois -- mesma ideia do triage manual feito nessa mesma rodada,
+          // so que automatico, sem precisar de ninguem olhando.
+          const maiorTentativa = Math.max(0, ...loteFila.map(f => Number(f.tentativas) || 0));
+          const novaTentativa = maiorTentativa + 1;
+          const travado = novaTentativa >= 3;
           await fetch(HUB_URL + '/rest/v1/hub_backfill_fila?id=in.(' + loteFila.map(f => f.id).join(',') + ')', {
             method: 'PATCH', headers: hubH('PATCH'),
-            body: JSON.stringify({ tentativas: 1, erro_detalhe: e.message.slice(0, 300), atualizado_em: new Date().toISOString() })
+            body: JSON.stringify(travado
+              ? { tentativas: 0, criado_em: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), erro_detalhe: e.message.slice(0, 300), atualizado_em: new Date().toISOString() }
+              : { tentativas: novaTentativa, erro_detalhe: e.message.slice(0, 300), atualizado_em: new Date().toISOString() })
           }).catch(() => {});
-          r.backfill_erros.push({ lote: i / 40, erro: e.message.slice(0, 200) });
+          r.backfill_erros.push({ lote: i / BACKFILL_LOTE, travado, erro: e.message.slice(0, 200) });
         }
       }
     } catch (e) {

@@ -721,6 +721,7 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  const t0 = Date.now(); // orcamento de tempo: maxDuration desta function e 120 s
   const r = {
     pendentes: 0, empurrados: 0, falhas_push: [],
     acompanhados: 0, etapas_lidas: 0, mudancas: 0, erros: []
@@ -874,6 +875,9 @@ module.exports = async function handler(req, res) {
                     numero, cliente_id: cliente.id, representante_id: cliente.representante_id || null,
                     status, erp_workflow_status: etapa, origem: 'erp',
                     valor_total: valorTotal, erp_pedido_id: String(venda.id), erp_tipo: 'sale',
+                    // Data REAL da venda no ZEN. Sem isto criado_em ficava com a data
+                    // da importacao e o pedido de fevereiro aparecia como de hoje.
+                    ...(venda.date ? { criado_em: venda.date } : {}),
                     erp_sincronizado_em: new Date().toISOString()
                   })
                 });
@@ -1091,13 +1095,26 @@ module.exports = async function handler(req, res) {
     }
 
     // ---- 2. Trazer a etapa do workflow de volta ----
+    // Fila JUSTA: so pedidos ainda abertos, os checados ha mais tempo primeiro.
+    // Antes era "os 200 mais recentes" -- com ~1.300 pedidos abertos, os demais
+    // nunca tinham a etapa atualizada (achado em 2026-11-25).
+    const abertos = encodeURIComponent('(erp_workflow_status.is.null,erp_workflow_status.not.in.("' +
+      ETAPAS_FINAIS.join('","') + '"))');
     const acompRes = await fetch(HUB_URL +
       '/rest/v1/hub_pedidos?erp_pedido_id=not.is.null&ativo=eq.true' +
+      '&status=not.in.(entregue,cancelado,rejeitado)&or=' + abertos +
       '&select=id,numero,erp_pedido_id,erp_workflow_status' +
-      '&order=criado_em.desc&limit=200', { headers: hubH('GET') });
+      '&order=erp_sincronizado_em.asc.nullsfirst&limit=200', { headers: hubH('GET') });
     let acompanhar = acompRes.ok ? await acompRes.json() : [];
+    if (!acompRes.ok) r.erros.push({ etapa: 'listar_acompanhar', status: acompRes.status });
     acompanhar = acompanhar.filter(p => !ETAPAS_FINAIS.includes(p.erp_workflow_status));
     r.acompanhados = acompanhar.length;
+    if (acompanhar.length) {
+      // marca como checados agora: e o que faz a fila rodar de verdade
+      await fetch(HUB_URL + '/rest/v1/hub_pedidos?id=in.(' + acompanhar.map(p => p.id).join(',') + ')', {
+        method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify({ erp_sincronizado_em: new Date().toISOString() })
+      });
+    }
 
     if (acompanhar.length) {
       const porSale = {};
@@ -1222,6 +1239,9 @@ module.exports = async function handler(req, res) {
             : t.servido < t.qtd ? 'em_separacao'
             : 'entregue';
           if (novoStatus === pedido.status) continue;
+          // 'faturado' (nota fiscal emitida, ver trg_hub_evento_faturado) vem de
+          // fonte melhor que servedQuantity: nao deixa "nada servido ainda" rebaixar.
+          if (pedido.status === 'faturado' && novoStatus === 'aprovado') continue;
 
           await fetch(HUB_URL + '/rest/v1/hub_pedidos?id=eq.' + pedido.id, {
             method: 'PATCH', headers: hubH('PATCH'),
@@ -1235,6 +1255,19 @@ module.exports = async function handler(req, res) {
       }
     } catch (e) {
       r.erros.push({ etapa: 'entrega_pos_aprovacao', detalhe: e.message.slice(0, 200) });
+    }
+
+    // ---- 4. Historico de etapas + data real dos pedidos importados ----
+    // Drena em lotes a cada rodada (ver api/_historico_etapas.js). So roda se
+    // sobrou tempo: o que for mais urgente (empurrar pedido, etapa atual) vem antes.
+    try {
+      if (Date.now() - t0 < 60000) {
+        r.historico = await require('./_historico_etapas').processarHistorico(hubH, { limite: 200, prazoMs: 45000 });
+      } else {
+        r.historico = { adiado: true };
+      }
+    } catch (e) {
+      r.erros.push({ etapa: 'historico_etapas', detalhe: e.message.slice(0, 200) });
     }
 
     console.log('[PEDIDOS-ZEN]', JSON.stringify(r));

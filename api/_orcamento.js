@@ -41,6 +41,7 @@
 //   lembretes {}                    -> (agendador, header x-lembretes-key) e-mail diario de acompanhamento aos representantes
 
 const { zenAuth, zenGet, ZEN_BASE } = require('./_zen');
+const { freightTypeZen, prazosTexto, conferirVenda } = require('./_zen_venda');
 
 
 
@@ -1100,7 +1101,7 @@ async function montarVendaZen(o, orc, itens) {
 
     tags: 'ORCAMENTO,' + orc.codigo + tagClasseOrc,
 
-    freightType: FRETE_BOXER_ENTREGA.includes(o.frete_tipo) ? 'ISSUER' : (o.frete_tipo ? 'RECIPIENT' : 'NONE'),
+    freightType: freightTypeZen(o.frete_tipo),
 
     properties: { comments: comentarios }
 
@@ -1123,6 +1124,15 @@ async function montarVendaZen(o, orc, itens) {
     : (Array.isArray(o.dias_pagamento) && o.dias_pagamento.length
         ? o.dias_pagamento.map(dias => ({ type: 'BILLING_TITLE', term: Number(dias) || 0 }))
         : Array.from({ length: o.parcelas }, (_, i) => ({ type: 'BILLING_TITLE', term: (i + 1) * DIAS_POR_PARCELA })));
+
+  // paymentMethods e a fonte das parcelas no ZEN (ver _zen_venda.js): gravar
+  // aqui as cria; postar salePayment alem disso duplicaria.
+  sale.properties.paymentMethods = prazosTexto(pagamentos.map(p => p.term));
+
+  // Canal de vendas = canal do cliente (Varejo/Hibrido/Ecommerce). O orcamento so guarda
+  // o segmento da politica (Fisica = Varejo).
+  const canalOrc = { 'Física': 'Varejo', 'Fisica': 'Varejo', 'Hibrido': 'Hibrido', 'Híbrido': 'Hibrido', 'Ecommerce': 'Ecommerce' }[o.segmento];
+  if (canalOrc) sale.properties.salesChannel = canalOrc;
 
   return { sale, itens: resolvidos, pagamentos };
 
@@ -1152,13 +1162,17 @@ async function criarVendaZen(o, orc, itens) {
 
   }
 
-  for (const p of m.pagamentos) {
-
-    const r = await fetch(ZEN_BASE + '/sale/salePayment', { method: 'POST', headers, body: JSON.stringify({ sale: { id: sale.id }, type: p.type, term: p.term }) });
-
-    if (!r.ok) falhas.push('pagamento ' + p.term + 'd: ' + (await r.text()).slice(0, 120));
-
-  }
+  // Parcelas nascem de properties.paymentMethods no POST da venda; aqui so se
+  // confere campo a campo e corrige o que divergir (nunca bloqueia o orcamento).
+  try {
+    const conf = await conferirVenda(sale.id, {
+      freightType: m.sale.freightType, terms: m.pagamentos.map(p => p.term),
+      comments: m.sale.properties.comments, channel: m.sale.properties.salesChannel,
+      sellerId: m.sale.personSalesperson?.id, addressId: m.sale.personAddressShipping?.id,
+      itens: m.itens.map(i => ({ packingId: i.productPacking.id, quantity: i.quantity, unitValue: i.unitValue }))
+    });
+    if (!conf.ok) falhas.push('conferencia no ZEN: ' + conf.restantes.join('; ').slice(0, 200));
+  } catch (e) { falhas.push('conferencia no ZEN nao concluida: ' + e.message.slice(0, 120)); }
 
   let etapa = true;
 
@@ -1933,21 +1947,25 @@ async function zenAtualizarVenda(sid, o, orc, itens) {
 
   for (const it of atuais) await zenCall('DELETE', '/sale/saleItem/' + it.id);
 
-  const pags = await zenGet('/sale/salePayment', { q: 'sale.id==' + sid, max: 50, limite: 50 });
-
-  for (const p of pags) await zenCall('DELETE', '/sale/salePayment/' + p.id);
-
   for (const it of m.itens) await zenCall('POST', '/sale/saleItem', { sale: { id: sid }, productPacking: it.productPacking, quantity: it.quantity, unitValue: it.unitValue });
 
-  for (const p of m.pagamentos) await zenCall('POST', '/sale/salePayment', { sale: { id: sid }, type: p.type, term: p.term });
-
+  // Parcelas: nao apaga/posta salePayment aqui. Trocar properties.paymentMethods
+  // no PUT faz o ZEN refazer as parcelas (medido 2026-11-25); conferirVenda
+  // fecha qualquer diferenca que sobrar.
   const nova = (await zenGet('/sale/sale', { q: 'id==' + sid, max: 1, limite: 1 }))[0];
 
-  nova.properties = Object.assign({}, nova.properties, { comments: m.sale.properties.comments });
+  nova.properties = Object.assign({}, nova.properties, { comments: m.sale.properties.comments, paymentMethods: m.sale.properties.paymentMethods });
 
   nova.freightType = m.sale.freightType;
 
   await zenCall('PUT', '/sale/sale', nova);
+
+  await conferirVenda(sid, {
+    freightType: m.sale.freightType, terms: m.pagamentos.map(p => p.term), comments: m.sale.properties.comments,
+    channel: m.sale.properties.salesChannel,
+    sellerId: m.sale.personSalesperson?.id, addressId: m.sale.personAddressShipping?.id,
+    itens: m.itens.map(i => ({ packingId: i.productPacking.id, quantity: i.quantity, unitValue: i.unitValue }))
+  });
 
 }
 

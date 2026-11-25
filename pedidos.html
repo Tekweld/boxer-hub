@@ -1837,20 +1837,31 @@ async function confirmarEnvio() {
 
     const detalhes = getDetalhesPedido();
 
-    await sb('/hub_pedidos?id=eq.' + _revisao.pedidoId, 'PATCH', {
-      ordem_compra: (detalhes.ordem_compra || '').trim() || null,
-      // "Frete = <opcao escolhida>" vai pro comentario da venda no ZEN direto
-      // a partir de frete_modalidade (ver push-pedido.js) -- nao polui aqui
-      // o campo de Observacoes, que fica so com o texto livre do usuario.
-      observacoes: (detalhes.observacoes || '').trim() || null,
-      forma_pagamento: detalhes.forma_pagamento || 'boleto',
-      parcelas: +detalhes.parcelas || 1,
-      dias_pagamento: detalhes.dias_pagamento || null,
-      frete_modalidade: modalidade,
-      classe_comercial_aplicada: _revisao.classeAplicada ?? null,
-      segmento_aplicado: _revisao.segmentoAplicado ?? null,
-      uf_aplicada: _revisao.ufAplicada ?? null
+    // Funcao no banco, NAO PATCH direto: representante nao tem policy de UPDATE
+    // em hub_pedidos, e o PATCH devolvia sucesso com 0 linhas alteradas -- o
+    // pedido seguia sem frete/pagamento e chegava vazio no ZEN (achado em
+    // 2026-11-25, HUB-2026-05747). A funcao confere quem chama e GRAVA so estes
+    // campos; se nao gravar, o envio para aqui, com erro visivel.
+    const salvo = await sbRpc('hub_fn_salvar_detalhes_pedido', {
+      p_pedido_id: _revisao.pedidoId,
+      p_dados: {
+        ordem_compra: (detalhes.ordem_compra || '').trim() || null,
+        // "Frete = <opcao escolhida>" vai pro comentario da venda no ZEN direto
+        // a partir de frete_modalidade (ver push-pedido.js) -- nao polui aqui
+        // o campo de Observacoes, que fica so com o texto livre do usuario.
+        observacoes: (detalhes.observacoes || '').trim() || null,
+        forma_pagamento: detalhes.forma_pagamento || 'boleto',
+        parcelas: +detalhes.parcelas || 1,
+        dias_pagamento: detalhes.dias_pagamento || null,
+        frete_modalidade: modalidade,
+        classe_comercial_aplicada: _revisao.classeAplicada ?? null,
+        segmento_aplicado: _revisao.segmentoAplicado ?? null,
+        uf_aplicada: _revisao.ufAplicada ?? null
+      }
     });
+    if (!salvo || salvo.ok !== true) {
+      throw new Error('Nao foi possivel gravar as condicoes do pedido (' + (salvo?.erro || 'sem resposta') + '). Tente de novo; se persistir, avise o suporte.');
+    }
 
     const resultado = await sbRpc('hub_fn_submeter_pedido', { p_pedido_id: _revisao.pedidoId });
 
@@ -2499,6 +2510,7 @@ async function openPedido(id) {
         </div>
       </div>
       ${pedido.ordem_compra ? `<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding:8px 10px;background:#f0f7ff;border-radius:6px"><strong>OC do cliente:</strong> ${esc(pedido.ordem_compra)}</div>` : ''}
+      ${condicoesPedidoHtml(pedido)}
       ${pedido.frete_modalidade === 'retirada' ? `<div style="font-size:13px;color:#92400e;margin-bottom:12px;padding:8px 10px;background:#fff7ed;border-radius:6px"><strong>Frete:</strong> cliente vai usar transportadora propria neste pedido (excecao sinalizada na criacao).</div>` : ''}
       ${pedido.classe_comercial_aplicada ? `<div style="font-size:12px;color:#718096;margin-bottom:12px">Precificado em <strong>${esc(pedido.segmento_aplicado || '')}/${esc(pedido.uf_aplicada || '')} — classe ${pedido.classe_comercial_aplicada}</strong> no momento do envio.</div>` : ''}
       ${renderTimeline(pedido, eventos)}
@@ -2605,8 +2617,42 @@ const ETAPA_CLIENTE = {
   // 'Pedido aprovado' -- sync-pedidos-zen.js acompanha a entrega via
   // sale.SaleItem.servedQuantity e grava aqui como evento proprio.
   'Em separacao (envio parcial)': { titulo: 'Em separacao',         texto: 'Parte dos itens ja esta sendo preparada/enviada.' },
-  'Entregue':               { titulo: 'Entregue',                   texto: 'Pedido totalmente entregue.' }
+  'Entregue':               { titulo: 'Entregue',                   texto: 'Pedido totalmente entregue.' },
+  // Faturamento: vem da nota fiscal ligada ao pedido (trg_hub_evento_faturado).
+  'Faturado':               { titulo: 'Faturado',                   texto: 'Nota fiscal emitida.' },
+  // Conferencia automatica apos o envio ao ERP (api/_zen_venda.js): le a venda
+  // de volta e compara frete, parcelas, itens e observacoes com o que o Hub mandou.
+  'Conferido no ERP':       { titulo: 'Dados conferidos',           texto: 'Conferimos que frete, pagamento e itens entraram corretamente no sistema.' },
+  'Corrigido no ERP':       { titulo: 'Dados conferidos e ajustados', texto: 'Conferimos o pedido no sistema e ajustamos automaticamente o que estava diferente.' },
+  'Divergencia no ERP':     { titulo: 'Em verificacao',             texto: 'Encontramos uma diferenca ao conferir seu pedido. Nossa equipe ja foi avisada e vai resolver.' }
 };
+
+const FORMA_PAGAMENTO_LABEL = {
+  boleto: 'Boleto / Duplicata a prazo', pix: 'PIX / à vista', cartao_credito: 'Cartão de crédito',
+  transferencia: 'Transferência', credix: 'Credix', bradesco_b2b: 'Bradesco B2B'
+};
+const FRETE_MODALIDADE_LABEL = {
+  CIF: 'CIF automático', FOB: 'FOB (cliente providencia o transporte)',
+  RETIRADA_BOXER: 'Retirada na Boxer (Campinas/São Paulo/Guarulhos)',
+  CARRO_BOXER: 'Carro Boxer', CAMINHAO_BOXER_SP: 'Entrega com Caminhão Boxer (SP)',
+  envio: 'Envio pela Boxer', retirada: 'Cliente usa transportadora própria'
+};
+
+// Pagamento e frete que o pedido levou -- o que o ADM ve no ERP tem que estar
+// visivel tambem aqui para quem acompanha (pedido do Andre, 2026-11-25).
+function condicoesPedidoHtml(p) {
+  const linhas = [];
+  if (p.forma_pagamento) {
+    const dias = Array.isArray(p.dias_pagamento) && p.dias_pagamento.length ? ' · ' + p.dias_pagamento.join('/') + ' dias' : '';
+    linhas.push('<strong>Pagamento:</strong> ' + esc((FORMA_PAGAMENTO_LABEL[p.forma_pagamento] || p.forma_pagamento) + dias));
+  }
+  if (p.frete_modalidade && p.frete_modalidade !== 'retirada') {
+    linhas.push('<strong>Frete:</strong> ' + esc(FRETE_MODALIDADE_LABEL[p.frete_modalidade] || p.frete_modalidade));
+  }
+  if (!linhas.length) return '';
+  return '<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding:8px 10px;background:#f7fafc;border-radius:6px;display:flex;flex-wrap:wrap;gap:4px 18px">' +
+    linhas.map(l => '<span>' + l + '</span>').join('') + '</div>';
+}
 
 // Depois que a venda existe no Zen, quem conta a verdade sobre o pedido e a
 // etapa do workflow, nao o status do Hub (que fica em 'submetido' para
@@ -2633,6 +2679,18 @@ function renderTimeline(pedido, eventos) {
       <strong>Pedido enviado.</strong> Estamos registrando no sistema — a etapa aparece aqui em instantes.
     </div>`;
   }
+
+  // Etapas diferentes do Zen que o cliente le igual ('Inicio' e 'Orcamento' =
+  // "Em conferencia") viram uma linha so, a primeira.
+  const vistos = new Set();
+  const linhasUnicas = linhas.filter(ev => {
+    const titulo = (ETAPA_CLIENTE[ev.etapa] || { titulo: ev.etapa }).titulo;
+    if (vistos.has(titulo)) return false;
+    vistos.add(titulo);
+    return true;
+  });
+  linhas.length = 0;
+  linhas.push(...linhasUnicas);
 
   const itens = linhas.map((ev, i) => {
     const t = ETAPA_CLIENTE[ev.etapa] || { titulo: ev.etapa, texto: '' };

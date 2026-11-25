@@ -16,6 +16,7 @@
 // verdade quando chamado com dry=0 explicitamente, e so deveria ser wireado
 // no checkout (pedidos.html) depois de um teste manual supervisionado.
 const { zenAuth, zenGet, ZEN_BASE } = require('./_zen');
+const { freightTypeZen, prazosTexto, conferirVenda, observacoesPedido } = require('./_zen_venda');
 
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 const ZEN_COMPANY_ID = 1009;    // TEKSP -- representa a Boxer
@@ -83,8 +84,10 @@ module.exports = async function handler(req, res) {
       HUB_URL + '/rest/v1/hub_pedidos?id=eq.' + pedido_id +
         '&select=id,numero,status,valor_total,cliente_id,representante_id,erp_pedido_id,' +
         'forma_pagamento,parcelas,dias_pagamento,observacoes,ordem_compra,frete_modalidade,' +
-        'classe_comercial_aplicada,segmento_aplicado,' +
-        'hub_clientes(erp_cliente_id,razao_social,representante_id),hub_pedido_itens(sku,quantidade,preco_final)',
+        'classe_comercial_aplicada,segmento_aplicado,uf_aplicada,origem,criado_por,canal_venda,' +
+        'valor_frete,entrega_agendada,prazo_entrega,' +
+        'hub_clientes(erp_cliente_id,razao_social,representante_id,canal),' +
+        'hub_pedido_itens(sku,quantidade,preco_unitario,preco_final,desconto_item_percentual,classe_override,segmento_override)',
       { headers: hubH('GET') }
     );
     const pedido = (await pedRes.json())?.[0];
@@ -183,21 +186,43 @@ module.exports = async function handler(req, res) {
     // (RECIPIENT). "Frete = <opcao>" sempre vai pro comentario -- unica
     // forma de nao perder a granularidade no ZEN (freightType so distingue
     // ISSUER/RECIPIENT/NONE).
-    const FRETE_LABEL_POR_CODIGO = {
-      CIF: 'CIF automático', FOB: 'FOB (cliente providencia o transporte)',
-      RETIRADA_BOXER: 'Retirada na Boxer (Campinas/São Paulo/Guarulhos)',
-      CARRO_BOXER: 'Carro Boxer', CAMINHAO_BOXER_SP: 'Entrega com Caminhão Boxer (SP)'
-    };
-    const FRETE_BOXER_ENTREGA = ['CIF', 'CARRO_BOXER', 'CAMINHAO_BOXER_SP'];
-    const freightType = FRETE_BOXER_ENTREGA.includes(pedido.frete_modalidade) ? 'ISSUER'
-                       : pedido.frete_modalidade ? 'RECIPIENT'
-                       : 'NONE';
+    // Mapa completo em _zen_venda.js (medido 2026-11-25: o ZEN aceita 5 valores,
+    // nao so ISSUER/RECIPIENT; retirada = RECIPIENT_SELF, frete proprio = ISSUER_SELF).
+    const freightType = freightTypeZen(pedido.frete_modalidade);
 
-    const comentarios = [
-      pedido.ordem_compra ? 'OC: ' + pedido.ordem_compra : null,
-      pedido.observacoes || null,
-      pedido.frete_modalidade ? 'Frete = ' + (FRETE_LABEL_POR_CODIGO[pedido.frete_modalidade] || pedido.frete_modalidade) : null
-    ].filter(Boolean).join(' — ') || undefined;
+    // --- Dados do Hub que o ZEN nao tem campo para receber -> campo Observacoes ---
+    // (pedido do Andre, 2026-11-25). Tudo best-effort: se uma consulta falhar, a linha
+    // some mas o pedido sobe igual -- nunca bloqueia.
+    const get = async (path) => {
+      try { const r = await fetch(HUB_URL + '/rest/v1/' + path, { headers: hubH('GET') }); return r.ok ? await r.json() : []; }
+      catch (_) { return []; }
+    };
+    let feitoPor = null;
+    if (pedido.criado_por) {
+      const [perf] = await get('hub_perfis?user_id=eq.' + pedido.criado_por + '&select=nome,tipo,role&limit=1');
+      if (perf?.nome) {
+        const tipoTxt = perf.tipo === 'representante' ? 'representante'
+          : perf.tipo === 'cliente' ? 'cliente' : 'funcionário Boxer';
+        feitoPor = { nome: perf.nome, tipo: tipoTxt };
+      }
+    }
+    if (!feitoPor) {
+      const porOrigem = { proxy_representante: 'representante', admin: 'funcionário Boxer', cliente: 'próprio cliente' }[pedido.origem];
+      if (porOrigem) feitoPor = { nome: porOrigem === 'próprio cliente' ? 'o próprio cliente' : 'não identificado', tipo: porOrigem };
+    }
+    const solics = await get('hub_solicitacoes?referencia_tipo=eq.pedido&referencia_id=eq.' + pedido.id +
+      '&status=in.(resolvida,respondida)&select=assunto,categoria,assumido_por_nome,resolvido_em&order=criado_em.asc');
+    const excecoes = solics.map(s => ({ assunto: s.assunto, categoria: s.categoria, por: s.assumido_por_nome, em: s.resolvido_em }));
+    const [onb] = await get('hub_onboarding?cliente_id=eq.' + pedido.cliente_id + '&select=aceita_faturamento_parcial&order=criado_em.desc&limit=1');
+    const faturamentoParcial = typeof onb?.aceita_faturamento_parcial === 'boolean' ? onb.aceita_faturamento_parcial : null;
+
+    const comentarios = observacoesPedido(pedido, {
+      itens: pedido.hub_pedido_itens || [], feitoPor, excecoes, faturamentoParcial
+    });
+    // Campo "Codigo" da venda = numero do pedido de compra DO CLIENTE (OC digitada no
+    // Hub). So preenche quando alguem escreveu; o canal de vendas e o do cliente.
+    const codigoOC = pedido.ordem_compra ? String(pedido.ordem_compra).trim().slice(0, 60) : null;
+    const canalVenda = pedido.canal_venda || pedido.hub_clientes?.canal || null;
 
     // Classe de preco aplicada -- nao ha campo proprio em sale.Sale (so 14
     // campos no nivel raiz, ver nota acima), mas `tags` e padrao e
@@ -218,10 +243,17 @@ module.exports = async function handler(req, res) {
       freightType
     };
     if (personAddressShippingId) saleBody.personAddressShipping = { id: personAddressShippingId };
-    if (comentarios) saleBody.properties = { comments: comentarios };
-    if (erpRepresentanteId) saleBody.personSalesperson = { id: Number(erpRepresentanteId) };
-
     const pagamentos = montarPagamentos(pedido);
+
+    // "Formas de pagamento" (properties.paymentMethods) e a FONTE das parcelas no
+    // ZEN: gravar "28/56/84" aqui faz o ZEN criar as 3 parcelas sozinho. Postar
+    // salePayment alem disso duplicaria; postar so salePayment deixa o campo
+    // vazio (era o que o ADM via em branco). Medido em 2026-11-25.
+    saleBody.properties = { paymentMethods: prazosTexto(pagamentos.map(p => p.term)) };
+    if (comentarios) saleBody.properties.comments = comentarios;
+    if (canalVenda) saleBody.properties.salesChannel = canalVenda;
+    if (codigoOC) saleBody.code = codigoOC;
+    if (erpRepresentanteId) saleBody.personSalesperson = { id: Number(erpRepresentanteId) };
 
     if (dry && dry !== '0' && dry !== 0) {
       return res.status(200).json({ ok: true, dry: true, sale: saleBody, itens: itensZen, pagamentos });
@@ -271,17 +303,41 @@ module.exports = async function handler(req, res) {
       if (!itemRes.ok) itensErro.push({ sku: item.sku, erro: (await itemRes.text()).slice(0, 300) });
     }
 
-    // Pagamento. Sem isto o pedido chega ao Zen com "Formas de pagamento"
-    // vazio e o ADM NAO consegue avancar a etapa -- travou de verdade no teste
-    // de 2026-09-06, e o Andre teve que preencher na mao para destravar.
+    // Pagamento: as parcelas ja nasceram de properties.paymentMethods no POST da
+    // venda (sem elas o ADM nao consegue avancar a etapa -- travou no teste de
+    // 2026-09-06). Quem garante que ficou certo e a conferencia logo abaixo.
     const pagErro = [];
-    for (const p of pagamentos) {
-      const pr = await fetch(ZEN_BASE + '/sale/salePayment', {
-        method: 'POST', headers,
-        body: JSON.stringify({ sale: { id: sale.id }, type: p.type, term: p.term })
+
+    // Conferencia campo a campo no ZEN, corrigindo o que divergir. Nao bloqueia
+    // nada: o pedido ja esta la; isto so garante que entrou COMPLETO e deixa
+    // rastro na timeline (regra do Andre, 2026-11-25).
+    let conferencia = null;
+    try {
+      conferencia = await conferirVenda(sale.id, {
+        freightType,
+        terms: pagamentos.map(p => p.term),
+        comments: comentarios,
+        code: codigoOC,
+        channel: canalVenda,
+        sellerId: erpRepresentanteId,
+        addressId: personAddressShippingId,
+        itens: itensZen.map(i => ({ packingId: i.productPacking.id, quantity: i.quantity, unitValue: i.unitValue }))
       });
-      if (!pr.ok) pagErro.push({ term: p.term, erro: (await pr.text()).slice(0, 300) });
+    } catch (e) {
+      conferencia = { ok: false, divergencias: [], corrigidas: [], restantes: ['conferencia nao concluida: ' + e.message.slice(0, 200)] };
     }
+    const resumoVenda = 'venda ' + sale.id + ' · frete ' + freightType + ' · parcelas ' + prazosTexto(pagamentos.map(p => p.term)) + ' · ' + itensZen.length + ' item(ns)';
+    const etapaConf = conferencia.ok
+      ? (conferencia.corrigidas.length ? 'Corrigido no ERP' : 'Conferido no ERP')
+      : 'Divergencia no ERP';
+    const detalheConf = conferencia.ok
+      ? resumoVenda + (conferencia.corrigidas.length ? ' · corrigido: ' + conferencia.divergencias.join('; ') : '')
+      : resumoVenda + ' · pendente: ' + conferencia.restantes.join('; ');
+    await fetch(HUB_URL + '/rest/v1/hub_pedido_eventos?on_conflict=pedido_id,etapa', {
+      method: 'POST',
+      headers: { ...hubH('POST'), Prefer: 'resolution=ignore-duplicates,return=minimal' },
+      body: JSON.stringify({ pedido_id, etapa: etapaConf, origem: 'hub', detalhe: detalheConf.slice(0, 500) })
+    });
 
     // Achado em 2026-10-26: venda 56025 nasceu com cabecalho+pagamento mas
     // ZERO itens (fiscalProfilePerson null na Person quebrava o saleItem) e
@@ -310,7 +366,8 @@ module.exports = async function handler(req, res) {
       itens_gravados: itensZen.length - itensErro.length,
       itens_com_erro: itensErro,
       pagamentos_gravados: pagamentos.length - pagErro.length,
-      pagamentos_com_erro: pagErro
+      pagamentos_com_erro: pagErro,
+      conferencia
     });
 
   } catch (e) {

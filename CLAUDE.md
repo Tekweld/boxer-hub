@@ -28,6 +28,10 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 | `admin.html` | Painel admin: usuarios/perfis, campanhas, regras comerciais (motor de excecoes), tabelas de preco, catalogo, clientes, logs |
 | `solicitacoes.html` | Canal Unico de solicitacoes — modulo proprio (saiu do Admin em 17/11), restrito a funcionario Boxer ou role admin |
 | `pesquisas.html` | Pesquisas ativas para o revendedor responder |
+| `api/push-pedido.js` | Envia o pedido submetido ao ZEN (sale + itens), grava `code`/canal/observacoes/`paymentMethods`, CONFERE a venda lida de volta (`api/_zen_venda.js`) e registra "Conferido/Corrigido/Divergencia no ERP" na timeline. Tambem despacha `?target=orcamento|indicadores|historico|authlog|comissoes` (limite de 12 Serverless Functions no plano Hobby) |
+| `api/_zen_venda.js` | Regras UNICAS de como uma venda do Hub vira venda no ZEN: mapa de frete → `freightType`, `paymentMethods` como fonte das parcelas, texto das observacoes, `conferirVenda` (le, compara e corrige por PUT). Prefixo `_` = nao e Serverless Function |
+| `api/_historico_etapas.js` | Traz do ZEN a data real e o historico de etapas dos pedidos importados (`origem='erp'`), em lotes, chamado por `sync-pedidos-zen.js` |
+| `api/sync-pedidos-zen.js` | Cron de 15 min (06h-19h45 BRT): reempurra pedido sem `erp_pedido_id`, traz a etapa do workflow (fila justa por `erp_sincronizado_em`), entrega pos-aprovacao e drena o historico |
 | `netlify.toml` | Config de deploy Netlify |
 | `docs/` | Documentacao de planejamento (NAO MEXER) |
 | `mvp/` | Prototipo antigo de referencia (NAO MEXER) |
@@ -55,7 +59,7 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 |---|---|---|
 | `hub_perfis` | user_id, tipo (cliente/representante/funcionario/admin), role (dealer/rep/analyst/manager/financial/admin), nome, email, cliente_id, representante_id, area (vendas_adm/financeiro/operacoes/ti — so funcionario, roteia o canal de resolucao) | Perfil do usuario autenticado |
 | `hub_carteira` | representante_id, cliente_id, data_vinculo | Vinculo rep-cliente (admin configura) |
-| `hub_pedidos` | numero (HUB-2026-00001), cliente_id, representante_id, status (rascunho→submetido→aprovado→faturado→enviado→entregue), origem, valor_total, ordem_compra | Pedidos |
+| `hub_pedidos` | numero (HUB-2026-00001), cliente_id, representante_id, status (rascunho→submetido→aprovado→faturado→enviado→entregue), origem (cliente/proxy_representante/admin/erp), valor_total, valor_frete, ordem_compra (→ `sale.code` no ZEN), forma_pagamento, parcelas, dias_pagamento (→ `paymentMethods`), frete_modalidade (→ `freightType`), canal_venda (Varejo/Hibrido/Ecommerce, snapshot do cliente), criado_por (auth.uid de quem montou), erp_pedido_id, erp_workflow_status, erp_historico_em (historico de etapas ja importado) | Pedidos |
 | `hub_pedido_itens` | pedido_id, produto_id, quantidade, preco_unitario, preco_final, subtotal_item | Itens do pedido |
 | `hub_notificacoes` | usuario_id, tipo, titulo, mensagem, referencia_tipo, referencia_id, lida | Notificacoes do sistema |
 | `hub_solicitacoes` | numero, cliente_id, representante_id, categoria (duvida/problema_entrega/financeiro/alteracao_pedido/documentacao/outro), status (aberta→em_andamento→respondida→resolvida), referencia_tipo/referencia_id (pedido/titulo/nota_fiscal/geral), area_responsavel (vendas_adm/financeiro/operacoes/ti — auto por categoria via trigger), assumido_por, assumido_por_nome, assumido_em, resolvido_em | Canal de resolucao (chamados). Quem e da area assume, responde e confirma conclusao |
@@ -126,6 +130,8 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 | `hub_fn_definir_classe_comercial(cliente_id, classe)` | uuid + smallint/null | `{ok, nome, classe_comercial}` | Admin define/limpa o override de classe (Admin>Clientes). Nunca sincroniza pro ZEN (ver tabela hub_clientes acima) |
 | `hub_fn_validar_credito(cliente_id, valor)` | uuid + numeric | `{ok, limite_total, disponivel, disponivel_apos}` ou erro | Antes de submeter pedido — agrega por `grupo_erp_id` quando o cliente tem grupo |
 | `hub_fn_ajustar_credito_grupo(cliente_id, delta)` | uuid + numeric | — | Reserva/libera credito distribuindo entre as filiais do grupo (`FOR UPDATE` no grupo inteiro) |
+| `hub_fn_salvar_detalhes_pedido(pedido_id, dados jsonb)` | uuid + jsonb | `{ok}` ou `{ok:false, erro}` | **Unica forma do checkout gravar forma de pagamento/parcelas/dias/frete/OC/observacoes/classe/UF do rascunho.** Representante NAO tem UPDATE em `hub_pedidos` (PATCH direto afeta 0 linhas SEM erro). Valida dono (cliente, carteira do rep, staff) |
+| `hub_fn_liberar_credito_rejeitado(pedido_id)` | uuid | `{ok, credito_devolvido}` | Devolve credito (por grupo, com teto) e marca `rejeitado`. Chamada pelo sync quando o ZEN reprova. O gatilho `trg_hub_liberar_credito_pedido` agora so cobre `cancelado` (antes devolvia em dobro) |
 | `hub_fn_gerar_numero()` | — | `'HUB-2026-00001'` | Chamada internamente por hub_fn_submeter_pedido. **Nao tem lock** — seguro so sequencial, nunca chamar em paralelo sem reservar o bloco antes (ver backfill em `sync-pedidos-zen.js`) |
 | `hub_fn_liberar_cliente(cliente_id)` | uuid | `{ok, nome}` | Admin/manager libera bloqueio manualmente (sobrevive ao proximo sync do ZEN via `bloqueio_liberado_manualmente`) |
 
@@ -158,6 +164,9 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 7. **Primeiro admin** — inserir via painel Supabase (bypassa RLS)
 8. **Tabelas SYNC** — frontend so faz SELECT. Escrita apenas via conector/service_role.
 9. **Nao mexer** em docs/ e mvp/ — sao referencia, nao codigo ativo
+10. **Toda `acao` nova em `hub_log_alteracoes`** (SQL, `api/*.js` ou html) tem que entrar em `hub_log_alteracoes_acao_check`. Fora da lista o INSERT falha e derruba a operacao inteira (bug repetido 4x em 2026-11-25: usuarios, credito rejeitado, cancelamento de onboarding, convite aceito)
+11. **Escrita em `hub_pedidos` por representante vai por funcao `SECURITY DEFINER`**, nunca por PATCH/POST direto: o RLS filtra a linha e o PostgREST devolve sucesso com 0 linhas. Sempre conferir o retorno (`ok`) e testar com o PAPEL real, nao so admin
+12. **ZEN: `properties.paymentMethods` e a fonte das parcelas.** Gravar no POST da venda faz o ZEN criar os `salePayment`; postar `salePayment` por cima DUPLICA. Ver `docs/INTEGRACAO-ZEN-HUB.md` secao 8 e `BOXER/ZEN-ERP-CONHECIMENTO.md` 4.6.3
 
 ---
 

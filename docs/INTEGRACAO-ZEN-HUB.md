@@ -419,3 +419,110 @@ Nada abaixo deve ser presumido a partir do nome do endpoint ou do schema:
       `personAddress` é entidade relacionada para endereços adicionais.
       Sem isso, a tela de cadastro mostra vazio e o pedido não tem endereço de
       entrega confirmável.
+
+---
+
+## 8. Pedido Hub → ZEN: como a venda é montada, conferida e acompanhada (2026-11-25)
+
+Tudo abaixo foi **medido** contra o ZEN de produção (vendas temporárias criadas,
+lidas de volta e apagadas; e pedidos reais conferidos na tela do ZEN com o login do
+André). Fonte única do código: `api/push-pedido.js` (pedido) e `api/_orcamento.js`
+(orçamento), ambos usando `api/_zen_venda.js`.
+
+### 8.1 Mapa de campos (Hub → `sale.Sale`)
+
+| Dado no Hub | Campo no ZEN | Tela do ZEN |
+|---|---|---|
+| `ordem_compra` (se alguém digitou) | `code` | **Código** (= nº do pedido de compra do cliente) |
+| `canal_venda` (canal do cliente: Varejo/Hibrido/Ecommerce) | `properties.salesChannel` | **Canal de vendas** |
+| `dias_pagamento` → `"30/60"` | `properties.paymentMethods` | **Formas de pagamento** (e cria as parcelas) |
+| `frete_modalidade` | `freightType` | **Transporte → Tipo de frete** |
+| representante do cliente | `personSalesperson` | **Vendedor** |
+| endereço do cliente | `personAddressShipping` | **Endereço** |
+| itens (`preco_final`, `quantidade`) | `saleItem.unitValue` / `quantity` | itens (preço **com** desconto) |
+| classe aplicada | `tags` (`F3`, `H2`, `E1`) | **Tags** |
+| tudo que não tem campo | `properties.comments` | **Observações** |
+
+`properties.salesHub` ("Hub de integração") **não é preenchido**: no ZEN só os
+marketplaces o usam (valor = nome do marketplace). Não foi pedido para o Hub.
+
+### 8.2 Parcelas: `paymentMethods` é a FONTE, não o contrário
+
+- `POST /sale/sale` com `properties.paymentMethods: "30/60"` e **sem** `salePayment`
+  → o ZEN cria as 2 parcelas (prazos 30 e 60). `PUT` trocando para `"28/56/84"` refaz as parcelas.
+  `"0"` → 1 parcela à vista.
+- Postar **só** `salePayment` cria as parcelas mas **deixa "Formas de pagamento" vazio**
+  (era o que o ADM via em branco nos pedidos 60008/60088).
+- Postar **os dois** **duplica** as parcelas (6 linhas para um 28/56/84).
+- Cartão e Credix saem como 1 parcela à vista (quem financia é a adquirente); o parcelamento
+  real não aparece no ZEN — decisão com o financeiro ainda em aberto.
+
+### 8.3 Frete
+
+| Hub (`frete_modalidade`) | `freightType` | Texto na tela do ZEN |
+|---|---|---|
+| CIF | `ISSUER` | EMITENTE |
+| FOB | `RECIPIENT` | DESTINATARIO |
+| RETIRADA_BOXER | `RECIPIENT_SELF` | **DESTINATARIO (PRÓPRIO)** (medido) |
+| CARRO_BOXER, CAMINHAO_BOXER_SP | `ISSUER_SELF` | EMITENTE (PRÓPRIO) *(inferido, não visto na tela)* |
+
+A spec pública do ZEN lista só `NONE|ISSUER|RECIPIENT`, mas o ZEN aceita 5 valores
+(valor inválido → 500 `No enum constant ...FreightType.XXXX`). O ADM já usa `RECIPIENT_SELF`.
+
+### 8.4 Texto das Observações (uma linha por dado, só o que existir)
+
+Observação digitada pelo cliente → `Frete: <opção> — cobrado R$ X na nota` (ou "sem cobrança")
+→ `Desconto: R$ X (Y%) sobre a tabela — classe N (Segmento/UF)` → `Item SKU (N un): exceção de preço —
+desconto de P% — de R$ A por R$ B` → `Pedido feito por: <nome> (representante|funcionário Boxer|cliente)`
+→ `Entrega agendada: sim` → `Exceção aprovada: ...` → `Faturamento parcial: aceita|NÃO aceita`
+(só quando o onboarding do cliente registrou). **Forma de pagamento, OC e canal NÃO entram aqui** —
+vão nos campos certos. Previsão de reposição e link do pedido: fora (decisão do André).
+
+Preço: o ZEN recebe **só o preço final com desconto**. No cliente Híbrido/Ecommerce o preço da
+revenda é *maior* que a tabela base (markup), então `preco_unitario` (tabela base) não serve de
+"de" do desconto; o "de" é reconstruído de `preco_final / (1 − desconto_item_percentual)`.
+
+### 8.5 Conferência automática (`conferirVenda`)
+
+Depois de criar a venda, o Hub **lê de volta** e compara frete, formas, parcelas, itens (produto,
+quantidade, valor), vendedor, endereço, observações, `code` e canal. O que divergir é corrigido por
+`PUT /sale/sale` (objeto inteiro) e, se preciso, parcela a parcela. Nunca bloqueia o pedido; deixa na
+timeline **"Conferido no ERP"**, **"Corrigido no ERP"** ou **"Divergência no ERP"**.
+Cuidados medidos: leitura de listas pequenas pode repetir registros (deduplicar por `id`); `PUT` sem
+nenhuma mudança devolve 400 (só se faz PUT quando há divergência).
+
+### 8.6 Por que o pedido do representante chegava sem frete e sem pagamento
+
+`hub_pedidos` não tem policy de UPDATE para `tipo='representante'`. O `PATCH` do checkout alterava
+**0 linhas e devolvia sucesso**; `hub_fn_submeter_pedido` (SECURITY DEFINER) submetia assim mesmo e o push
+lia tudo vazio. Correção: `hub_fn_salvar_detalhes_pedido` (migration `20261125190000`). Reproduzido no banco
+como a Cristina (PATCH antigo = 0 linhas; função nova grava todos os campos), em transação desfeita.
+
+### 8.7 Acompanhamento até o faturamento
+
+- Etapas do workflow chegam ao Hub por `api/sync-pedidos-zen.js` (cron de 15 min, 06h–19h45 BRT, não é
+  instantâneo) e viram eventos em `hub_pedido_eventos` (uma por etapa — índice único `pedido_id,etapa`).
+- **Pedidos importados do ZEN** vinham sem histórico (5.188 de 5.889) e com a data da importação.
+  `api/_historico_etapas.js` traz `sale.date` e os `workpieceNode` (com `dateTimeStart`); drena 200 por rodada
+  (`erp_historico_em IS NULL` = pendente). A fila de acompanhamento agora é justa (pedidos abertos, checados há
+  mais tempo primeiro) — antes eram só os 200 mais recentes.
+- **Faturado** = primeira nota fiscal ligada ao pedido (`trg_hub_evento_faturado`; data = emissão da NF).
+- **Entrega NÃO tem rastreio real ainda.** `status='entregue'` hoje vem de `servedQuantity`; não é confirmação de
+  entrega. Pendente.
+
+### 8.8 Como testar sem sujar a produção
+
+1. Venda **temporária** no ZEN (`POST` → ler → `DELETE`; só `PREPARING` apaga) com tag `TESTE-...` e pessoa de teste.
+2. Pedido real pela tela com o admin, depois apagar a venda e devolver o crédito com
+   `select comercial.hub_fn_liberar_credito_rejeitado(id)` (respeita grupo) — **não** `hub_fn_reverter_pedido`
+   (só vale antes de existir `erp_pedido_id`). Conferir limites antes/depois.
+3. Boleto exige limite ativo e sem título vencido. Para teste pontual: regra de exceção `prazo_especial` com
+   `liberar_elegibilidade=true` só para o `cliente_id`, vigência de 1 dia, **apagada em seguida**
+   (`hub_regras_comerciais`) — nunca alterar a regra para todos.
+4. Conferir **na tela do ZEN** (`sale/sale-edit?id=<id>`; a busca exige o campo Empresa), não só pela API.
+
+### 8.9 Em aberto
+
+- Retirada/FOB ainda cobra o frete da política (R$ 120 abaixo do mínimo) no Hub: decisão de negócio.
+- Rastreio de entrega; parcelamento do cartão no contas a receber; boleto multi-parcela e login de
+  representante **pela tela** ainda não provados de ponta a ponta.

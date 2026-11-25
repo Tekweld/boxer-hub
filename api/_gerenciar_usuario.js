@@ -1,7 +1,15 @@
-// Acoes administrativas sobre usuario ja existente (hoje so resetar_senha).
-// Ativar/desativar NAO passa por aqui -- e um PATCH simples em hub_perfis.ativo
-// que o proprio admin.html ja faz direto (RLS libera pra role admin/manager);
-// so reset de senha exige service_role (auth.admin API), por isso tem function.
+// Acoes administrativas sobre usuario ja existente: resetar_senha e
+// alternar_ativo. As duas passam por aqui (service_role) em vez de um PATCH
+// direto do cliente -- achado testando ao vivo em 25/11: o INSERT em
+// hub_log_alteracoes via token do proprio usuario (RLS, so com
+// `auth.uid() is not null`) estava sendo rejeitado com "new row violates
+// row-level security policy" mesmo a policy parecendo trivialmente
+// permissiva -- causa raiz nao identificada a tempo (pode afetar outros
+// fluxos antigos que logam client-side, ex. confirmarRejeicao em
+// admin.html; registrado em memoria pra investigar depois). Rotear por
+// aqui com service_role contorna o problema de forma garantida E deixa o
+// log de auditoria garantido no mesmo lugar que ja faz a verificacao de
+// quem pode usar.
 //
 // Prefixo `_` -- NAO e uma serverless function propria (Vercel Hobby limita
 // 12 por deploy, ja no teto). api/ativar.js despacha pra ca quando o body
@@ -15,9 +23,12 @@ module.exports = async function gerenciarUsuario(req, res) {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Token de autenticacao ausente' });
 
-  const { acao, perfil_id } = req.body || {};
-  if (acao !== 'resetar_senha') return res.status(400).json({ error: 'acao invalida' });
+  const { acao, perfil_id, novo_ativo } = req.body || {};
+  if (!['resetar_senha', 'alternar_ativo'].includes(acao)) return res.status(400).json({ error: 'acao invalida' });
   if (!perfil_id) return res.status(400).json({ error: 'perfil_id obrigatorio' });
+  if (acao === 'alternar_ativo' && typeof novo_ativo !== 'boolean') {
+    return res.status(400).json({ error: 'novo_ativo (boolean) obrigatorio' });
+  }
 
   const sbHeaders = (method) => ({
     'Content-Type': 'application/json',
@@ -47,18 +58,40 @@ module.exports = async function gerenciarUsuario(req, res) {
     );
     const callerPerfis = await callerPerfilRes.json();
     if (!callerPerfis?.[0] || callerPerfis[0].role !== 'admin') {
-      return res.status(403).json({ error: 'Apenas admin pode resetar senha de usuario' });
+      return res.status(403).json({ error: 'Apenas admin pode gerenciar usuarios' });
     }
 
-    // 2 — Resolver o alvo (qualquer perfil, ativo ou nao -- resetar senha de
-    // alguem desativado e legitimo, prepara o acesso pra quando reativarem)
+    // 2 — Resolver o alvo (qualquer perfil, ativo ou nao -- resetar senha ou
+    // reativar alguem ja desativado e legitimo)
     const alvoRes = await fetch(
-      SB_URL + '/rest/v1/hub_perfis?id=eq.' + perfil_id + '&select=user_id,nome,email',
+      SB_URL + '/rest/v1/hub_perfis?id=eq.' + perfil_id + '&select=user_id,nome,email,ativo',
       { headers: sbHeaders('GET') }
     );
     const alvos = await alvoRes.json();
     if (!alvos?.[0]?.user_id) return res.status(404).json({ error: 'Usuario nao encontrado' });
     const alvo = alvos[0];
+
+    if (acao === 'alternar_ativo') {
+      await fetch(SB_URL + '/rest/v1/hub_perfis?id=eq.' + perfil_id, {
+        method: 'PATCH', headers: sbHeaders('PATCH'),
+        body: JSON.stringify({ ativo: novo_ativo })
+      });
+      try {
+        const logRes = await fetch(SB_URL + '/rest/v1/hub_log_alteracoes', {
+          method: 'POST', headers: sbHeaders('POST'),
+          body: JSON.stringify({
+            usuario_id: caller.id, usuario_email: caller.email,
+            tabela_ref: 'hub_perfis', registro_id: perfil_id,
+            campo: 'ativo', valor_anterior: String(alvo.ativo), valor_novo: String(novo_ativo),
+            acao: novo_ativo ? 'ativar_usuario' : 'desativar_usuario'
+          })
+        });
+        if (!logRes.ok) console.error('Log de alternar_ativo falhou:', await logRes.text());
+      } catch (e) {
+        console.error('Log de alternar_ativo falhou:', e.message);
+      }
+      return res.status(200).json({ ok: true, ativo: novo_ativo });
+    }
 
     // 3 — Nova senha temporaria via auth admin API (mesmo mecanismo ja
     // validado em api/_criar_usuario.js pra "reaproveitar usuario existente")

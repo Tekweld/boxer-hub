@@ -710,8 +710,12 @@ async function loadUsuarios() {
 // Acao rapida de ativar/desativar -- pedido do Andre (25/11): o checkbox
 // escondido dentro de "Editar" causou desativacao acidental de um
 // representante real (Marques Representacoes) sem ninguem perceber o efeito
-// na hora. Botao proprio + confirmacao + log de auditoria (ate aqui nenhuma
-// mudanca de hub_perfis gerava log).
+// na hora. Botao proprio + confirmacao + log de auditoria.
+// Passa por /api/ativar (service_role) em vez de PATCH direto do cliente --
+// achado testando ao vivo: o INSERT de log via token do proprio usuario
+// (RLS) estava sendo rejeitado mesmo a policy parecendo permissiva (causa
+// raiz nao identificada a tempo, ver nota em api/_gerenciar_usuario.js).
+// Roteando por aqui o log fica garantido.
 async function alternarAtivoUsuario(id, nome, ativoAtual) {
   const novoAtivo = !ativoAtual;
   const acaoLabel = novoAtivo ? 'ativar' : 'desativar';
@@ -720,26 +724,18 @@ async function alternarAtivoUsuario(id, nome, ativoAtual) {
     : `Desativar o acesso de <b>${escSol(nome)}</b>? Ele NAO vai mais conseguir logar no Hub ate ser reativado aqui.`;
   if (!(await confirmModal(aviso, { textoBotao: novoAtivo ? 'Ativar' : 'Desativar' }))) return;
   try {
-    await sb('/hub_perfis?id=eq.' + id, 'PATCH', { ativo: novoAtivo });
+    const r = await fetch('/api/ativar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SESSION.access_token },
+      body: JSON.stringify({ acao: 'alternar_ativo', perfil_id: id, novo_ativo: novoAtivo })
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) { toast(data.error || ('Erro ao ' + acaoLabel), 'error'); return; }
+    toast('Usuario ' + (novoAtivo ? 'ativado' : 'desativado'));
+    loadUsuarios();
   } catch (e) {
     toast('Erro ao ' + acaoLabel + ': ' + e.message, 'error');
-    return;
   }
-  // Log nunca bloqueia nem mascara o resultado da acao real -- a mudanca em
-  // hub_perfis ja aconteceu acima, uma falha so de auditoria nao deveria
-  // aparecer pro usuario como "erro ao desativar" (achado testando ao vivo:
-  // a constraint de acao estava sem os 3 valores novos e o log falhava toda
-  // vez, escondido atras de um try/catch que cobria as duas chamadas).
-  try {
-    await sb('/hub_log_alteracoes', 'POST', {
-      usuario_id: getUserId(), usuario_email: getUserEmail(),
-      tabela_ref: 'hub_perfis', registro_id: id,
-      campo: 'ativo', valor_anterior: String(ativoAtual), valor_novo: String(novoAtivo),
-      acao: acaoLabel + '_usuario'
-    });
-  } catch (_) { /* so auditoria, nao bloqueia o fluxo real */ }
-  toast('Usuario ' + (novoAtivo ? 'ativado' : 'desativado'));
-  loadUsuarios();
 }
 
 // Resetar senha -- reusa o mesmo mecanismo ja usado em api/_criar_usuario.js
@@ -1161,6 +1157,7 @@ async function editUsuario(id) {
           <option value="ti"${u.area==='ti'?' selected':''}>TI</option>
         </select>
       </div>` : ''}
+      <input type="hidden" id="editUAtivoOriginal" value="${u.ativo}">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#4a5568;margin-top:4px">
         <input type="checkbox" id="editUAtivo" ${u.ativo ? 'checked' : ''} style="width:auto"> Usuario ativo
       </label>
@@ -1176,15 +1173,28 @@ async function editUsuario(id) {
 }
 
 async function salvarEdicaoUsuario(id) {
+  const ativoNovo = document.getElementById('editUAtivo').checked;
+  const ativoOriginal = document.getElementById('editUAtivoOriginal').value === 'true';
   const patch = {
     nome: document.getElementById('editUNome').value.trim(),
-    telefone: document.getElementById('editUTel').value.trim() || null,
-    ativo: document.getElementById('editUAtivo').checked
+    telefone: document.getElementById('editUTel').value.trim() || null
   };
   const areaEl = document.getElementById('editUArea');
   if (areaEl) patch.area = areaEl.value || null;
   if (!patch.nome) { toast('Nome obrigatorio', 'error'); return; }
   try {
+    // ativo muda por /api/ativar (log garantido, ver alternarAtivoUsuario);
+    // o resto (nome/telefone/area) continua PATCH direto, mais simples e
+    // sem necessidade de log de auditoria pra esses campos.
+    if (ativoNovo !== ativoOriginal) {
+      const r = await fetch('/api/ativar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SESSION.access_token },
+        body: JSON.stringify({ acao: 'alternar_ativo', perfil_id: id, novo_ativo: ativoNovo })
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) { toast(data.error || 'Erro ao atualizar status', 'error'); return; }
+    }
     await sb('/hub_perfis?id=eq.' + id, 'PATCH', patch);
     toast('Usuario atualizado');
     closeModal();

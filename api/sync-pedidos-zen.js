@@ -768,7 +768,14 @@ module.exports = async function handler(req, res) {
           const clientes = clientesRes.ok ? await clientesRes.json() : [];
           const porErpId = {};
           clientes.forEach(c => { if (c.erp_cliente_id) porErpId[String(c.erp_cliente_id)] = c; });
-          const erpIds = Object.keys(porErpId);
+          // erp_cliente_id nao numerico (cliente de teste, 'TESTE-<uuid>')
+          // derruba a expressao RSQL inteira no Zen -- 400 pro lote todo,
+          // inclusive os clientes de verdade que estavam no mesmo lote.
+          // Achado ao vivo em 25/11 testando o fix do backfill "pesado"
+          // (o erro real nao era timeout de cliente pesado, era isso).
+          // Mesma regra ja documentada/aplicada em outros pontos do projeto
+          // (sync-zen-clientes.js), so que nunca tinha chegado aqui.
+          const erpIds = Object.keys(porErpId).filter(id => /^\d+$/.test(id));
 
           const anoAtual = new Date().getFullYear();
           let vendas = [];

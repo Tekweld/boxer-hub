@@ -11,10 +11,13 @@ module.exports = async function handler(req, res) {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Token de autenticacao ausente' });
 
-  // Mesma rota publica despacha pra dois fluxos diferentes (Hobby plan limita
+  // Mesma rota publica despacha pra tres fluxos diferentes (Hobby plan limita
   // 12 serverless functions por deploy, ja no teto -- ver api/_criar_usuario.js).
   if (req.body && req.body.tipo) {
     return require('./_criar_usuario')(req, res);
+  }
+  if (req.body && req.body.acao) {
+    return require('./_gerenciar_usuario')(req, res);
   }
 
   const { onboarding_id } = req.body || {};

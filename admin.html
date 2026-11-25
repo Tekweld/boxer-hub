@@ -134,6 +134,7 @@ select,input,textarea{font-family:Outfit,sans-serif}
       Cliente NAO e criado aqui -- vem pelo Onboarding (novo) ou por Convite (ja no ZEN). Cada usuario tem seu proprio login;
       nunca compartilhar. Bloquear alguem no ZEN nao bloqueia aqui -- desative o perfil por esta tela.
     </div>
+    <div style="margin-bottom:12px"><input id="usuariosBusca" placeholder="Buscar por nome ou email..." style="width:320px" oninput="debounceUsuarios()"></div>
     <div id="usuariosList"></div>
   </div>
   <div class="panel-content hidden" id="tab-clientes">
@@ -676,24 +677,92 @@ async function alternarRegraComercial(id, novoAtivo) {
   await loadOnboardings();
 })();
 
+let _usuariosBuscaTimer = null;
+function debounceUsuarios() { clearTimeout(_usuariosBuscaTimer); _usuariosBuscaTimer = setTimeout(loadUsuarios, 300); }
+
 async function loadUsuarios() {
   const wrap = document.getElementById('usuariosList');
+  const busca = (document.getElementById('usuariosBusca')?.value || '').trim().replace(/[(),*]/g, '');
   try {
-    const users = await sb('/hub_perfis?order=nome.asc&select=*');
-    if (!users.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhum usuario</h3></div>'; return; }
+    let url = '/hub_perfis?order=nome.asc&select=*';
+    if (busca) url += '&or=(nome.ilike.*' + encodeURIComponent(busca) + '*,email.ilike.*' + encodeURIComponent(busca) + '*)';
+    const users = await sb(url);
+    if (!users.length) { wrap.innerHTML = '<div class="empty-state"><h3>Nenhum usuario encontrado</h3></div>'; return; }
     wrap.innerHTML = `<div style="overflow-x:auto"><table>
-      <thead><tr><th>Nome</th><th>Email</th><th>Tipo</th><th>Role</th><th>Area</th><th>Ativo</th><th></th></tr></thead>
+      <thead><tr><th>Nome</th><th>Email</th><th>Tipo</th><th>Role</th><th>Area</th><th>Status</th><th></th></tr></thead>
       <tbody>${users.map(u => `<tr>
         <td><strong>${u.nome}</strong></td>
         <td>${u.email}</td>
         <td>${u.tipo}</td>
         <td><span class="role-badge role-${u.role}">${u.role}</span></td>
         <td>${u.area ? labelArea(u.area) : '—'}</td>
-        <td>${u.ativo ? 'Sim' : 'Nao'}</td>
-        <td><button class="btn btn-outline btn-sm" onclick="editUsuario('${u.id}')">Editar</button></td>
+        <td>${u.ativo ? '<span style="color:#16a34a;font-weight:600">Ativo</span>' : '<span style="color:#e30613;font-weight:600">Desativado</span>'}</td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-outline btn-sm" onclick="editUsuario('${u.id}')">Editar</button>
+          <button class="btn btn-sm ${u.ativo ? 'btn-danger' : 'btn-primary'}" onclick="alternarAtivoUsuario('${u.id}','${escSol(u.nome)}',${u.ativo})">${u.ativo ? 'Desativar' : 'Ativar'}</button>
+          <button class="btn btn-outline btn-sm" onclick="resetarSenhaUsuario('${u.id}','${escSol(u.nome)}','${u.email}')">Resetar senha</button>
+        </td>
       </tr>`).join('')}</tbody>
     </table></div>`;
   } catch (e) { wrap.innerHTML = '<div class="empty-state"><h3>Erro ao carregar usuarios</h3></div>'; }
+}
+
+// Acao rapida de ativar/desativar -- pedido do Andre (25/11): o checkbox
+// escondido dentro de "Editar" causou desativacao acidental de um
+// representante real (Marques Representacoes) sem ninguem perceber o efeito
+// na hora. Botao proprio + confirmacao + log de auditoria (ate aqui nenhuma
+// mudanca de hub_perfis gerava log).
+async function alternarAtivoUsuario(id, nome, ativoAtual) {
+  const novoAtivo = !ativoAtual;
+  const acaoLabel = novoAtivo ? 'ativar' : 'desativar';
+  const aviso = novoAtivo
+    ? `Ativar o acesso de <b>${escSol(nome)}</b>? Ele volta a conseguir logar no Hub.`
+    : `Desativar o acesso de <b>${escSol(nome)}</b>? Ele NAO vai mais conseguir logar no Hub ate ser reativado aqui.`;
+  if (!(await confirmModal(aviso, { textoBotao: novoAtivo ? 'Ativar' : 'Desativar' }))) return;
+  try {
+    await sb('/hub_perfis?id=eq.' + id, 'PATCH', { ativo: novoAtivo });
+    await sb('/hub_log_alteracoes', 'POST', {
+      usuario_id: getUserId(), usuario_email: getUserEmail(),
+      tabela_ref: 'hub_perfis', registro_id: id,
+      campo: 'ativo', valor_anterior: String(ativoAtual), valor_novo: String(novoAtivo),
+      acao: acaoLabel + '_usuario'
+    });
+    toast('Usuario ' + (novoAtivo ? 'ativado' : 'desativado'));
+    loadUsuarios();
+  } catch (e) {
+    toast('Erro ao ' + acaoLabel + ': ' + e.message, 'error');
+  }
+}
+
+// Resetar senha -- reusa o mesmo mecanismo ja usado em api/_criar_usuario.js
+// (service_role via /auth/v1/admin/users/{id}, PUT de nova senha temporaria)
+// numa acao dedicada, pra nao precisar "recriar" o usuario so pra trocar senha.
+async function resetarSenhaUsuario(id, nome, email) {
+  if (!(await confirmModal(`Gerar uma nova senha temporaria para <b>${escSol(nome)}</b> (${email})? A senha atual dele para de funcionar imediatamente.`, { textoBotao: 'Resetar senha' }))) return;
+  try {
+    const r = await fetch('/api/ativar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SESSION.access_token },
+      body: JSON.stringify({ acao: 'resetar_senha', perfil_id: id })
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) { toast(data.error || 'Erro ao resetar senha', 'error'); return; }
+    openModal(`
+      <h3 style="font-size:18px;color:#16a34a;margin-bottom:16px">Senha Redefinida</h3>
+      <div style="padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;margin-bottom:16px">
+        <div style="font-size:12px;color:#718096;margin-bottom:4px">Login</div>
+        <div style="font-size:13px;font-weight:500;margin-bottom:10px">${data.email}</div>
+        <div style="font-size:12px;color:#718096;margin-bottom:4px">Nova senha temporaria</div>
+        <div style="font-size:16px;font-weight:700;color:#e30613;font-family:monospace">${data.senha_temp}</div>
+      </div>
+      <div style="font-size:12px;color:#718096;margin-bottom:16px">
+        ${data.email_status === 'enviado' ? 'Email ja enviado para ' + data.email + '.' : 'Nao foi possivel enviar o email automaticamente -- repasse a senha acima manualmente.'}
+      </div>
+      <div class="form-actions"><button class="btn btn-primary" onclick="closeModal()">Fechar</button></div>
+    `);
+  } catch (e) {
+    toast('Erro ao resetar senha: ' + e.message, 'error');
+  }
 }
 
 let _clientesBuscaTimer = null;
@@ -970,17 +1039,25 @@ async function buscarRepresentanteUsuario() {
 
   _repBuscaTimer = setTimeout(async () => {
     try {
-      const reps = await sb('/hub_representantes?or=(nome.ilike.*' + encodeURIComponent(q) + '*,email.ilike.*' + encodeURIComponent(q) + '*)&ativo=eq.true&user_id=is.null&limit=8&select=id,nome,email,regiao,erp_representante_id');
+      // Nao filtra user_id=is.null aqui de proposito (achado real em 25/11:
+      // representante com user_id ja preenchido mas DESATIVADO ficava
+      // invisivel nessa busca, parecendo "nao existe" quando na verdade so
+      // precisava ser reativado em Usuarios, nao recriado). Mostra todos os
+      // que batem, e so deixa clicar/selecionar quem ainda nao tem usuario.
+      const reps = await sb('/hub_representantes?or=(nome.ilike.*' + encodeURIComponent(q) + '*,email.ilike.*' + encodeURIComponent(q) + '*)&ativo=eq.true&limit=8&select=id,nome,email,regiao,erp_representante_id,user_id');
       if (!reps.length) {
-        wrap.innerHTML = '<div style="font-size:12px;color:#718096;padding:8px 0">Nenhum representante sem usuario encontrado</div>';
+        wrap.innerHTML = '<div style="font-size:12px;color:#718096;padding:8px 0">Nenhum representante encontrado no ZEN com esse nome/email</div>';
         return;
       }
-      wrap.innerHTML = `<div style="border:1px solid #e2e8f0;border-radius:6px;max-height:200px;overflow-y:auto">${reps.map(r => `
-        <div style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #e2e8f0;font-size:13px" onmouseover="this.style.background='#f0f7ff'" onmouseout="this.style.background=''" onclick="selecionarRepresentanteUsuario('${r.id}','${(r.nome||'').replace(/'/g,"\\'")}','${r.email||''}','${r.regiao||''}')">
-          <strong>${r.nome}</strong><br>
+      wrap.innerHTML = `<div style="border:1px solid #e2e8f0;border-radius:6px;max-height:240px;overflow-y:auto">${reps.map(r => {
+        const temUsuario = !!r.user_id;
+        return `
+        <div style="padding:8px 12px;${temUsuario ? '' : 'cursor:pointer;'}border-bottom:1px solid #e2e8f0;font-size:13px" ${temUsuario ? '' : `onmouseover="this.style.background='#f0f7ff'" onmouseout="this.style.background=''" onclick="selecionarRepresentanteUsuario('${r.id}','${(r.nome||'').replace(/'/g,"\\'")}','${r.email||''}','${r.regiao||''}')"`}>
+          <strong>${r.nome}</strong>${temUsuario ? ' <span style="font-size:10px;font-weight:700;color:#b45309;background:#fef3c7;padding:1px 6px;border-radius:4px;margin-left:4px">JA TEM USUARIO</span>' : ''}<br>
           <span style="font-size:11px;color:#718096">${r.email || 'sem email'} ${r.regiao ? '| ' + r.regiao : ''}</span>
-        </div>
-      `).join('')}</div>`;
+          ${temUsuario ? '<div style="font-size:11px;color:#b45309;margin-top:2px">Ja tem login -- se nao esta conseguindo entrar, va na aba Usuarios e confira se nao esta Desativado, em vez de criar outro aqui</div>' : ''}
+        </div>`;
+      }).join('')}</div>`;
     } catch (e) {
       wrap.innerHTML = '<div style="font-size:12px;color:#e30613;padding:8px 0">Erro na busca</div>';
     }
@@ -1079,6 +1156,7 @@ async function editUsuario(id) {
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#4a5568;margin-top:4px">
         <input type="checkbox" id="editUAtivo" ${u.ativo ? 'checked' : ''} style="width:auto"> Usuario ativo
       </label>
+      <div style="font-size:11px;color:#718096;margin-top:4px">Desmarcar aqui tem o mesmo efeito do botao "Desativar" da lista -- ele perde acesso ao Hub ate reativar.</div>
       <div class="form-actions">
         <button class="btn btn-outline" onclick="closeModal()">Cancelar</button>
         <button class="btn btn-primary" onclick="salvarEdicaoUsuario('${id}')">Salvar</button>

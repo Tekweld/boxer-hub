@@ -72,16 +72,22 @@ module.exports = async function gerenciarUsuario(req, res) {
       return res.status(500).json({ error: 'Erro ao redefinir senha: ' + (errBody?.msg || errBody?.message || resetRes.status) });
     }
 
-    // 4 — Log de auditoria
-    await fetch(SB_URL + '/rest/v1/hub_log_alteracoes', {
-      method: 'POST', headers: sbHeaders('POST'),
-      body: JSON.stringify({
-        usuario_id: caller.id, usuario_email: caller.email,
-        tabela_ref: 'hub_perfis', registro_id: perfil_id,
-        campo: 'senha', valor_anterior: null, valor_novo: null,
-        acao: 'resetar_senha'
-      })
-    });
+    // 4 — Log de auditoria (nunca bloqueia a resposta -- a senha ja foi
+    // trocada de verdade no passo 3, uma falha so de log nao desfaz isso)
+    try {
+      const logRes = await fetch(SB_URL + '/rest/v1/hub_log_alteracoes', {
+        method: 'POST', headers: sbHeaders('POST'),
+        body: JSON.stringify({
+          usuario_id: caller.id, usuario_email: caller.email,
+          tabela_ref: 'hub_perfis', registro_id: perfil_id,
+          campo: 'senha', valor_anterior: null, valor_novo: null,
+          acao: 'resetar_senha'
+        })
+      });
+      if (!logRes.ok) console.error('Log de resetar_senha falhou:', await logRes.text());
+    } catch (e) {
+      console.error('Log de resetar_senha falhou:', e.message);
+    }
 
     // 5 — Email avisando (mesmo provedor/padrao do welcome email)
     const RESEND_KEY = process.env.RESEND_API_KEY;

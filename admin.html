@@ -721,17 +721,25 @@ async function alternarAtivoUsuario(id, nome, ativoAtual) {
   if (!(await confirmModal(aviso, { textoBotao: novoAtivo ? 'Ativar' : 'Desativar' }))) return;
   try {
     await sb('/hub_perfis?id=eq.' + id, 'PATCH', { ativo: novoAtivo });
+  } catch (e) {
+    toast('Erro ao ' + acaoLabel + ': ' + e.message, 'error');
+    return;
+  }
+  // Log nunca bloqueia nem mascara o resultado da acao real -- a mudanca em
+  // hub_perfis ja aconteceu acima, uma falha so de auditoria nao deveria
+  // aparecer pro usuario como "erro ao desativar" (achado testando ao vivo:
+  // a constraint de acao estava sem os 3 valores novos e o log falhava toda
+  // vez, escondido atras de um try/catch que cobria as duas chamadas).
+  try {
     await sb('/hub_log_alteracoes', 'POST', {
       usuario_id: getUserId(), usuario_email: getUserEmail(),
       tabela_ref: 'hub_perfis', registro_id: id,
       campo: 'ativo', valor_anterior: String(ativoAtual), valor_novo: String(novoAtivo),
       acao: acaoLabel + '_usuario'
     });
-    toast('Usuario ' + (novoAtivo ? 'ativado' : 'desativado'));
-    loadUsuarios();
-  } catch (e) {
-    toast('Erro ao ' + acaoLabel + ': ' + e.message, 'error');
-  }
+  } catch (_) { /* so auditoria, nao bloqueia o fluxo real */ }
+  toast('Usuario ' + (novoAtivo ? 'ativado' : 'desativado'));
+  loadUsuarios();
 }
 
 // Resetar senha -- reusa o mesmo mecanismo ja usado em api/_criar_usuario.js

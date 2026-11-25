@@ -966,7 +966,7 @@ module.exports = async function handler(req, res) {
     try {
       const orcRes = await fetch(HUB_URL +
         '/rest/v1/orcamentos?zen_sale_id=not.is.null&status=in.(aceito_cliente,aprovado)' +
-        '&ativo=eq.true&select=id,codigo,cliente_cnpj,zen_sale_id,pagamento_tipo,parcelas,frete_valor,total_final,observacoes,itens' +
+        '&ativo=eq.true&select=id,codigo,cliente_cnpj,zen_sale_id,pagamento_tipo,parcelas,dias_pagamento,frete_tipo,frete_valor,total_final,observacoes,itens' +
         '&order=criado_em.asc&limit=25', { headers: hubH('GET') });
       const orcamentos = orcRes.ok ? await orcRes.json() : [];
 
@@ -1000,6 +1000,10 @@ module.exports = async function handler(req, res) {
               // hub_pedidos espera o vocabulario do checkout (ver mesma
               // traducao em espelharOrcamentoComoPedido, pedidos.html).
               forma_pagamento: o.pagamento_tipo === 'avista' ? 'pix' : 'boleto', parcelas: o.parcelas,
+              // dias_pagamento/frete_modalidade nunca eram copiados aqui
+              // (achado 2026-11-25) -- mesmo fix do espelho feito no navegador.
+              dias_pagamento: o.dias_pagamento || null,
+              frete_modalidade: o.frete_tipo || null,
               valor_frete: o.frete_valor || 0, valor_total: o.total_final,
               observacoes: o.observacoes || null,
               erp_pedido_id: String(o.zen_sale_id), erp_tipo: 'sale',

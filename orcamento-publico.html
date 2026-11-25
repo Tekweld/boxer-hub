@@ -134,6 +134,13 @@ function fmtPrevisaoQuinzena(d) {
   if (dia <= 15) { semana = 2; } else { semana = 1; mes++; if (mes > 11) { mes = 0; ano++; } }
   return 'Previsão de Fat. ' + semana + 'ª Semana ' + MESES_ABREV[mes] + '/' + String(ano).slice(-2);
 }
+// Vocabulario de frete (pedido do Andre, 2026-11-25) -- copia standalone,
+// hub.js nao carrega aqui. Ver a mesma constante em pedidos.html/_orcamento.js.
+const FRETE_LABELS = {
+  CIF: 'CIF automático', FOB: 'FOB (cliente providencia o transporte)',
+  RETIRADA_BOXER: 'Retirada na Boxer (Campinas/São Paulo/Guarulhos)',
+  CARRO_BOXER: 'Carro Boxer', CAMINHAO_BOXER_SP: 'Entrega com Caminhão Boxer (SP)'
+};
 function abrirModal(html) { document.getElementById('modalContent').innerHTML = html; document.getElementById('modalOverlay').classList.add('show'); }
 function fecharModal() { document.getElementById('modalOverlay').classList.remove('show'); }
 
@@ -346,7 +353,7 @@ function render() {
       <div class="sec-title">Condições</div>
       <div class="cond-grid">
         <div class="cond-item"><b>Pagamento</b><span>${ORC.pagamento_tipo === 'avista' ? 'À vista' + (ORC.desconto_vista_pct ? ' (' + ORC.desconto_vista_pct + '% de desconto)' : '') : (Array.isArray(ORC.dias_pagamento) && ORC.dias_pagamento.length ? 'Boleto ' + ORC.dias_pagamento.join('/') + ' dias' : 'Boleto em ' + ORC.parcelas + 'x')}</span></div>
-        <div class="cond-item"><b>Frete</b><span>${ORC.frete_tipo === 'CIF' ? 'Incluso (CIF)' : ORC.frete_tipo === 'FOB' ? 'Por conta do cliente (FOB)' : 'A combinar'}</span></div>
+        <div class="cond-item"><b>Frete</b><span>${FRETE_LABELS[ORC.frete_tipo] || 'A combinar'}</span></div>
         <div class="cond-item"><b>Entrega</b><span>Sujeita à disponibilidade</span></div>
       </div>
     </div>

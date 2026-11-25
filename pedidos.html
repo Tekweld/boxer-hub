@@ -1283,7 +1283,7 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
     ${frete ? `<div class="rev-sec">
       <h4>Frete</h4>
       <div class="rev-frete">${esc(frete.motivo || '')}</div>
-      ${renderOpcoesFrete(frete, valorFrete)}
+      ${renderOpcoesFrete(frete, valorFrete, cliente.uf)}
     </div>` : ''}
 
     <div class="rev-sec">
@@ -1393,6 +1393,16 @@ async function montarPayloadOrcamento(destinatario, extra) {
   if (!uf || !segmento || !classe) { toast('Escolha UF/Segmento/Classe no catálogo antes de enviar o orçamento', 'error'); return null; }
 
   const detalhes = getDetalhesPedido();
+  // Frete do orcamento -- ate 2026-11-25 este payload NUNCA mandava a escolha
+  // do select de frete (so confirmarEnvio, do pedido real, lia), entao a
+  // orcamento.html sempre calculava CIF/FOB automatico sem chance de ajuste
+  // -- causa real do frete saindo errado no ZEN quando o representante
+  // combinava outra coisa com o cliente. Mesmo select compartilhado
+  // (renderOpcoesFrete) do modal de revisao, so que agora os dois caminhos
+  // (orcamento e pedido) leem o valor escolhido. "Frete = <opcao>" vai pro
+  // comentario da venda no ZEN direto a partir do frete_tipo gravado
+  // (ver _orcamento.js), nao polui aqui o campo de observacoes.
+  const modalidade = freteModalidadeSelecionada();
   return Object.assign({
     acao: 'criar', tabela: 1,
     uf, segmento, classe: Number(classe),
@@ -1411,6 +1421,7 @@ async function montarPayloadOrcamento(destinatario, extra) {
       parcelas: Number(detalhes.parcelas) || 1,
       dias_pagamento: Array.isArray(detalhes.dias_pagamento) ? detalhes.dias_pagamento : null
     },
+    frete: { modalidade },
     observacoes: (detalhes.observacoes || '').trim() || null
   }, extra || {});
 }
@@ -1719,7 +1730,7 @@ function renderOrcamentoHtml(ORC) {
         <div class="sec-title">Condições</div>
         <div class="cond-grid">
           <div class="cond-item"><b>Pagamento</b><span>${ORC.pagamento_tipo === 'avista' ? 'À vista' : (Array.isArray(ORC.dias_pagamento) && ORC.dias_pagamento.length ? 'Boleto ' + ORC.dias_pagamento.join('/') + ' dias' : 'Boleto em ' + ORC.parcelas + 'x')}</span></div>
-          <div class="cond-item"><b>Frete</b><span>${ORC.frete_tipo === 'CIF' ? 'Incluso (CIF)' : ORC.frete_tipo === 'FOB' ? 'Por conta do cliente (FOB)' : 'A combinar'}</span></div>
+          <div class="cond-item"><b>Frete</b><span>${FRETE_LABELS[ORC.frete_tipo] || 'A combinar'}</span></div>
           <div class="cond-item"><b>Entrega</b><span>Sujeita à disponibilidade</span></div>
         </div>
       </div>
@@ -1777,37 +1788,39 @@ async function enviarEmailOrcamento(id, btn) {
 // Quando ha alternativa real (pedido abaixo do minimo de frete gratis, ou UF
 // FOB), o cliente escolhe por radio (sempre um dos dois, pedido obriga).
 // Quando nao ha -- CIF gratuito, caso mais comum -- nao se obriga escolha
-// nenhuma, mas o Andre pediu (2026-11-06) uma forma leve de SINALIZAR uma
-// excecao pontual: cliente com transportadora propria que, so neste pedido,
-// quer usar ela mesmo com o CIF gratuito valendo -- sem mexer no cadastro
-// geral da conta. Dropdown em vez de radio de proposito: e opcional, "se
-// for necessario", nao uma decisao que a tela força a cada pedido.
-function renderOpcoesFrete(frete, valorFrete) {
-  const podeRetirar = frete.retirada_disponivel === true;
-  const podeEnviar = frete.envio_disponivel === true;
+// nenhuma. Ate 2026-11-24 isto era so um dropdown de "excecao" quando a
+// politica ja decidia sozinha (CIF/FOB automatico por UF) -- mas a
+// orcamento.html NUNCA lia esse campo (so pedidos.html fazia), entao no
+// fluxo de orcamento o frete sempre saia "automatico" sem chance de ajuste,
+// e o que ia pro ZEN as vezes nao batia com o que o representante tinha
+// combinado com o cliente. Pedido do Andre, 2026-11-25: campo SEMPRE visivel
+// e editavel (preenchido automatico pela politica, mas nunca travado),
+// igual ao campo de prazo de pagamento. 5 opcoes fixas -- as duas Boxer-
+// entrega-de-caminhao (CARRO_BOXER/CAMINHAO_BOXER_SP) nao mudam o VALOR do
+// frete nem o enum que o ZEN entende (freightType so tem ISSUER/RECIPIENT/
+// NONE), so a granularidade operacional que fica registrada no Hub e no
+// texto "Frete = ..." que vai pro comentario da venda no ZEN (unica forma
+// de nao perder essa info, ja que o ZEN nao tem campo proprio pra isso).
+const FRETE_LABELS = {
+  CIF: 'CIF automático', FOB: 'FOB (cliente providencia o transporte)',
+  RETIRADA_BOXER: 'Retirada na Boxer (Campinas/São Paulo/Guarulhos)',
+  CARRO_BOXER: 'Carro Boxer', CAMINHAO_BOXER_SP: 'Entrega com Caminhão Boxer (SP)'
+};
+function renderOpcoesFrete(frete, valorFrete, uf) {
+  const padrao = frete.tipo === 'FOB' ? 'FOB' : 'CIF';
+  const opcoes = ['CIF', 'FOB', 'RETIRADA_BOXER', 'CARRO_BOXER'];
+  if (uf === 'SP') opcoes.push('CAMINHAO_BOXER_SP');
 
-  if (!podeRetirar) {
-    return `<div class="form-row" style="margin-top:10px;margin-bottom:0">
-      <label>Excecao de frete (opcional)</label>
-      <select id="revFreteExcecao">
-        <option value="">Padrao -- conforme acima</option>
-        <option value="retirada">Cliente vai usar transportadora propria neste pedido</option>
-      </select>
-    </div>`;
-  }
-
-  return `<div class="rev-opcoes">
-    ${podeEnviar ? `<label class="rev-opcao">
-      <input type="radio" name="revFrete" value="envio" checked>
-      <span><strong>Boxer envia</strong>
-      <span>Frete de ${fmtMoeda(valorFrete)} incluido na nota.</span></span>
-    </label>` : ''}
-    <label class="rev-opcao">
-      <input type="radio" name="revFrete" value="retirada" ${!podeEnviar ? 'checked' : ''}>
-      <span><strong>Retirada por conta propria</strong>
-      <span>Sem custo de frete. Retirada em Campinas, Sao Paulo ou Guarulhos, ou transportadora indicada por voce.</span></span>
-    </label>
+  return `<div class="form-row" style="margin-top:10px;margin-bottom:0">
+    <label>Frete</label>
+    <select id="revFreteModalidade">
+      ${opcoes.map(cod => `<option value="${cod}" ${cod === padrao ? 'selected' : ''}>${esc(FRETE_LABELS[cod])}${cod === 'CIF' ? ' — ' + (valorFrete > 0 ? fmtMoeda(valorFrete) : 'sem custo') : ''}</option>`).join('')}
+    </select>
   </div>`;
+}
+
+function freteModalidadeSelecionada() {
+  return document.getElementById('revFreteModalidade')?.value || 'CIF';
 }
 
 async function confirmarEnvio() {
@@ -1817,21 +1830,18 @@ async function confirmarEnvio() {
   btn.textContent = 'Enviando...';
 
   try {
-    // Quando so ha uma opcao (CIF puro, sem retirada), renderOpcoesFrete nao
-    // desenha radio nenhum -- sem isso, modalidade ficava null e o Zen
-    // recebia freightType=NONE mesmo com frete real definido. Mesma logica
-    // de podeRetirar/podeEnviar de renderOpcoesFrete, espelhada aqui.
-    let modalidade = document.querySelector('input[name="revFrete"]:checked')?.value
-      || document.getElementById('revFreteExcecao')?.value
-      || null;
-    if (!modalidade && _revisao.frete) {
-      modalidade = _revisao.frete.envio_disponivel ? 'envio'
-                 : _revisao.frete.retirada_disponivel ? 'retirada' : null;
-    }
+    // Campo de frete agora e sempre o select de 5 opcoes (ver renderOpcoesFrete,
+    // pedido do Andre 2026-11-25) -- nunca fica null, sempre tem um valor
+    // (preenchido automatico pela politica, editavel).
+    const modalidade = freteModalidadeSelecionada();
 
     const detalhes = getDetalhesPedido();
+
     await sb('/hub_pedidos?id=eq.' + _revisao.pedidoId, 'PATCH', {
       ordem_compra: (detalhes.ordem_compra || '').trim() || null,
+      // "Frete = <opcao escolhida>" vai pro comentario da venda no ZEN direto
+      // a partir de frete_modalidade (ver push-pedido.js) -- nao polui aqui
+      // o campo de Observacoes, que fica so com o texto livre do usuario.
       observacoes: (detalhes.observacoes || '').trim() || null,
       forma_pagamento: detalhes.forma_pagamento || 'boleto',
       parcelas: +detalhes.parcelas || 1,
@@ -2392,6 +2402,12 @@ async function espelharOrcamentoComoPedido(o, zenSaleId) {
       // pagamento_check), achado ao vivo em 2026-11-16 (ORC-00014).
       forma_pagamento: o.pagamento_tipo === 'avista' ? 'pix' : 'boleto',
       parcelas: o.parcelas,
+      // dias_pagamento/frete_modalidade nunca eram copiados do orcamento pro
+      // espelho em hub_pedidos (achado 2026-11-25, reclamacao da Cristina) --
+      // o pedido existia no Hub mas sem essa informacao, mesmo o orcamento
+      // original tendo tudo certo.
+      dias_pagamento: o.dias_pagamento || null,
+      frete_modalidade: o.frete_tipo || null,
       valor_frete: o.frete_valor || 0,
       valor_total: o.total_final,
       observacoes: o.observacoes || null,

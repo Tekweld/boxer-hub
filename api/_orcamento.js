@@ -60,6 +60,18 @@ const VALIDADE_DIAS = 15;
 
 const DIAS_POR_PARCELA = 28;
 
+// Vocabulario de frete (pedido do Andre, 2026-11-25) -- mesmos 5 codigos
+// usados em comercial.hub_pedidos.frete_modalidade e no select compartilhado
+// de pedidos.html (renderOpcoesFrete). CIF/CARRO_BOXER/CAMINHAO_BOXER_SP =
+// Boxer entrega (freightType ISSUER); FOB/RETIRADA_BOXER = cliente
+// transporta (freightType RECIPIENT).
+const FRETE_LABEL_POR_CODIGO = {
+  CIF: 'CIF automático', FOB: 'FOB (cliente providencia o transporte)',
+  RETIRADA_BOXER: 'Retirada na Boxer (Campinas/São Paulo/Guarulhos)',
+  CARRO_BOXER: 'Carro Boxer', CAMINHAO_BOXER_SP: 'Entrega com Caminhão Boxer (SP)'
+};
+const FRETE_BOXER_ENTREGA = ['CIF', 'CARRO_BOXER', 'CAMINHAO_BOXER_SP'];
+
 // Movido para dentro do Hub (2026-11-03): o representante monta tudo
 
 // (incluindo o link que o cliente recebe) sem sair pro app.boxersoldas.com.br.
@@ -682,7 +694,12 @@ async function criar(ctx, user, b, edit) {
 
   const avista = b.pagamento && b.pagamento.tipo === 'avista';
 
-  const parcelas = avista ? 1 : Math.min(4, Math.max(1, parseInt(b.pagamento && b.pagamento.parcelas) || 1));
+  // Teto de 4 era de antes da reorganizacao dos planos de boleto em blocos
+  // (2026-11-24, ver hub_planos_prazo_boleto) -- blocos de 28/30/15 dias vao
+  // ate 6x hoje. Achado 2026-11-25 revisando o pagamento que nao chegava
+  // certo no ZEN: isto aqui cortava silenciosamente plano de 5x/6x pra 4x
+  // antes mesmo de gravar o orcamento.
+  const parcelas = avista ? 1 : Math.min(6, Math.max(1, parseInt(b.pagamento && b.pagamento.parcelas) || 1));
 
   const fator = avista ? 1 - cond.vista / 100 : 1;
 
@@ -794,7 +811,7 @@ async function criar(ctx, user, b, edit) {
 
   const fr = freteDaUF(linhas, uf);
 
-  let freteTipo = fr ? fr.tipo : null, freteValor = 0;
+  let freteValor = 0;
 
   if (fr && fr.tipo === 'CIF' && fr.min && totalItens < fr.min) {
 
@@ -803,6 +820,19 @@ async function criar(ctx, user, b, edit) {
     avisos.push('Abaixo do pedido minimo CIF (' + brl(fr.min) + '): frete fixo de ' + brl(freteValor));
 
   }
+
+  // Campo de frete editavel na revisao do orcamento (pedido do Andre,
+  // 2026-11-25): ate aqui o orcamento NUNCA deixava o representante ajustar
+  // o frete calculado automaticamente por UF -- o mesmo select de 5 opcoes
+  // do carrinho/pedido (renderOpcoesFrete, pedidos.html) agora manda a
+  // escolha tambem aqui. CIF/CARRO_BOXER/CAMINHAO_BOXER_SP = Boxer entrega
+  // (mantem o valor calculado acima); FOB/RETIRADA_BOXER = cliente
+  // transporta (sempre zero, nunca cobra frete).
+  const freteTipo = Object.keys(FRETE_LABEL_POR_CODIGO).includes(b.frete && b.frete.modalidade)
+    ? b.frete.modalidade
+    : (fr && fr.tipo === 'FOB' ? 'FOB' : 'CIF');
+
+  if (!FRETE_BOXER_ENTREGA.includes(freteTipo)) freteValor = 0;
 
   if (!avista && parcelas > 1 && totalItens / parcelas < cond.dupMin) avisos.push('Parcela abaixo do minimo de ' + brl(cond.dupMin) + ' por duplicata');
 
@@ -1034,7 +1064,11 @@ async function montarVendaZen(o, orc, itens) {
 
     'Pagamento: ' + (o.pagamento_tipo === 'avista' ? 'à vista (' + o.desconto_vista_pct + '% de desconto)' : (Array.isArray(o.dias_pagamento) && o.dias_pagamento.length ? 'boleto ' + o.dias_pagamento.join('/') + ' dias' : 'boleto em ' + o.parcelas + 'x')),
 
-    'Frete: ' + (o.frete_tipo || 'a combinar') + (o.frete_valor ? ' (' + brl(o.frete_valor) + ')' : ''),
+    // "Frete = <opcao>" (nao so o tipo ISSUER/RECIPIENT que o ZEN entende) --
+    // unica forma de nao perder a granularidade da escolha (Carro Boxer x
+    // Caminhao SP x CIF automatico) no proprio ZEN. Pedido explicito do
+    // Andre, 2026-11-25: "garantir entendimento real".
+    'Frete = ' + (FRETE_LABEL_POR_CODIGO[o.frete_tipo] || o.frete_tipo || 'a combinar') + (o.frete_valor ? ' (' + brl(o.frete_valor) + ')' : ''),
 
     o.observacoes ? 'Observações: ' + o.observacoes : null
 
@@ -1066,7 +1100,7 @@ async function montarVendaZen(o, orc, itens) {
 
     tags: 'ORCAMENTO,' + orc.codigo + tagClasseOrc,
 
-    freightType: o.frete_tipo === 'CIF' ? 'ISSUER' : (o.frete_tipo === 'FOB' ? 'RECIPIENT' : 'NONE'),
+    freightType: FRETE_BOXER_ENTREGA.includes(o.frete_tipo) ? 'ISSUER' : (o.frete_tipo ? 'RECIPIENT' : 'NONE'),
 
     properties: { comments: comentarios }
 
@@ -1076,11 +1110,19 @@ async function montarVendaZen(o, orc, itens) {
 
   if (o.vendedor_erp_id) sale.personSalesperson = { id: Number(o.vendedor_erp_id) };
 
+  // Bug achado 2026-11-25 (reclamacao da Cristina, "nao puxou a condicao de
+  // pagamento"): isto ignorava `o.dias_pagamento` por completo e sempre
+  // recalculava `parcelas x 28 dias` -- so acertava por coincidencia quando
+  // o plano escolhido era exatamente a progressao padrao de 28 em 28.
+  // Qualquer plano dos outros 4 blocos (15/30/60 dias, diretos) saia errado
+  // no ZEN. Mesma correcao ja aplicada em push-pedido.js (montarPagamentos).
   const pagamentos = o.pagamento_tipo === 'avista'
 
     ? [{ type: 'BILLING_TITLE', term: 0 }]
 
-    : Array.from({ length: o.parcelas }, (_, i) => ({ type: 'BILLING_TITLE', term: (i + 1) * DIAS_POR_PARCELA }));
+    : (Array.isArray(o.dias_pagamento) && o.dias_pagamento.length
+        ? o.dias_pagamento.map(dias => ({ type: 'BILLING_TITLE', term: Number(dias) || 0 }))
+        : Array.from({ length: o.parcelas }, (_, i) => ({ type: 'BILLING_TITLE', term: (i + 1) * DIAS_POR_PARCELA })));
 
   return { sale, itens: resolvidos, pagamentos };
 

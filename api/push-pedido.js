@@ -176,16 +176,28 @@ module.exports = async function handler(req, res) {
       erpRepresentanteId = (await repRes.json())?.[0]?.erp_representante_id || null;
     }
 
-    const comentarios = [pedido.ordem_compra ? 'OC: ' + pedido.ordem_compra : null, pedido.observacoes || null]
-      .filter(Boolean).join(' — ') || undefined;
-
-    // frete_modalidade e a escolha do cliente na revisao (envio/retirada),
-    // nao o CIF/FOB politico calculado no servidor -- aproximacao razoavel:
-    // "envio" = Boxer entrega (ISSUER banca a logistica), "retirada" = o
-    // proprio cliente resolve o transporte (RECIPIENT).
-    const freightType = pedido.frete_modalidade === 'envio' ? 'ISSUER'
-                       : pedido.frete_modalidade === 'retirada' ? 'RECIPIENT'
+    // Vocabulario de frete expandido em 2026-11-25 (pedido do Andre): o
+    // select de revisao (renderOpcoesFrete, pedidos.html) agora tem 5
+    // opcoes, nao so envio/retirada. CIF/CARRO_BOXER/CAMINHAO_BOXER_SP =
+    // Boxer entrega (ISSUER); FOB/RETIRADA_BOXER = cliente transporta
+    // (RECIPIENT). "Frete = <opcao>" sempre vai pro comentario -- unica
+    // forma de nao perder a granularidade no ZEN (freightType so distingue
+    // ISSUER/RECIPIENT/NONE).
+    const FRETE_LABEL_POR_CODIGO = {
+      CIF: 'CIF automático', FOB: 'FOB (cliente providencia o transporte)',
+      RETIRADA_BOXER: 'Retirada na Boxer (Campinas/São Paulo/Guarulhos)',
+      CARRO_BOXER: 'Carro Boxer', CAMINHAO_BOXER_SP: 'Entrega com Caminhão Boxer (SP)'
+    };
+    const FRETE_BOXER_ENTREGA = ['CIF', 'CARRO_BOXER', 'CAMINHAO_BOXER_SP'];
+    const freightType = FRETE_BOXER_ENTREGA.includes(pedido.frete_modalidade) ? 'ISSUER'
+                       : pedido.frete_modalidade ? 'RECIPIENT'
                        : 'NONE';
+
+    const comentarios = [
+      pedido.ordem_compra ? 'OC: ' + pedido.ordem_compra : null,
+      pedido.observacoes || null,
+      pedido.frete_modalidade ? 'Frete = ' + (FRETE_LABEL_POR_CODIGO[pedido.frete_modalidade] || pedido.frete_modalidade) : null
+    ].filter(Boolean).join(' — ') || undefined;
 
     // Classe de preco aplicada -- nao ha campo proprio em sale.Sale (so 14
     // campos no nivel raiz, ver nota acima), mas `tags` e padrao e

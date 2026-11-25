@@ -38,6 +38,20 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Avisa financeiro/admin/manager quando um cliente ou representante
+  // solicita credito (aumento de limite/antecipacao/prazo) -- achado em
+  // 25/11: hub_solicitacoes_credito ja gravava a solicitacao certinho, mas
+  // ninguem era avisado, so apareceria pra quem abrisse financeiro.html >
+  // Credito por conta propria. Mesmo padrao de notificarEquipeOnboarding.
+  if (tipo === 'solicitacao_credito') {
+    try {
+      return res.status(200).json(await notificarEquipeCredito(dados));
+    } catch (e) {
+      console.error('Erro ao notificar equipe credito:', e);
+      return res.status(200).json({ ok: true, enviado: false, motivo: e.message });
+    }
+  }
+
   try {
     const email = buildEmail(tipo, dados);
     if (!email) return res.status(400).json({ error: 'Tipo de email desconhecido: ' + tipo });
@@ -258,6 +272,66 @@ async function notificarEquipeOnboarding(d) {
     ])}
     ${d.mensagem ? '<p style="font-size:13px;color:#4a5568">' + d.mensagem + '</p>' : ''}
     ${btnLink(HUB_URL + '/admin.html', 'Abrir no Admin')}
+  `;
+
+  const r = await fetch(RESEND_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + RESEND_KEY },
+    body: JSON.stringify({ from: FROM_DEFAULT, to: Array.from(emails), subject, html: wrapHtml(subject, body) })
+  });
+  const result = await r.json();
+  if (!r.ok) return { ok: true, enviado: false, motivo: result.message || 'Erro Resend', notificados_hub: comLogin.length };
+  return { ok: true, enviado: true, id: result.id, notificados_email: emails.size, notificados_hub: comLogin.length };
+}
+
+// Mesma logica de destinatarios de notificarEquipeOnboarding (area +
+// admin/manager, fallback Andre), so com os campos/rotulos da solicitacao
+// de credito em vez de onboarding.
+async function notificarEquipeCredito(d) {
+  const SB_SERVICE = process.env.SUPABASE_SERVICE_KEY;
+  if (!SB_SERVICE) return { ok: true, enviado: false, motivo: 'SUPABASE_SERVICE_KEY nao configurada' };
+
+  const H = {
+    'Content-Type': 'application/json', apikey: SB_SERVICE, Authorization: 'Bearer ' + SB_SERVICE,
+    'Accept-Profile': 'comercial', 'Content-Profile': 'comercial'
+  };
+
+  const filtroOr = 'or=(area.eq.financeiro,role.in.(admin,manager))';
+  const perfis = await fetch(
+    SB_URL_INT + '/rest/v1/hub_perfis?ativo=eq.true&tipo=neq.cliente&' + filtroOr + '&select=user_id,email,nome',
+    { headers: H }
+  ).then(r => r.ok ? r.json() : []).catch(() => []);
+
+  const emails = new Set([ANDRE_FALLBACK]);
+  for (const p of perfis) if (p.email) emails.add(p.email);
+
+  const comLogin = perfis.filter(p => p.user_id);
+  if (comLogin.length) {
+    await fetch(SB_URL_INT + '/rest/v1/hub_notificacoes', {
+      method: 'POST', headers: { ...H, Prefer: 'return=minimal' },
+      body: JSON.stringify(comLogin.map(p => ({
+        usuario_id: p.user_id, tipo: 'aprovacao_pendente',
+        titulo: 'Solicitacao de credito — ' + (d.tipo_label || 'credito'),
+        mensagem: (d.cliente_nome || '') + ' — ' + (d.valor ? 'R$ ' + d.valor : 'sem valor informado'),
+        referencia_tipo: 'solicitacao_credito', referencia_id: d.solicitacao_id || null, lida: false
+      })))
+    }).catch(() => {});
+  }
+
+  const RESEND_KEY = process.env.RESEND_API_KEY;
+  if (!RESEND_KEY) return { ok: true, enviado: false, motivo: 'RESEND_API_KEY nao configurada', notificados_hub: comLogin.length };
+
+  const subject = 'Solicitacao de credito — ' + (d.cliente_nome || 'cliente') + ' — ' + (d.tipo_label || 'credito');
+  const body = `
+    <p>Uma nova solicitacao de credito chegou no <strong>Boxer Hub</strong>.</p>
+    ${infoBox([
+      ['Cliente', d.cliente_nome],
+      ['Tipo', d.tipo_label],
+      ['Valor solicitado', d.valor ? 'R$ ' + d.valor : null],
+      ['Solicitado por', d.solicitante_nome]
+    ])}
+    ${d.justificativa ? '<p style="font-size:13px;color:#4a5568"><strong>Justificativa:</strong> ' + d.justificativa + '</p>' : ''}
+    ${btnLink(HUB_URL + '/financeiro.html', 'Abrir no Financeiro')}
   `;
 
   const r = await fetch(RESEND_URL, {

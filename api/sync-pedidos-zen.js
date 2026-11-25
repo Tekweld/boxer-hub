@@ -779,13 +779,33 @@ module.exports = async function handler(req, res) {
             });
           }
 
+          // Declarado fora do `if (vendas.length)` abaixo de proposito: usado
+          // depois pra decidir quem marca 'concluido', mesmo quando esta
+          // rodada nao achou venda nenhuma (sobrouPorCliente fica vazio).
+          let sobrouPorCliente = new Set();
+
           if (vendas.length) {
             const saleIds = vendas.map(v => String(v.id));
             const existentesRes = await fetch(HUB_URL +
               '/rest/v1/hub_pedidos?erp_pedido_id=in.(' + saleIds.join(',') + ')&select=erp_pedido_id',
               { headers: hubH('GET') });
             const existentesSet = new Set((existentesRes.ok ? await existentesRes.json() : []).map(x => x.erp_pedido_id));
-            const novas = vendas.filter(v => !existentesSet.has(String(v.id)));
+            const novasTodas = vendas.filter(v => !existentesSet.has(String(v.id)));
+
+            // Cliente "pesado" (historico de venda grande) nao e sobre quantos
+            // clientes cabem no lote -- e sobre quantas vendas novas precisam
+            // de pedido+itens criados NESTA rodada. Achado ao vivo em 2026-11-24
+            // (ver comentario do BACKFILL_LOTE acima): um unico cliente com
+            // 100+ vendas novas no ano estoura os 120s sozinho, mesmo em lote
+            // de 1. Corta aqui, nao no numero de clientes -- quem sobra fica
+            // 'pendente' (nunca marca concluido), a FIFO natural retoma no
+            // proximo round e pula quem ja foi criado (existentesSet acima),
+            // ate drenar tudo. Fim do backfill "pesado" preso por 1 ano.
+            const BACKFILL_VENDAS_POR_RODADA = 25;
+            const novas = novasTodas.slice(0, BACKFILL_VENDAS_POR_RODADA);
+            sobrouPorCliente = new Set(
+              novasTodas.slice(BACKFILL_VENDAS_POR_RODADA).map(v => String(v.person?.id))
+            );
 
             const itensPorSale = {};
             const produtoIdPorSku = {};
@@ -893,13 +913,27 @@ module.exports = async function handler(req, res) {
             }));
           }
 
-          // Lote consultado no Zen com sucesso -- marca concluido mesmo pra
-          // quem nao tinha venda nenhuma este ano (checagem feita de verdade).
-          await fetch(HUB_URL + '/rest/v1/hub_backfill_fila?id=in.(' + loteFila.map(f => f.id).join(',') + ')', {
-            method: 'PATCH', headers: hubH('PATCH'),
-            body: JSON.stringify({ status: 'concluido', atualizado_em: new Date().toISOString() })
-          });
-          r.backfill_clientes_processados += loteFila.length;
+          // Lote consultado no Zen com sucesso -- marca concluido quem de
+          // fato drenou (inclusive quem nao tinha venda nenhuma este ano).
+          // Cliente "pesado" com sobra alem do corte acima fica de fora
+          // (nunca marcado concluido), continua 'pendente' na fila pra
+          // voltar sozinho no proximo round e so marcar quando drenar tudo.
+          // porErpId e indexado por erp_cliente_id, nao cliente_id -- resolver
+          // o caminho inverso certo (cliente_id -> erp_cliente_id) direto do
+          // array `clientes` ja carregado, sem reindexar porErpId pra isso.
+          const erpIdPorClienteId = {};
+          clientes.forEach(c => { erpIdPorClienteId[c.id] = c.erp_cliente_id ? String(c.erp_cliente_id) : null; });
+          const idsConcluidosReal = loteFila
+            .filter(f => !sobrouPorCliente.has(erpIdPorClienteId[f.cliente_id]))
+            .map(f => f.id);
+          if (idsConcluidosReal.length) {
+            await fetch(HUB_URL + '/rest/v1/hub_backfill_fila?id=in.(' + idsConcluidosReal.join(',') + ')', {
+              method: 'PATCH', headers: hubH('PATCH'),
+              body: JSON.stringify({ status: 'concluido', atualizado_em: new Date().toISOString() })
+            });
+          }
+          r.backfill_clientes_processados += idsConcluidosReal.length;
+          r.backfill_clientes_pesados_continuam = loteFila.length - idsConcluidosReal.length;
         } catch (e) {
           // Falha na consulta ao Zen (nao na criacao do pedido). Achado ao
           // vivo em 2026-11-24: cliente com historico de venda muito grande

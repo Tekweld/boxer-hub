@@ -369,11 +369,26 @@ async function enviarSolicitacao() {
   if (!clienteId) { toast('Selecione uma revenda para solicitar credito', 'error'); return; }
 
   try {
-    await sb('/hub_solicitacoes_credito', 'POST', {
+    const [solic] = await sb('/hub_solicitacoes_credito', 'POST', {
       cliente_id: clienteId,
       solicitante_id: PERFIL.id,
       tipo, valor_solicitado: valor || null, justificativa: just
     });
+    // Fire-and-forget: ninguem era avisado antes (so apareceria pra quem
+    // abrisse esta aba por conta propria). Mesmo padrao de notificacao de
+    // equipe ja usado no onboarding -- nunca trava o fluxo se falhar.
+    const TIPO_LABEL = { aumento_limite: 'Aumento de limite', antecipacao_pagamento: 'Antecipacao de pagamento', prazo_especial: 'Prazo especial' };
+    fetch('/api/email', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tipo: 'solicitacao_credito',
+        dados: {
+          solicitacao_id: solic?.id, cliente_nome: getClienteAtivoNome() || getUserNome(),
+          tipo_label: TIPO_LABEL[tipo] || tipo, valor: valor ? valor.toFixed(2) : null,
+          justificativa: just, solicitante_nome: getUserNome()
+        }
+      })
+    }).catch(() => {});
     closeModal();
     toast('Solicitacao enviada');
     loadCredito();

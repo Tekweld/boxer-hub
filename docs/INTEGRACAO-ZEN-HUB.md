@@ -504,7 +504,7 @@ como a Cristina (PATCH antigo = 0 linhas; função nova grava todos os campos), 
   instantâneo) e viram eventos em `hub_pedido_eventos` (uma por etapa — índice único `pedido_id,etapa`).
 - **Pedidos importados do ZEN** vinham sem histórico (5.188 de 5.889) e com a data da importação.
   `api/_historico_etapas.js` traz `sale.date` e os `workpieceNode` (com `dateTimeStart`); drena 200 por rodada
-  (`erp_historico_em IS NULL` = pendente). A fila de acompanhamento agora é justa (pedidos abertos, checados há
+  (`erp_historico_em IS NULL` = pendente; em 26/11 às 10h: 3.080 de 5.989 prontos, 51%). A fila de acompanhamento agora é justa (pedidos abertos, checados há
   mais tempo primeiro) — antes eram só os 200 mais recentes.
 - **Faturado** = primeira nota fiscal ligada ao pedido (`trg_hub_evento_faturado`; data = emissão da NF).
 - **Entrega NÃO tem rastreio real ainda.** `status='entregue'` hoje vem de `servedQuantity`; não é confirmação de
@@ -526,3 +526,15 @@ como a Cristina (PATCH antigo = 0 linhas; função nova grava todos os campos), 
 - Retirada/FOB ainda cobra o frete da política (R$ 120 abaixo do mínimo) no Hub: decisão de negócio.
 - Rastreio de entrega; parcelamento do cartão no contas a receber; boleto multi-parcela e login de
   representante **pela tela** ainda não provados de ponta a ponta.
+
+### 8.10 Operação: o Hub parou por limite da Vercel (26/11/2026)
+
+- Em 25/11 a Vercel pausou os deploys do time por **Fluid Active CPU** acima do limite do plano Hobby
+  (4 h/mês): site e API responderam **HTTP 402 `DEPLOYMENT_DISABLED`** e o cron do sync falhou
+  ("sync-pedidos-zen respondeu 402"). O time passou para o plano **Pro** e o Hub voltou (site 200, API 405).
+- O time tem 5 projetos que dividem o mesmo limite; **não está confirmado qual consumiu mais** (ver Usage por
+  projeto no painel). Um deles, `travel-intelligence`, foi **pausado** por decisão do André.
+- Para um cron de 15 min com função de até 120 s (`api/sync-pedidos-zen.js`), o custo de CPU importa:
+  não aumentar lote/frequência sem olhar o consumo, preferir trabalho pesado fora da Vercel (GitHub Actions),
+  e evitar deploys por CLI em excesso.
+- Como saber que caiu: a rodada do GitHub Actions falha com `HTTP 402` e `curl https://hub.boxersoldas.com.br` devolve 402.

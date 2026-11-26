@@ -526,6 +526,10 @@ como a Cristina (PATCH antigo = 0 linhas; função nova grava todos os campos), 
 - Retirada/FOB ainda cobra o frete da política (R$ 120 abaixo do mínimo) no Hub: decisão de negócio.
 - Rastreio de entrega; parcelamento do cartão no contas a receber; boleto multi-parcela e login de
   representante **pela tela** ainda não provados de ponta a ponta.
+- Decisão pendente: mostrar **"Faturado"** em vez de "Entregue" nos pedidos importados até existir rastreio real de entrega
+  (hoje `entregue` = `servedQuantity`).
+- **PDF do orçamento** (pedido de 25/11): não pode quebrar página à toa e está longo demais — a fazer.
+- Vercel: olhar **Usage por projeto** (5 projetos dividem o limite) e avaliar mover o dreno pesado para fora da Vercel (ver 8.10).
 
 ### 8.10 Operação: o Hub parou por limite da Vercel (26/11/2026)
 

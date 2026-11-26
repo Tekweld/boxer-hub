@@ -761,20 +761,27 @@ function mapearTitulo(tit, clienteId, hoje) {
 // Cancelado no Zen = ativo:false. Id que o Zen nao devolve so recebe o carimbo atualizado_em (nao desativa por
 // resposta vazia: fila avanca e a proxima conferencia revisita em 1 dia).
 const MAX_RECONCILIAR = 320;
+const ORCAMENTO_RECONCILIAR_MS = 45000; // maxDuration da function = 300s (vercel.json)
 async function reconciliarTitulosSumidos({ hubH, dryRun, t0 }) {
   const out = { candidatos: 0, atualizados: 0, pagos: 0, ainda_abertos: 0, cancelados: 0, nao_encontrados: 0, erros: [] };
-  const limiar = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-  const res = await fetch(HUB_URL + '/rest/v1/hub_titulos?ativo=eq.true&status=in.(aberto,vencido,parcial)&erp_titulo_id=not.is.null' +
-    '&atualizado_em=lt.' + encodeURIComponent(limiar) + '&select=id,erp_titulo_id,cliente_id&order=atualizado_em.asc&limit=' + MAX_RECONCILIAR, { headers: hubH('GET') });
-  if (!res.ok) { out.erros.push('listar: ' + res.status); return out; }
-  const cand = await res.json();
+  // Vencidos primeiro: sao eles que bloqueiam o boleto do cliente. Reconfere vencido nao tocado ha 1h; o resto
+  // (aberto/parcial) so depois de 24h. (hub_titulos.atualizado_em e reescrito por trigger a cada UPDATE.)
+  const lim = (h) => encodeURIComponent(new Date(Date.now() - h * 3600 * 1000).toISOString());
+  const base = HUB_URL + '/rest/v1/hub_titulos?ativo=eq.true&erp_titulo_id=not.is.null&select=id,erp_titulo_id,cliente_id&order=atualizado_em.asc&limit=' + MAX_RECONCILIAR;
+  const r1 = await fetch(base + '&status=eq.vencido&atualizado_em=lt.' + lim(1), { headers: hubH('GET') });
+  if (!r1.ok) { out.erros.push('listar: ' + r1.status); return out; }
+  let cand = await r1.json();
+  if (cand.length < MAX_RECONCILIAR) {
+    const r2 = await fetch(base + '&status=in.(aberto,parcial)&atualizado_em=lt.' + lim(24), { headers: hubH('GET') });
+    if (r2.ok) cand = cand.concat((await r2.json()).slice(0, MAX_RECONCILIAR - cand.length));
+  }
   out.candidatos = cand.length;
   const hoje = new Date().toISOString().slice(0, 10);
   const agora = () => new Date().toISOString();
   const patch = (id, corpo) => fetch(HUB_URL + '/rest/v1/hub_titulos?id=eq.' + id, {
     method: 'PATCH', headers: { ...hubH('PATCH'), Prefer: 'return=minimal' }, body: JSON.stringify(corpo) });
 
-  for (let i = 0; i < cand.length && Date.now() - t0 < ORCAMENTO_MS; i += 40) {
+  for (let i = 0; i < cand.length && Date.now() - t0 < ORCAMENTO_RECONCILIAR_MS; i += 40) {
     const lote = cand.slice(i, i + 40);
     let zen;
     try {

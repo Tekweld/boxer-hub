@@ -58,12 +58,41 @@ tfoot td{padding:8px;border-top:1px solid #e2e8f0}
   tbody td:first-child{grid-column:1/-1}
   tbody td[data-l]::before{content:attr(data-l) ' ';font-size:10px;color:#718096;text-transform:uppercase;display:block}
 }
+.so-print{display:none}
+/* Impressao/PDF compacto (pedido do Andre, 2026-11-25): antes o card de itens tinha
+   break-inside:avoid, nao cabia na 1a folha e ia INTEIRO para a 2a (1a folha quase vazia),
+   e tudo ocupava 3 paginas. Agora o card de itens quebra entre linhas (cabecalho da tabela
+   repete, totais so no fim) e os cards pequenos (condicoes/observacoes/dados) nao se partem.
+   Mantido igual ao da previa em pedidos.html (renderOrcamentoHtml). */
 @media print{
-  @page{size:A4;margin:10mm}
-  body{background:#fff;padding:0}
+  @page{size:A4;margin:8mm}
+  body{background:#fff;padding:0;font-size:11px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   .cta,.recusar{display:none!important}
-  .card{border-color:#cbd5e0;break-inside:avoid}
-  .top{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .top{padding:8px 14px;border-bottom-width:2px}
+  .top-left{font-size:13px;gap:8px}.top-left svg{width:20px;height:20px}.top-right{font-size:12px}
+  .wrap{max-width:none;padding:8px 0 0}
+  .card{border-color:#cbd5e0;border-radius:6px;padding:8px 12px;margin-bottom:8px;break-inside:auto}
+  .card.keep{break-inside:avoid}
+  .hero{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;border-left-width:3px;break-after:avoid}
+  .hero h1{font-size:14px;margin:0 8px 0 0}
+  .chip{font-size:10px;padding:2px 8px;margin-right:0}
+  .sec-title{font-size:10px;margin-bottom:5px;break-after:avoid}
+  table{font-size:10px}
+  thead{display:table-header-group}
+  tfoot{display:table-row-group}
+  tr{break-inside:avoid}
+  thead th{padding:3px 5px;font-size:9px}
+  tbody td{padding:3px 5px}
+  tfoot td{padding:3px 5px}
+  .tfoot-total td{font-size:12px;padding-top:5px}
+  .prod-foto{width:24px;height:24px;margin-right:6px;border-radius:4px}
+  .est{font-size:8.5px;padding:1px 6px}
+  .cond-grid,.dados-grid{gap:10px}
+  .cond-item b{font-size:11px;margin-bottom:1px}.cond-item span{font-size:10.5px}
+  .dados-bloco .t{font-size:9px;margin-bottom:3px}.dados-bloco .nome{font-size:11.5px}.dados-bloco .linha{font-size:10px;margin-top:1px}
+  .so-tela{display:none}.so-print{display:inline}
+  td[data-l="Qtd"],td[data-l="Impostos"],td[data-l="Unitário"],td[data-l="Total"],tfoot td:last-child{white-space:nowrap}
+  .tfoot-grupo td{color:#4a5568}.tfoot-qtd{color:#718096}
 }
 .modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
 .modal-overlay.show{display:flex}
@@ -324,7 +353,7 @@ function render() {
       ${chipValidade} <span class="chip">Emitido em ${fmtData(ORC.criado_em)}</span>
     </div>
 
-    <div class="card">
+    <div class="card itens">
       <div class="sec-title">Itens do orçamento</div>
       <table>
         <thead><tr><th>Produto</th><th>Estoque</th><th>Qtd</th><th>Impostos</th><th>Unitário</th><th>Total</th></tr></thead>
@@ -336,20 +365,20 @@ function render() {
             <td data-l="Produto"><span class="prod-cel">${i.imagem_url ? '<span class="prod-foto"><img src="' + esc(i.imagem_url) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></span>' : ''}<span><div>${esc(i.modelo || i.codigo)}</div><div style="font-size:10px;color:#a0aec0">${esc(i.codigo)}</div></span></span></td>
             <td data-l="Estoque"><span class="est ${cls}">${label}${i.previsao ? ' · ' + fmtPrevisaoQuinzena(i.previsao) : ''}</span></td>
             <td data-l="Qtd">${i.qtd}</td>
-            <td data-l="Impostos" style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'}<br>ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
+            <td data-l="Impostos" style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'}<span class="so-print"> · </span><br class="so-tela">ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
             <td data-l="Unitário">${riscado}${fmtMoeda(i.unit)}</td>
             <td data-l="Total">${fmtMoeda(i.subtotal)}</td>
           </tr>`;
         }).join('')}</tbody>
         <tfoot>
           ${['ok', 'prev', 'sem'].map(k => grupos[k].valor > 0.004 ? `<tr class="tfoot-grupo"><td colspan="5">${GRUPO_LABEL[k]} <span class="tfoot-qtd">(${grupos[k].qtd} un)</span></td><td>${fmtMoeda(grupos[k].valor)}</td></tr>` : '').join('')}
-          ${ORC.frete_valor > 0 ? `<tr class="tfoot-grupo"><td colspan="5">Frete</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
+          ${ORC.frete_valor > 0 ? `<tr class="tfoot-grupo"><td colspan="5">Frete (a cobrar pela Boxer — fora do total)</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
           <tr class="tfoot-total"><td colspan="5">Total geral</td><td>${fmtMoeda(ORC.total_final)}</td></tr>
         </tfoot>
       </table>
     </div>
 
-    <div class="card">
+    <div class="card keep">
       <div class="sec-title">Condições</div>
       <div class="cond-grid">
         <div class="cond-item"><b>Pagamento</b><span>${ORC.pagamento_tipo === 'avista' ? 'À vista' + (ORC.desconto_vista_pct ? ' (' + ORC.desconto_vista_pct + '% de desconto)' : '') : (Array.isArray(ORC.dias_pagamento) && ORC.dias_pagamento.length ? 'Boleto ' + ORC.dias_pagamento.join('/') + ' dias' : 'Boleto em ' + ORC.parcelas + 'x')}</span></div>
@@ -358,9 +387,9 @@ function render() {
       </div>
     </div>
 
-    ${ORC.observacoes ? `<div class="card"><div class="sec-title">Observações</div><p style="font-size:13px;color:#4a5568">${esc(ORC.observacoes)}</p></div>` : ''}
+    ${ORC.observacoes ? `<div class="card keep"><div class="sec-title">Observações</div><p style="font-size:13px;color:#4a5568">${esc(ORC.observacoes)}</p></div>` : ''}
 
-    <div class="card">
+    <div class="card keep">
       <div class="sec-title">Dados</div>
       <div class="dados-grid">
         <div class="dados-bloco">

@@ -168,7 +168,6 @@ textarea:focus{border-color:#25bbee}
           <option value="em_separacao">Em separacao</option>
           <option value="faturado">Faturado</option>
           <option value="enviado">Enviado</option>
-          <option value="entregue">Entregue</option>
         </select>
       </div>
     </div>
@@ -1150,7 +1149,7 @@ function renderTabelaItensOrcamento(itens, freteValor, totalFinal) {
     }).join('')}</tbody>
     <tfoot>
       ${['ok', 'prev', 'sem'].map(k => grupos[k].valor > 0.004 ? `<tr><td colspan="5" style="padding:4px 6px;font-size:11px;color:#a0aec0;border-top:1px solid #f0f4f8">${GRUPO_LABEL[k]} <span style="color:#cbd5e0">(${grupos[k].qtd} un)</span></td><td style="text-align:right;padding:4px 6px;font-size:11px;color:#a0aec0;border-top:1px solid #f0f4f8">${fmtMoeda(grupos[k].valor)}</td></tr>` : '').join('')}
-      ${freteValor > 0 ? `<tr><td colspan="5" style="padding:4px 6px;border-top:1px solid #f0f4f8">Frete</td><td style="text-align:right;padding:4px 6px;border-top:1px solid #f0f4f8">${fmtMoeda(freteValor)}</td></tr>` : ''}
+      ${freteValor > 0 ? `<tr><td colspan="5" style="padding:4px 6px;border-top:1px solid #f0f4f8">Frete (a cobrar pela Boxer — fora do total)</td><td style="text-align:right;padding:4px 6px;border-top:1px solid #f0f4f8">${fmtMoeda(freteValor)}</td></tr>` : ''}
       <tr><td colspan="5" style="padding-top:10px;font-weight:700;color:#1d327b;border-top:2px solid #1d327b">Total geral</td><td style="text-align:right;padding-top:10px;font-weight:700;color:#1d327b;border-top:2px solid #1d327b">${fmtMoeda(totalFinal)}</td></tr>
     </tfoot>
   </table></div>`;
@@ -1200,7 +1199,9 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
   const subtotal = +(politica.subtotal || 0);
   const frete = politica.frete && politica.frete !== 'null' ? politica.frete : null;
   const valorFrete = +(frete?.valor || 0);
-  const total = subtotal + valorFrete;
+  // O Hub NAO cobra frete (Andre, 2026-11-26): o valor e so informacao para o time Boxer
+  // cobrar; fica fora do total e da reserva de credito (hub_fn_submeter_pedido faz igual).
+  const total = subtotal;
 
   const disponivel = +(cliente.limite_disponivel || 0);
   const limite = +(cliente.limite_credito || 0);
@@ -1252,7 +1253,7 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
     <div class="rev-sec">
       <h4>Resumo</h4>
       <div class="rev-linha"><span>${politica.itens || 0} item(ns)</span><span class="v">${fmtMoeda(subtotal)}</span></div>
-      <div class="rev-linha"><span>Frete</span><span class="v">${valorFrete > 0 ? fmtMoeda(valorFrete) : 'Sem custo'}</span></div>
+      <div class="rev-linha"><span>Frete <small style="color:#718096">(informativo)</small></span><span class="v" id="revFreteResumo">${valorFrete > 0 ? fmtMoeda(valorFrete) + ' a cobrar pela Boxer, fora do total' : 'Sem custo'}</span></div>
       <div class="rev-total"><span>Total</span><span class="v">${fmtMoeda(total)}</span></div>
     </div>`;
       return saldo < 0 ? blocoCredito + blocoResumo : blocoResumo + blocoCredito;
@@ -1683,7 +1684,41 @@ function renderOrcamentoHtml(ORC) {
         tbody td:first-child{grid-column:1/-1}
         tbody td[data-l]::before{content:attr(data-l) ' ';font-size:10px;color:#718096;text-transform:uppercase;display:block}
       }
-      @media print{@page{size:A4;margin:10mm}body{background:#fff;padding:0}.no-print{display:none!important}.card{border-color:#cbd5e0;break-inside:avoid}.top{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+      .so-print{display:none}
+      /* Impressao/PDF compacto (pedido do Andre, 2026-11-25): antes o card de itens tinha
+         break-inside:avoid, nao cabia na 1a folha e ia INTEIRO para a 2a (1a folha quase vazia),
+         e tudo ocupava 3 paginas. Agora o card de itens quebra entre linhas (cabecalho da tabela
+         repete, totais so no fim), e os cards pequenos (condicoes/observacoes/dados) nao se partem. */
+      @media print{
+        @page{size:A4;margin:8mm}
+        body{background:#fff;padding:0;font-size:11px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+        .no-print{display:none!important}
+        .top{padding:8px 14px;border-bottom-width:2px}
+        .top-left{font-size:13px;gap:8px}.top-left svg{width:20px;height:20px}.top-right{font-size:12px}
+        .wrap{max-width:none;padding:8px 0 0}
+        .card{border-color:#cbd5e0;border-radius:6px;padding:8px 12px;margin-bottom:8px;break-inside:auto}
+        .card.keep{break-inside:avoid}
+        .hero{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;border-left-width:3px;break-after:avoid}
+        .hero h1{font-size:14px;margin:0 8px 0 0}
+        .chip{font-size:10px;padding:2px 8px;margin-right:0}
+        .sec-title{font-size:10px;margin-bottom:5px;break-after:avoid}
+        table{font-size:10px}
+        thead{display:table-header-group}
+        tfoot{display:table-row-group}
+        tr{break-inside:avoid}
+        thead th{padding:3px 5px;font-size:9px}
+        tbody td{padding:3px 5px}
+        tfoot td{padding:3px 5px}
+        .tfoot-total td{font-size:12px;padding-top:5px}
+        .prod-foto{width:24px;height:24px;margin-right:6px;border-radius:4px}
+        .est{font-size:8.5px;padding:1px 6px}
+        .cond-grid,.dados-grid{gap:10px}
+        .cond-item b{font-size:11px;margin-bottom:1px}.cond-item span{font-size:10.5px}
+        .dados-bloco .t{font-size:9px;margin-bottom:3px}.dados-bloco .nome{font-size:11.5px}.dados-bloco .linha{font-size:10px;margin-top:1px}
+        .so-tela{display:none}.so-print{display:inline}
+        td[data-l="Qtd"],td[data-l="Impostos"],td[data-l="Unitário"],td[data-l="Total"],tfoot td:last-child{white-space:nowrap}
+        .tfoot-grupo td{color:#4a5568}.tfoot-qtd{color:#718096}
+      }
     </style></head><body>
     <div class="top">
       <div class="top-left">
@@ -1702,7 +1737,7 @@ function renderOrcamentoHtml(ORC) {
         ${ORC.status === 'rascunho_pdf' ? '<span class="chip laranja">Prévia em PDF — ainda não enviado ao cliente</span> ' : ''}<span class="chip">Gerado em ${new Date(ORC.criado_em).toLocaleDateString('pt-BR')}</span>
       </div>
 
-      <div class="card">
+      <div class="card itens">
         <div class="sec-title">Itens do orçamento</div>
         <table>
           <thead><tr><th>Produto</th><th>Estoque</th><th>Qtd</th><th>Impostos</th><th>Unitário</th><th>Total</th></tr></thead>
@@ -1713,20 +1748,20 @@ function renderOrcamentoHtml(ORC) {
               <td data-l="Produto"><span class="prod-cel">${i.imagem_url ? '<span class="prod-foto"><img src="' + escHub(i.imagem_url) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></span>' : ''}<span><div>${escHub(i.modelo || i.codigo)}</div><div style="font-size:10px;color:#a0aec0">${escHub(i.codigo)}</div></span></span></td>
               <td data-l="Estoque"><span class="est" style="color:${cor}">${label}${i.previsao ? ' · ' + fmtPrevisaoQuinzena(i.previsao) : ''}</span></td>
               <td data-l="Qtd">${i.qtd}</td>
-              <td data-l="Impostos" style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'}<br>ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
+              <td data-l="Impostos" style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'}<span class="so-print"> · </span><br class="so-tela">ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
               <td data-l="Unitário">${riscado}${fmtMoeda(i.unit)}</td>
               <td data-l="Total">${fmtMoeda(i.subtotal)}</td>
             </tr>`;
           }).join('')}</tbody>
           <tfoot>
             ${['ok', 'prev', 'sem'].map(k => grupos[k].valor > 0.004 ? `<tr class="tfoot-grupo"><td colspan="5">${GRUPO_LABEL[k]} <span class="tfoot-qtd">(${grupos[k].qtd} un)</span></td><td>${fmtMoeda(grupos[k].valor)}</td></tr>` : '').join('')}
-            ${ORC.frete_valor > 0 ? `<tr class="tfoot-grupo"><td colspan="5">Frete</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
+            ${ORC.frete_valor > 0 ? `<tr class="tfoot-grupo"><td colspan="5">Frete (a cobrar pela Boxer — fora do total)</td><td>${fmtMoeda(ORC.frete_valor)}</td></tr>` : ''}
             <tr class="tfoot-total"><td colspan="5">Total geral</td><td>${fmtMoeda(ORC.total_final)}</td></tr>
           </tfoot>
         </table>
       </div>
 
-      <div class="card">
+      <div class="card keep">
         <div class="sec-title">Condições</div>
         <div class="cond-grid">
           <div class="cond-item"><b>Pagamento</b><span>${ORC.pagamento_tipo === 'avista' ? 'À vista' : (Array.isArray(ORC.dias_pagamento) && ORC.dias_pagamento.length ? 'Boleto ' + ORC.dias_pagamento.join('/') + ' dias' : 'Boleto em ' + ORC.parcelas + 'x')}</span></div>
@@ -1735,9 +1770,9 @@ function renderOrcamentoHtml(ORC) {
         </div>
       </div>
 
-      ${ORC.observacoes ? `<div class="card"><div class="sec-title">Observações</div><p style="font-size:13px;color:#4a5568">${escHub(ORC.observacoes)}</p></div>` : ''}
+      ${ORC.observacoes ? `<div class="card keep"><div class="sec-title">Observações</div><p style="font-size:13px;color:#4a5568">${escHub(ORC.observacoes)}</p></div>` : ''}
 
-      <div class="card">
+      <div class="card keep">
         <div class="sec-title">Dados</div>
         <div class="dados-grid">
           <div class="dados-bloco">
@@ -1813,14 +1848,24 @@ function renderOpcoesFrete(frete, valorFrete, uf) {
 
   return `<div class="form-row" style="margin-top:10px;margin-bottom:0">
     <label>Frete</label>
-    <select id="revFreteModalidade">
-      ${opcoes.map(cod => `<option value="${cod}" ${cod === padrao ? 'selected' : ''}>${esc(FRETE_LABELS[cod])}${cod === 'CIF' ? ' — ' + (valorFrete > 0 ? fmtMoeda(valorFrete) : 'sem custo') : ''}</option>`).join('')}
+    <select id="revFreteModalidade" onchange="atualizarFreteResumo()">
+      ${opcoes.map(cod => `<option value="${cod}" ${cod === padrao ? 'selected' : ''}>${esc(FRETE_LABELS[cod])}${cod === 'CIF' ? ' — ' + (valorFrete > 0 ? fmtMoeda(valorFrete) + ' a cobrar pela Boxer' : 'sem custo') : ''}</option>`).join('')}
     </select>
   </div>`;
 }
 
 function freteModalidadeSelecionada() {
   return document.getElementById('revFreteModalidade')?.value || 'CIF';
+}
+
+// Retirada/FOB: o cliente cuida do transporte, nao ha frete a informar (igual ao servidor,
+// hub_fn_submeter_pedido zera valor_frete nesses casos).
+function atualizarFreteResumo() {
+  const el = document.getElementById('revFreteResumo');
+  if (!el || !_revisao) return;
+  const semFrete = ['RETIRADA_BOXER', 'FOB'].includes(freteModalidadeSelecionada());
+  const v = +_revisao.valorFrete || 0;
+  el.textContent = (semFrete || v <= 0) ? 'Sem custo' : fmtMoeda(v) + ' a cobrar pela Boxer, fora do total';
 }
 
 async function confirmarEnvio() {
@@ -2043,7 +2088,9 @@ async function loadPedidos() {
   const periodo = document.getElementById('filtroPeriodo').value; // 'YYYY-MM' ou ''
 
   let url = '/hub_pedidos?select=id,numero,status,origem,valor_total,criado_em,erp_workflow_status,erp_pedido_id,ordem_compra,hub_clientes(razao_social,nome_fantasia)&order=criado_em.desc&ativo=eq.true';
-  if (status) url += '&status=eq.' + status;
+  // "Faturado" inclui os pedidos com status 'entregue': enquanto nao existe rastreio real de
+  // entrega, 'entregue' (vindo de servedQuantity) e exibido como Faturado (pedido do Andre, 2026-11-26).
+  if (status) url += status === 'faturado' ? '&status=in.(faturado,entregue)' : '&status=eq.' + status;
   if (periodo) {
     const [ano, mes] = periodo.split('-').map(Number);
     const inicio = new Date(Date.UTC(ano, mes - 1, 1)).toISOString();
@@ -2074,7 +2121,7 @@ async function loadPedidos() {
       ...pedidos.map(p => ({
         tipo: 'pedido', id: p.id, numero: p.numero || 'Rascunho', cliente: p.hub_clientes?.nome_fantasia || p.hub_clientes?.razao_social || '—',
         erpId: p.erp_pedido_id || null, oc: p.ordem_compra || null,
-        statusHtml: `<span class="status-badge status-${p.status}">${esc(etapaVisivel(p))}</span>`,
+        statusHtml: `<span class="status-badge status-${p.status === 'entregue' ? 'faturado' : p.status}">${esc(etapaVisivel(p))}</span>`,
         valor: p.valor_total, data: p.criado_em
       })),
       ...(status ? [] : orcamentos.map(o => {
@@ -2494,7 +2541,7 @@ async function openPedido(id) {
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:16px">
         <div style="padding:10px;background:#f7fafc;border-radius:8px">
           <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px">Status</div>
-          <span class="status-badge status-${pedido.status}">${pedido.status.replace('_', ' ')}</span>
+          <span class="status-badge status-${pedido.status === 'entregue' ? 'faturado' : pedido.status}">${(pedido.status === 'entregue' ? 'faturado' : pedido.status).replace('_', ' ')}</span>
         </div>
         <div style="padding:10px;background:#f7fafc;border-radius:8px">
           <div style="font-size:11px;color:#718096;text-transform:uppercase;letter-spacing:.5px">Valor Total</div>
@@ -2617,7 +2664,9 @@ const ETAPA_CLIENTE = {
   // 'Pedido aprovado' -- sync-pedidos-zen.js acompanha a entrega via
   // sale.SaleItem.servedQuantity e grava aqui como evento proprio.
   'Em separacao (envio parcial)': { titulo: 'Em separacao',         texto: 'Parte dos itens ja esta sendo preparada/enviada.' },
-  'Entregue':               { titulo: 'Entregue',                   texto: 'Pedido totalmente entregue.' },
+  // 'Entregue' (servedQuantity completo) aparece como FATURADO: ainda nao ha rastreio real de
+  // entrega (transportadora/confirmacao), entao nao afirmamos que chegou (Andre, 2026-11-26).
+  'Entregue':               { titulo: 'Faturado',                   texto: 'Nota fiscal emitida e mercadoria faturada.' },
   // Faturamento: vem da nota fiscal ligada ao pedido (trg_hub_evento_faturado).
   'Faturado':               { titulo: 'Faturado',                   texto: 'Nota fiscal emitida.' },
   // Conferencia automatica apos o envio ao ERP (api/_zen_venda.js): le a venda

@@ -818,7 +818,7 @@ async function criar(ctx, user, b, edit) {
 
     freteValor = fr.frete || 0;
 
-    avisos.push('Abaixo do pedido minimo CIF (' + brl(fr.min) + '): frete fixo de ' + brl(freteValor));
+    avisos.push('Abaixo do pedido minimo CIF (' + brl(fr.min) + '): frete de ' + brl(freteValor) + ' a cobrar pela Boxer (nao incluso no total)');
 
   }
 
@@ -927,7 +927,9 @@ async function criar(ctx, user, b, edit) {
 
     observacoes: b.observacoes ? String(b.observacoes).slice(0, 1500) : null,
 
-    avisos, itens, total_itens: totalItens, total_final: r2(totalItens + freteValor), teto_excedido: tetoEx.length ? tetoEx : null,
+    // O Hub NAO cobra frete (Andre, 2026-11-26): frete_valor e so informacao para o time Boxer
+    // cobrar; o total do orcamento e o dos itens.
+    avisos, itens, total_itens: totalItens, total_final: r2(totalItens), teto_excedido: tetoEx.length ? tetoEx : null,
 
     validade_em: new Date(Date.now() + VALIDADE_DIAS * 86400000).toISOString(),
 
@@ -1069,7 +1071,7 @@ async function montarVendaZen(o, orc, itens) {
     // unica forma de nao perder a granularidade da escolha (Carro Boxer x
     // Caminhao SP x CIF automatico) no proprio ZEN. Pedido explicito do
     // Andre, 2026-11-25: "garantir entendimento real".
-    'Frete = ' + (FRETE_LABEL_POR_CODIGO[o.frete_tipo] || o.frete_tipo || 'a combinar') + (o.frete_valor ? ' (' + brl(o.frete_valor) + ')' : ''),
+    'Frete = ' + (FRETE_LABEL_POR_CODIGO[o.frete_tipo] || o.frete_tipo || 'a combinar') + (o.frete_valor ? ' — ' + brl(o.frete_valor) + ' a cobrar pela Boxer (fora do valor do orçamento)' : ''),
 
     o.observacoes ? 'Observações: ' + o.observacoes : null
 
@@ -1454,7 +1456,7 @@ async function sincronizarZen(ctx, rows) {
 
           const totalItens = r2(novos.reduce((a, x) => a + x.subtotal, 0));
 
-          Object.assign(patch, { itens: novos, total_itens: totalItens, total_final: r2(totalItens + Number(r.frete_valor || 0)), zen_ajustado_em: new Date().toISOString() });
+          Object.assign(patch, { itens: novos, total_itens: totalItens, total_final: r2(totalItens), zen_ajustado_em: new Date().toISOString() });
 
         }
 

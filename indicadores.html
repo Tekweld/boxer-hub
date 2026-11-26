@@ -90,7 +90,7 @@ if (!requireAuth()) throw 'auth';
 const STATUS_LABEL = {
   rascunho: 'Rascunho', submetido: 'Submetido', em_analise: 'Em analise', aprovado: 'Aprovado',
   rejeitado: 'Rejeitado', em_separacao: 'Em separacao', faturado: 'Faturado', enviado: 'Enviado',
-  entregue: 'Entregue', cancelado: 'Cancelado', visualizado: 'Visto pelo cliente', aceito_cliente: 'Aceito pelo cliente'
+  entregue: 'Faturado', cancelado: 'Cancelado', // 'entregue' = servedQuantity, sem rastreio real de entrega: exibe Faturado (2026-11-26) visualizado: 'Visto pelo cliente', aceito_cliente: 'Aceito pelo cliente'
 };
 
 let DADOS = null;

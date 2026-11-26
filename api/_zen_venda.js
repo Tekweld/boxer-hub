@@ -50,7 +50,8 @@ function observacoesPedido(pedido, ctx = {}) {
 
   const freteNome = pedido.frete_modalidade ? (FRETE_LABEL[pedido.frete_modalidade] || pedido.frete_modalidade) : null;
   if (freteNome) {
-    const cobrado = Number(pedido.valor_frete) > 0 ? ' — cobrado ' + brl(pedido.valor_frete) + ' na nota' : ' — sem cobrança de frete';
+    // O Hub NAO cobra frete: o valor so informa o time Boxer, que faz a cobranca (Andre, 2026-11-26).
+    const cobrado = Number(pedido.valor_frete) > 0 ? ' — ' + brl(pedido.valor_frete) + ' a cobrar pela Boxer (fora do valor do pedido)' : ' — sem frete a cobrar';
     linhas.push('Frete: ' + freteNome + cobrado);
   }
 

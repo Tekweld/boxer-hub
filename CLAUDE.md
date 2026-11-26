@@ -168,6 +168,7 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 11. **Escrita em `hub_pedidos` por representante vai por funcao `SECURITY DEFINER`**, nunca por PATCH/POST direto: o RLS filtra a linha e o PostgREST devolve sucesso com 0 linhas. Sempre conferir o retorno (`ok`) e testar com o PAPEL real, nao so admin
 12. **ZEN: `properties.paymentMethods` e a fonte das parcelas.** Gravar no POST da venda faz o ZEN criar os `salePayment`; postar `salePayment` por cima DUPLICA. Ver `docs/INTEGRACAO-ZEN-HUB.md` secao 8 e `BOXER/ZEN-ERP-CONHECIMENTO.md` 4.6.3
 13. **Vercel: o time esta no plano Pro desde 26/11/2026** (o Hobby estourou "Fluid Active CPU" e a Vercel pausou os deploys: site e API respondiam 402). O limite de 12 Serverless Functions descrito acima era do Hobby; mesmo assim manter funcoes novas em arquivos `_*.js` despachados por `push-pedido.js`/`sync-pedidos-zen.js`. Nao aumentar lote nem frequencia de cron sem olhar o consumo (Usage por projeto)
+14. **Frete: o Hub NAO cobra.** `hub_pedidos.valor_frete`/`orcamentos.frete_valor` sao so informacao para o time Boxer cobrar (fora do total e da reserva de credito; retirada/FOB = 0); vai ao ZEN nas observacoes. Nunca somar frete ao total
 
 ---
 

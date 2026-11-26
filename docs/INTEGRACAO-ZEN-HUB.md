@@ -471,7 +471,7 @@ A spec pública do ZEN lista só `NONE|ISSUER|RECIPIENT`, mas o ZEN aceita 5 val
 
 ### 8.4 Texto das Observações (uma linha por dado, só o que existir)
 
-Observação digitada pelo cliente → `Frete: <opção> — cobrado R$ X na nota` (ou "sem cobrança")
+Observação digitada pelo cliente → `Frete: <opção> — R$ X a cobrar pela Boxer (fora do valor do pedido)` (ou "sem frete a cobrar")
 → `Desconto: R$ X (Y%) sobre a tabela — classe N (Segmento/UF)` → `Item SKU (N un): exceção de preço —
 desconto de P% — de R$ A por R$ B` → `Pedido feito por: <nome> (representante|funcionário Boxer|cliente)`
 → `Entrega agendada: sim` → `Exceção aprovada: ...` → `Faturamento parcial: aceita|NÃO aceita`
@@ -523,12 +523,11 @@ como a Cristina (PATCH antigo = 0 linhas; função nova grava todos os campos), 
 
 ### 8.9 Em aberto
 
-- Retirada/FOB ainda cobra o frete da política (R$ 120 abaixo do mínimo) no Hub: decisão de negócio.
+- **Frete (decidido 26/11, no ar):** o Hub **nunca cobra frete**. Total do pedido/orçamento e reserva de crédito = só os itens; `valor_frete` é informativo (retirada/FOB = 0) e vai nas observações do Zen "a cobrar pela Boxer"; o time Boxer cobra. Migration `20261126120000`.
 - Rastreio de entrega; parcelamento do cartão no contas a receber; boleto multi-parcela e login de
   representante **pela tela** ainda não provados de ponta a ponta.
-- Decisão pendente: mostrar **"Faturado"** em vez de "Entregue" nos pedidos importados até existir rastreio real de entrega
-  (hoje `entregue` = `servedQuantity`).
-- **PDF do orçamento** (pedido de 25/11): não pode quebrar página à toa e está longo demais — a fazer.
+- **"Entregue" exibido como "Faturado"** (no ar, 26/11) em lista, detalhe, filtro, timeline e indicadores, até existir rastreio real de entrega (`entregue` = `servedQuantity`).
+- **PDF do orçamento** (no ar, 26/11): o card de itens tinha `break-inside:avoid` e ia inteiro para a 2ª folha; agora quebra entre linhas e a impressão é compacta (14 itens: 3 págs → 1). Template duplicado em `pedidos.html` (`renderOrcamentoHtml`) e `orcamento-publico.html`: manter os dois iguais.
 - Vercel: olhar **Usage por projeto** (5 projetos dividem o limite) e avaliar mover o dreno pesado para fora da Vercel (ver 8.10).
 
 ### 8.10 Operação: o Hub parou por limite da Vercel (26/11/2026)

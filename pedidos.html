@@ -1596,6 +1596,9 @@ async function excluirRascunho(id) {
 // (mesma acao 'criar' do "Enviar Link", com pdf_preview:true) e ganha codigo
 // real da sequencia -- so que sem criar venda no Zen (isso fica pro envio de
 // verdade) e com status proprio ('rascunho_pdf', ver api/_orcamento.js).
+// Abre o dialogo de salvar PDF do navegador assim que a pagina carrega (pedido do Andre, 2026-11-26).
+const SCRIPT_IMPRIMIR = '<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},600)})<\/script>';
+
 async function gerarPdfPreliminar() {
   if (!_revisao) return;
   const cart = getCart();
@@ -1620,9 +1623,9 @@ async function gerarPdfPreliminar() {
 
     const janela = window.open('', '_blank');
     if (!janela) { toast('O navegador bloqueou a nova aba — permita pop-ups pra ver a prévia', 'error'); return; }
-    janela.document.write(renderOrcamentoHtml(j.orcamento));
+    janela.document.write(renderOrcamentoHtml(j.orcamento) + SCRIPT_IMPRIMIR);
     janela.document.close();
-    toast('Orçamento ' + j.codigo + ' gerado em PDF (rascunho, ainda não enviado ao cliente)');
+    toast('Orçamento ' + j.codigo + ' gerado em PDF (salvo; ainda não enviado ao cliente)');
   } catch (e) {
     toast('Erro ao gerar PDF do orçamento: ' + erroLegivel(e), 'error');
   } finally {
@@ -1807,6 +1810,26 @@ function renderOrcamentoHtml(ORC) {
 
 // Mesmo backend do WhatsApp (link direto), so que por e-mail via Resend --
 // usa o cliente_email ja cadastrado no orcamento, sem pedir de novo na tela.
+// Copiar o link e uma acao de envio: PDF gerado ('rascunho_pdf') passa a 'enviado' aqui (nao antes).
+async function copiarLinkOrcamento(id) {
+  const o = _orcamentosCache[id];
+  if (!o) return;
+  try { await navigator.clipboard.writeText(o.link); toast('Link copiado'); } catch (_) { toast('Nao foi possivel copiar; selecione o link e copie', 'error'); }
+  if (o.status === 'rascunho_pdf') {
+    try { await chamarOrcamentoApi('marcar_enviado', { id }); o.status = 'enviado'; loadPedidos(); } catch (_) {}
+  }
+}
+// Reabre o PDF de um orcamento ja salvo (mesmo layout do link) direto no dialogo de salvar.
+async function gerarPdfDoDetalhe(id) {
+  const janela = window.open('', '_blank');
+  if (!janela) { toast('O navegador bloqueou a nova aba — permita pop-ups para gerar o PDF', 'error'); return; }
+  try {
+    const r = await chamarOrcamentoApi('completo', { id });
+    janela.document.write(renderOrcamentoHtml(r.orcamento) + SCRIPT_IMPRIMIR);
+    janela.document.close();
+  } catch (e) { janela.close(); toast('Erro ao gerar PDF: ' + erroLegivel(e), 'error'); }
+}
+
 async function enviarEmailOrcamento(id, btn) {
   const textoOriginal = btn.textContent;
   btn.disabled = true; btn.textContent = 'Enviando...';
@@ -2029,7 +2052,7 @@ const ORC_STATUS_LABEL = {
   // "Gerar PDF" (24/11): criado so pra ter codigo/rastreio, nunca enviado
   // ao cliente nem lancado no Zen -- rotulo proprio pra nao confundir com
   // um orcamento de verdade ja em andamento.
-  rascunho_pdf: ['Só PDF (não enviado)', '']
+  rascunho_pdf: ['PDF gerado (não enviado)', '']
 };
 let _orcamentosCache = {};
 
@@ -2192,7 +2215,7 @@ async function abrirOrcamentoDetalhe(id) {
   const o = _orcamentosCache[id];
   if (!o) return;
   const [label, classe] = ORC_STATUS_LABEL[o.status] || [o.status, ''];
-  const aberto = ['enviado', 'visualizado', 'aceito_cliente'].includes(o.status);
+  const aberto = ['rascunho_pdf', 'enviado', 'visualizado', 'aceito_cliente'].includes(o.status);
   abrirOrcamentoDetalheHtml(o, label, classe, aberto, '<div style="font-size:13px;color:#718096">Carregando itens...</div>');
   try {
     const r = await chamarOrcamentoApi('itens', { id });
@@ -2238,17 +2261,17 @@ function abrirOrcamentoDetalheHtml(o, label, classe, aberto, itensHtml) {
     <div style="margin:14px 0">${itensHtml}</div>
     <div style="display:flex;gap:6px;margin:14px 0">
       <input readonly value="${esc(o.link)}" style="flex:1;font-size:12px;padding:8px" onclick="this.select()">
-      <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${o.link}');toast('Link copiado')">Copiar</button>
+      <button class="btn btn-outline btn-sm" onclick="copiarLinkOrcamento('${o.id}')">Copiar</button>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <a class="btn btn-outline btn-sm" href="${esc(o.link)}&pdf=1" target="_blank" rel="noopener">Gerar PDF</a>
+      <button class="btn btn-outline btn-sm" onclick="gerarPdfDoDetalhe('${o.id}')">Gerar PDF</button>
       <button class="btn btn-outline btn-sm" id="btnEmailOrcDet_${o.id}" onclick="enviarEmailOrcamento('${o.id}', this)">Enviar por E-mail</button>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0">
       ${aberto && podeEnviarOrcamento() ? `<button class="btn btn-outline" onclick="closeModal();editarOrcamentoCarrinho('${o.id}')">Editar</button>` : ''}
       ${aberto ? `<button class="btn btn-outline" onclick="cancelarOrcamento('${o.id}')">Cancelar orçamento</button>` : ''}
       ${!aberto && o.status !== 'aprovado' ? `<button class="btn btn-outline" onclick="arquivarOrcamento('${o.id}')">Arquivar</button>` : ''}
-      ${aberto && o.zen_sale_id ? `<button class="btn btn-primary" onclick="aprovarOrcamento('${o.id}')">${o.status === 'aceito_cliente' ? 'Confirmar e enviar ao ZEN' : 'Cliente confirmou por outro canal: enviar ao ZEN'}</button>` : ''}
+      ${aberto ? `<button class="btn btn-primary" onclick="aprovarOrcamento('${o.id}')">${o.status === 'aceito_cliente' ? 'Confirmar e gerar pedido no ZEN' : 'Gerar pedido no ZEN'}</button>` : ''}
       <button class="btn btn-outline" onclick="closeModal()">Fechar</button>
     </div>
   `);
@@ -2412,7 +2435,7 @@ async function verificarCadastroOrcamento(id) {
 }
 
 async function aprovarOrcamento(id) {
-  if (!(await confirmModal('Confirmar este orçamento? A venda vira pedido de verdade no Zen.', { textoBotao: 'Confirmar pedido', perigo: false }))) return;
+  if (!(await confirmModal('Gerar o pedido no ZEN? A venda sai da etapa WEB orçamento e vira pedido de verdade (fila do time Boxer).', { textoBotao: 'Confirmar pedido', perigo: false }))) return;
   const o = _orcamentosCache[id];
   try {
     const r = await chamarOrcamentoApi('aprovar', { id });

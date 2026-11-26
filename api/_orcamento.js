@@ -51,6 +51,12 @@ const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsIn
 
 const ZEN_COMPANY_ID = 1009;      // TEKSP -- representa a Boxer
 
+// Orcamento "em aberto" = ainda pode ser editado, cancelado ou virar pedido. 'rascunho_pdf' (PDF gerado, ainda nao
+// enviado ao cliente) entra: desde 2026-11-26 ele e o MESMO orcamento do link (mesma venda 'WEB orcamento' no ZEN),
+// so muda para 'enviado' por acao posterior (copiar link, e-mail, WhatsApp).
+const ST_ABERTOS = ['rascunho_pdf', 'enviado', 'visualizado', 'aceito_cliente'];
+// Dono do orcamento OU admin/gerente (confirmar, cancelar, arquivar: "representante, equipe Boxer ou admin").
+const filtroDono = (user) => (['admin', 'manager'].includes(user.role) ? '' : '&user_id=eq.' + user.id);
 const ZEN_SALE_PROFILE_ID = 1001; // workflow "Venda padrao"
 
 const ZEN_WORKFLOW_ID = 1001;
@@ -165,6 +171,8 @@ module.exports = async function orcamento(req, res) {
 
       case 'verificar_cadastro': return res.status(200).json(await verificarCadastro(ctx, user, body.id));
 
+      case 'marcar_enviado': return res.status(200).json(await marcarEnviado(ctx, user, body.id));
+      case 'completo': return res.status(200).json(await orcamentoCompleto(ctx, user, body.id));
       case 'itens': return res.status(200).json(await itensDetalhe(ctx, user, body.id));
 
       default: return res.status(400).json({ error: 'acao invalida' });
@@ -544,7 +552,7 @@ async function editar(ctx, user, b) {
 
   if (!o) throw erro(404, 'Orcamento nao encontrado');
 
-  if (!['enviado', 'visualizado', 'aceito_cliente'].includes(o.status)) throw erro(409, 'Este orcamento esta ' + o.status + ' e nao pode mais ser editado');
+  if (!ST_ABERTOS.includes(o.status)) throw erro(409, 'Este orcamento esta ' + o.status + ' e nao pode mais ser editado');
 
   const celNovo = b.celular ? soDigitos(b.celular) : '';
 
@@ -1003,15 +1011,9 @@ async function criar(ctx, user, b, edit) {
 
   const [orc] = await orcWrite(ctx, 'POST', '/orcamentos', row);
 
-  // "Gerar PDF" so precisa do registro + numero de rastreio, nunca da venda
-  // no Zen (essa so nasce quando o orcamento e enviado de verdade pro
-  // cliente aceitar). orc ja vem com TODOS os campos (Supabase retorna a
-  // linha inteira no POST) -- devolve ele inteiro pra tela renderizar o
-  // mesmo layout do link oficial sem precisar de uma segunda chamada.
-  if (b.pdf_preview) {
-    return { ok: true, id: orc.id, codigo: orc.codigo, link: LINK_ORCAMENTO + orc.token, validade_em: orc.validade_em, avisos, total_final: orc.total_final, teto_excedido: row.teto_excedido || null, orcamento: orc };
-  }
-
+  // "Gerar PDF" (pdf_preview) agora faz o MESMO que "Enviar Link" (2026-11-26): salva o orcamento e cria a venda na etapa
+  // 'WEB orcamento' do ZEN (PREPARING, nao entra na fila do time). A unica diferenca e o status 'rascunho_pdf' (PDF
+  // gerado, ainda nao enviado), que vira 'enviado' so por acao posterior (marcar_enviado / e-mail).
   const out = { ok: true, id: orc.id, codigo: orc.codigo, link: LINK_ORCAMENTO + orc.token, validade_em: orc.validade_em, avisos, total_final: orc.total_final, teto_excedido: row.teto_excedido || null, orcamento: orc };
 
 
@@ -1323,7 +1325,7 @@ async function itensDetalhe(ctx, user, id) {
 
 async function zenRetomarSemCliente(ctx, rows) {
 
-  const alvo = rows.filter(r => r.zen_status === 'sem_cliente_zen' && !r.zen_sale_id && ['enviado', 'visualizado', 'aceito_cliente'].includes(r.status)).slice(0, 5);
+  const alvo = rows.filter(r => r.zen_status === 'sem_cliente_zen' && !r.zen_sale_id && ST_ABERTOS.includes(r.status)).slice(0, 5);
 
   for (const r of alvo) {
 
@@ -1381,7 +1383,7 @@ async function verificarCadastro(ctx, user, id) {
 
   if (!id) throw erro(400, 'id obrigatorio');
 
-  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id + '&select=id,cliente_cnpj,zen_status,zen_sale_id', 'comercial'))[0];
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + filtroDono(user) + '&select=id,cliente_cnpj,zen_status,zen_sale_id', 'comercial'))[0];
 
   if (!o) throw erro(404, 'Orcamento nao encontrado');
 
@@ -1407,7 +1409,7 @@ async function verificarCadastro(ctx, user, id) {
 
 async function sincronizarZen(ctx, rows) {
 
-  const alvo = rows.filter(r => r.zen_sale_id && !r.arquivado && ['enviado', 'visualizado', 'aceito_cliente', 'aprovado'].includes(r.status)).slice(0, 60);
+  const alvo = rows.filter(r => r.zen_sale_id && !r.arquivado && ST_ABERTOS.concat(['aprovado']).includes(r.status)).slice(0, 60);
 
   if (!alvo.length) return;
 
@@ -1529,7 +1531,7 @@ async function aprovar(ctx, user, id) {
 
   if (!id) throw erro(400, 'id obrigatorio');
 
-  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id + '&select=*', 'comercial'))[0];
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + filtroDono(user) + '&select=*', 'comercial'))[0];
 
   if (!o) throw erro(404, 'Orcamento nao encontrado');
 
@@ -1537,7 +1539,14 @@ async function aprovar(ctx, user, id) {
 
   // o representante pode confirmar mesmo sem o aceite no link (ex.: o cliente aceitou por telefone)
 
-  if (!['enviado', 'visualizado', 'aceito_cliente'].includes(o.status)) throw erro(409, 'Este orcamento esta ' + o.status + ' e nao pode ser enviado ao ZEN');
+  if (!ST_ABERTOS.includes(o.status)) throw erro(409, 'Este orcamento esta ' + o.status + ' e nao pode ser enviado ao ZEN');
+  // orcamento antigo (ou cadastro que saiu depois) sem venda no ZEN: tenta criar a venda agora (WEB orcamento) e segue
+  if (!o.zen_sale_id) {
+    try {
+      const patch = await tentarVincularClienteZen(ctx, o.id, o.cliente_cnpj);
+      if (patch && patch.zen_sale_id) { o.zen_sale_id = patch.zen_sale_id; o.zen_status = patch.zen_status; }
+    } catch (e) { throw erro(502, 'Nao foi possivel criar a venda no ZEN: ' + e.message.slice(0, 160)); }
+  }
 
   if (!o.zen_sale_id) throw erro(409, o.zen_status === 'sem_cliente_zen'
 
@@ -1629,7 +1638,7 @@ async function cancelar(ctx, user, id) {
 
   if (!id) throw erro(400, 'id obrigatorio');
 
-  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id + '&select=*', 'comercial'))[0];
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + filtroDono(user) + '&select=*', 'comercial'))[0];
 
   if (!o) throw erro(404, 'Orcamento nao encontrado');
 
@@ -1667,11 +1676,11 @@ async function arquivar(ctx, user, id, flag) {
 
   if (!id) throw erro(400, 'id obrigatorio');
 
-  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id + '&select=id,status', 'comercial'))[0];
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + filtroDono(user) + '&select=id,status', 'comercial'))[0];
 
   if (!o) throw erro(404, 'Orcamento nao encontrado');
 
-  if (flag && ['enviado', 'visualizado', 'aceito_cliente'].includes(o.status)) throw erro(409, 'Cancele o orcamento antes de arquivar');
+  if (flag && ST_ABERTOS.includes(o.status)) throw erro(409, 'Cancele o orcamento antes de arquivar');
 
   await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + o.id, { arquivado: !!flag, atualizado_em: new Date().toISOString() });
 
@@ -1734,6 +1743,7 @@ async function enviarEmailCliente(ctx, user, id) {
 
   if (!r.ok) throw erro(502, 'Falha ao enviar e-mail: ' + (await r.text()).slice(0, 200));
 
+  await marcarEnviadoSeRascunho(ctx, o.id);
   return { ok: true, enviado_para: o.cliente_email };
 
 }
@@ -1741,6 +1751,25 @@ async function enviarEmailCliente(ctx, user, id) {
 
 
 // ---------- aviso ao representante (publico, so por token) ----------
+
+// PDF gerado ('rascunho_pdf') so vira 'enviado' por acao posterior do representante: e-mail, copiar link ou WhatsApp.
+async function marcarEnviadoSeRascunho(ctx, id) {
+  await orcWrite(ctx, 'PATCH', '/orcamentos?id=eq.' + id + '&status=eq.rascunho_pdf', { status: 'enviado', atualizado_em: new Date().toISOString() });
+}
+async function marcarEnviado(ctx, user, id) {
+  if (!id) throw erro(400, 'id obrigatorio');
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + filtroDono(user) + '&select=id,status', 'comercial'))[0];
+  if (!o) throw erro(404, 'Orcamento nao encontrado');
+  await marcarEnviadoSeRascunho(ctx, o.id);
+  return { ok: true, status: o.status === 'rascunho_pdf' ? 'enviado' : o.status };
+}
+// Linha completa do orcamento (itens, cliente, condicoes) para reabrir o PDF a partir do detalhe.
+async function orcamentoCompleto(ctx, user, id) {
+  if (!id) throw erro(400, 'id obrigatorio');
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + filtroDono(user) + '&select=*', 'comercial'))[0];
+  if (!o) throw erro(404, 'Orcamento nao encontrado');
+  return { ok: true, orcamento: Object.assign({}, o, { link: LINK_ORCAMENTO + o.token }) };
+}
 
 async function avisarAceite(ctx, token) {
 

@@ -97,7 +97,7 @@ jobs:
             codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
               -X POST "$url" \
               -H "x-cron-secret: $CRON_SECRET" \
-              --max-time 120)
+              --max-time 280)
 
             echo "--- rodada $rodada (titulos ${desde_titulos:-inicio} / nf ${desde_nf:-inicio}) -> HTTP $codigo"
             jq . "$corpo" 2>/dev/null || cat "$corpo"; echo

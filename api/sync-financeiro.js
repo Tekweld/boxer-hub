@@ -426,6 +426,10 @@ module.exports = async function handler(req, res) {
     if (alvo === 'titulos' || alvo === 'ambos') {
       r.titulos = await sincronizarTitulos({ idHub, hubH, dryRun, desde: desdeTitulos, t0: Date.now() });
     }
+    if (alvo === 'titulos' || alvo === 'ambos') {
+      try { r.reconciliacao = await reconciliarTitulosSumidos({ hubH, dryRun, t0: Date.now() }); }
+      catch (e) { r.reconciliacao = { erro: e.message.slice(0, 200) }; }
+    }
     if (alvo === 'notas' || alvo === 'ambos') {
       r.notas = await sincronizarNotas({ idHub, hubH, dryRun, desde: desdeNf, t0: Date.now() });
     }
@@ -746,6 +750,56 @@ function mapearTitulo(tit, clienteId, hoje) {
     // 2026-10-30).
     nota_fiscal_id: null
   };
+}
+
+// RECONCILIACAO DE TITULOS QUE SUMIRAM DA LEITURA (2026-11-26, caso Allumiaco).
+// sincronizarTitulos so le `status==APPROVED`. Quando o titulo e pago/baixado ele SAI desse filtro e o Hub nunca
+// mais o enxerga: ficava para sempre no ultimo estado conhecido ('aberto'/'vencido') -- cliente adimplente
+// bloqueado no boleto por "titulo em atraso" que o financeiro ja baixou (1.834 titulos 'vencido' no Hub, muitos
+// obsoletos). Aqui pegamos os abertos/vencidos/parciais NAO atualizados ha mais de 1 dia (ou seja, que a leitura
+// acima nao esta mais tocando), relemos cada um POR ID no Zen (sem filtro de status) e gravamos o estado real.
+// Cancelado no Zen = ativo:false. Id que o Zen nao devolve so recebe o carimbo atualizado_em (nao desativa por
+// resposta vazia: fila avanca e a proxima conferencia revisita em 1 dia).
+const MAX_RECONCILIAR = 320;
+async function reconciliarTitulosSumidos({ hubH, dryRun, t0 }) {
+  const out = { candidatos: 0, atualizados: 0, pagos: 0, ainda_abertos: 0, cancelados: 0, nao_encontrados: 0, erros: [] };
+  const limiar = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  const res = await fetch(HUB_URL + '/rest/v1/hub_titulos?ativo=eq.true&status=in.(aberto,vencido,parcial)&erp_titulo_id=not.is.null' +
+    '&atualizado_em=lt.' + encodeURIComponent(limiar) + '&select=id,erp_titulo_id,cliente_id&order=atualizado_em.asc&limit=' + MAX_RECONCILIAR, { headers: hubH('GET') });
+  if (!res.ok) { out.erros.push('listar: ' + res.status); return out; }
+  const cand = await res.json();
+  out.candidatos = cand.length;
+  const hoje = new Date().toISOString().slice(0, 10);
+  const agora = () => new Date().toISOString();
+  const patch = (id, corpo) => fetch(HUB_URL + '/rest/v1/hub_titulos?id=eq.' + id, {
+    method: 'PATCH', headers: { ...hubH('PATCH'), Prefer: 'return=minimal' }, body: JSON.stringify(corpo) });
+
+  for (let i = 0; i < cand.length && Date.now() - t0 < ORCAMENTO_MS; i += 40) {
+    const lote = cand.slice(i, i + 40);
+    let zen;
+    try {
+      zen = await zenGet('/financial/receivable', { q: '(' + lote.map(c => 'id==' + c.erp_titulo_id).join(',') + ')', max: 40, limite: 40 });
+    } catch (e) { out.erros.push('zen: ' + e.message.slice(0, 120)); break; }
+    const porId = new Map(zen.map(t => [String(t.id), t]));
+    const tarefas = [];
+    for (const c of lote) {
+      const t = porId.get(String(c.erp_titulo_id));
+      if (!t) { out.nao_encontrados++; if (!dryRun) tarefas.push(patch(c.id, { atualizado_em: agora() })); continue; }
+      if (['CANCELED', 'CANCELLED', 'DELETED'].includes(String(t.status || '').toUpperCase())) {
+        out.cancelados++; if (!dryRun) tarefas.push(patch(c.id, { ativo: false, atualizado_em: agora() })); continue;
+      }
+      const m = mapearTitulo(t, c.cliente_id, hoje);
+      if (m.status === 'pago') out.pagos++; else out.ainda_abertos++;
+      out.atualizados++;
+      if (!dryRun) tarefas.push(patch(c.id, {
+        status: m.status, valor_aberto: m.valor_aberto, dias_atraso: m.dias_atraso,
+        data_pagamento: m.data_pagamento, atualizado_em: agora() }));
+    }
+    const rs = await Promise.all(tarefas);
+    const falhas = rs.filter(x => !x.ok).length;
+    if (falhas) out.erros.push('gravar: ' + falhas + ' falhas (ex. ' + rs.find(x => !x.ok).status + ')');
+  }
+  return out;
 }
 
 // ---------- NOTAS FISCAIS ----------

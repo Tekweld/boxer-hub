@@ -1270,6 +1270,19 @@ module.exports = async function handler(req, res) {
       r.erros.push({ etapa: 'historico_etapas', detalhe: e.message.slice(0, 200) });
     }
 
+    // ---- 5. Carteira por vendas: "vendeu, aparece" (Andre, 2026-11-26) ----
+    // Varre as vendas novas do ZEN por cursor e inclui o vendedor na carteira do cliente (exceto SAC).
+    // Ver api/_carteira_vendas.js. Falha aqui nunca derruba o resto do sync.
+    try {
+      if (Date.now() - t0 < 60000) {
+        r.carteira_vendas = await require('./_carteira_vendas').processarCarteiraVendas(hubH, { prazoMs: 35000 });
+      } else {
+        r.carteira_vendas = { adiado: true };
+      }
+    } catch (e) {
+      r.erros.push({ etapa: 'carteira_vendas', detalhe: e.message.slice(0, 200) });
+    }
+
     console.log('[PEDIDOS-ZEN]', JSON.stringify(r));
     return res.status(200).json({ ok: r.erros.length === 0 && !r.falhas_push.length, ...r });
 

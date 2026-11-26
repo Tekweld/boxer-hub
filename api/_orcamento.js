@@ -141,6 +141,8 @@ module.exports = async function orcamento(req, res) {
 
       case 'cliente': return res.status(200).json(await buscarCliente(ctx, body.cnpj, user));
 
+      case 'buscar_base': return res.status(200).json(await buscarBase(ctx, body.termo));
+
       case 'painel': return res.status(200).json(await painel(ctx, user, body));
 
       case 'criar': return res.status(200).json(await criar(ctx, user, body));
@@ -385,6 +387,47 @@ async function buscarCliente(ctx, cnpjIn, user) {
 
   return r;
 
+}
+
+// Acha clientes do cadastro Hub/ZEN FORA da carteira de quem pesquisa (a RLS so mostra a carteira
+// do representante). So por CNPJ (completo, raiz de 8 digitos ou trecho) ou pelo ID do cliente
+// no ZEN, com ou sem pontos/barra/hifen -- NUNCA por nome, para nao virar listagem da base.
+// Devolve poucos campos: serve para a pessoa saber que o cliente existe, montar orcamento ou
+// pedir ao ADM para vincular a carteira; nao da acesso a pedido/financeiro dele.
+async function buscarBase(ctx, termo) {
+  const t = String(termo || '').trim().slice(0, 40);
+  if (!/^[\d.\-\/\s]+$/.test(t)) return { ok: true, clientes: [] };
+  const d = t.replace(/\D/g, '');
+  if (!d.length) return { ok: true, clientes: [] };
+  const parcelas = [];
+  if (d.length <= 8) parcelas.push('erp_cliente_id.eq.' + d);
+  if (d.length >= 4) parcelas.push('cnpj.ilike.*' + d + '*');
+  if (!parcelas.length) return { ok: true, clientes: [] };
+  const rows = await sbGet(ctx, '/hub_clientes?ativo=eq.true&or=(' + parcelas.join(',') + ')'
+    + '&select=id,razao_social,nome_exibicao,cnpj,cidade,uf,canal,erp_cliente_id,bloqueado&order=nome_exibicao.asc&limit=20', 'comercial');
+  const clientes = rows.map(c => ({
+    id: c.id, nome: c.nome_exibicao || c.razao_social, razao_social: c.razao_social, cnpj: c.cnpj,
+    cidade: c.cidade || '', uf: c.uf || '', canal: c.canal || '', zen_id: c.erp_cliente_id || '', bloqueado: !!c.bloqueado
+  }));
+
+  // Nao achou nada no Hub: o cliente pode existir no ZEN e nunca ter sido importado (o Hub so traz
+  // os canais Varejo/Hibrido/Ecommerce). Consulta o ZEN na hora -- so CNPJ completo ou ID, rapido
+  // (~0,3 s medido em 2026-11-26) e aceita CNPJ com ou sem mascara.
+  let zen = [];
+  if (!clientes.length && (d.length === 14 || d.length <= 8)) {
+    try {
+      const q = d.length === 14
+        ? 'documentNumber=="' + d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5') + '"'
+        : 'id==' + Number(d);
+      const ps = await zenGet('/catalog/person/person', { q, max: 5, limite: 5 });
+      zen = ps.filter(p => p && p.id).map(p => ({
+        zen_id: String(p.id), nome: p.fantasyName || p.name, razao_social: p.name,
+        cnpj: String(p.documentNumber || '').replace(/\D/g, ''),
+        cidade: p.city?.name || '', uf: p.city?.state?.code || '', canal: p.category1?.description || ''
+      })).filter(p => p.cnpj.length === 14);
+    } catch (_) { /* consulta ao ZEN e complemento: se falhar, so o resultado do Hub */ }
+  }
+  return { ok: true, clientes, zen };
 }
 
 async function buscarClienteBase(ctx, cnpjIn) {

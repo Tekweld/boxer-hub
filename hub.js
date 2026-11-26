@@ -423,7 +423,7 @@ async function abrirSeletorCliente() {
   openModal(`
     <h3 style="font-size:18px;margin-bottom:6px;color:#1d327b">Atuar em nome de uma revenda</h3>
     <p style="font-size:13px;color:#718096;margin-bottom:14px">Preco e pedido passam a seguir as regras da revenda escolhida.</p>
-    <input id="buscaCliente" placeholder="Buscar por nome ou CNPJ..." autocomplete="off"
+    <input id="buscaCliente" placeholder="Nome, CNPJ ou ID do cliente no ZEN..." autocomplete="off"
            style="width:100%;padding:10px 12px;border:1px solid #c3cfe2;border-radius:8px;font-family:Outfit;font-size:14px;outline:none">
     <div id="listaClientes" style="margin-top:12px;max-height:50vh;overflow-y:auto"></div>
     ${tipo !== 'cliente' ? `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e2e8f0">
@@ -535,6 +535,9 @@ function confirmarProspect(cnpj, nomeSugerido, ufSugerida) {
   setProspectAtivo({ cnpj, nome, uf });
 }
 
+// Termo so com digitos e pontuacao (CNPJ com ou sem . / - ou ID do cliente no ZEN)?
+function termoNumerico(t) { return /^[\d.\-\/\s]+$/.test(t) && /\d/.test(t); }
+
 async function buscarClientes(termo) {
   const wrap = document.getElementById('listaClientes');
   if (!wrap) return;
@@ -543,46 +546,80 @@ async function buscarClientes(termo) {
   // A RLS ja limita: representante so ve a carteira dele, staff ve todos.
   // hub_enderecos embutido para mostrar cidade/UF/rua na lista -- sem isso
   // quem tem 5 filiais com o mesmo nome (ex: Luitex) nao sabe qual escolher.
-  let url = '/hub_clientes?ativo=eq.true&select=id,nome_exibicao,cnpj,razao_social,uf,cidade,canal,bloqueado,hub_enderecos(logradouro,numero,bairro,tipo)'
+  let url = '/hub_clientes?ativo=eq.true&select=id,nome_exibicao,cnpj,razao_social,uf,cidade,canal,bloqueado,erp_cliente_id,hub_enderecos(logradouro,numero,bairro,tipo)'
           + '&order=nome_exibicao.asc&limit=40';
   const t = (termo || '').trim();
+  const numerico = termoNumerico(t);
+  const soDigitos = t.replace(/\D/g, '');
   if (t) {
-    // Busca em tres campos ao mesmo tempo: nome fantasia (nome_exibicao), razao
-    // social e CNPJ. Andre bateu nisso ao procurar "Via Norte Comercio", que era
-    // a razao social -- o fantasia cadastrado era "Via Norte Parafusos", entao
-    // o cliente sumia mesmo sendo dele. Se o termo parecer CNPJ (>=6 digitos),
-    // filtra so por CNPJ para nao poluir; caso contrario, texto casa em nome OU
-    // razao social. Chars especiais do RSQL (`(), *`) sao removidos por seguranca.
-    const seguro = t.replace(/[(),*]/g, '');
-    const soDigitos = t.replace(/\D/g, '');
-    const parcelas = soDigitos.length >= 6
-      ? ['cnpj.ilike.*' + soDigitos + '*']
-      : ['nome_exibicao.ilike.*' + seguro + '*',
-         'razao_social.ilike.*' + seguro + '*'];
+    // Numero (CNPJ ou ID do ZEN), com ou sem pontos/barra/hifen: CNPJ completo, raiz de 8 digitos
+    // (traz todas as filiais) ou trecho; ate 8 digitos tambem vale como ID do cliente no ZEN.
+    // Texto: nome fantasia (nome_exibicao) OU razao social. Andre bateu nisso ao procurar
+    // "Via Norte Comercio", que era a razao social -- o fantasia era "Via Norte Parafusos".
+    // Chars especiais do RSQL (`(), *`) sao removidos por seguranca.
+    let parcelas;
+    if (numerico) {
+      parcelas = [];
+      if (soDigitos.length <= 8) parcelas.push('erp_cliente_id.eq.' + soDigitos);
+      if (soDigitos.length >= 4) parcelas.push('cnpj.ilike.*' + soDigitos + '*');
+    } else {
+      const seguro = t.replace(/[(),*]/g, '');
+      parcelas = ['nome_exibicao.ilike.*' + seguro + '*', 'razao_social.ilike.*' + seguro + '*'];
+    }
     url += '&or=(' + parcelas.join(',') + ')';
   }
 
-  try {
-    const linhas = await sb(url);
-    if (!linhas.length) {
-      wrap.innerHTML = '<div style="padding:16px;color:#718096;font-size:13px">Nenhuma revenda encontrada.</div>';
-      return;
-    }
-    wrap.innerHTML = linhas.map(c => {
-      const nome = (c.nome_exibicao || '').replace(/'/g, '&#39;').replace(/</g, '&lt;');
-      const end = (c.hub_enderecos || []).find(e => e.tipo === 'principal') || (c.hub_enderecos || [])[0];
-      const rua = end ? [end.logradouro, end.numero].filter(Boolean).join(', ') + (end.bairro ? ' — ' + end.bairro : '') : '';
-      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px;border-bottom:1px solid #e2e8f0">
+  const linhaRevenda = (c, extra) => {
+    const nome = (c.nome_exibicao || c.nome || '').replace(/'/g, '&#39;').replace(/</g, '&lt;');
+    const end = (c.hub_enderecos || []).find(e => e.tipo === 'principal') || (c.hub_enderecos || [])[0];
+    const rua = end ? [end.logradouro, end.numero].filter(Boolean).join(', ') + (end.bairro ? ' — ' + end.bairro : '') : '';
+    const zenId = c.erp_cliente_id || c.zen_id;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px;border-bottom:1px solid #e2e8f0">
         <div style="min-width:0">
           <div style="font-size:13px;font-weight:600;color:#1a202c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${nome}</div>
-          <div style="font-size:11px;color:#718096">${fmtCnpj(c.cnpj)} ${c.cidade ? '· ' + c.cidade : ''}${c.uf ? '/' + c.uf : ''} ${c.canal ? '· ' + c.canal : ''}</div>
+          <div style="font-size:11px;color:#718096">${fmtCnpj(c.cnpj)} ${c.cidade ? '· ' + c.cidade : ''}${c.uf ? '/' + c.uf : ''} ${c.canal ? '· ' + c.canal : ''}${zenId ? ' · ID ZEN ' + zenId : ''}</div>
           ${rua ? `<div style="font-size:11px;color:#a0aec0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rua.replace(/</g, '&lt;')}</div>` : ''}
         </div>
-        ${c.bloqueado
-          ? '<span style="font-size:11px;color:#991b1b;background:#fee2e2;padding:3px 8px;border-radius:10px;white-space:nowrap">bloqueada</span>'
-          : `<button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="setClienteAtivo('${c.id}', '${nome}')">Atuar</button>`}
+        ${extra}
       </div>`;
-    }).join('');
+  };
+
+  try {
+    const linhas = await sb(url);
+    let html = linhas.map(c => linhaRevenda(c, c.bloqueado
+      ? '<span style="font-size:11px;color:#991b1b;background:#fee2e2;padding:3px 8px;border-radius:10px;white-space:nowrap">bloqueada</span>'
+      : `<button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="setClienteAtivo('${c.id}', '${(c.nome_exibicao || '').replace(/'/g, '&#39;').replace(/</g, '&lt;')}')">Atuar</button>`)).join('');
+
+    // Cliente que existe no cadastro Hub/ZEN mas esta FORA da carteira de quem busca (a RLS nao
+    // mostra): so por CNPJ/ID. Sem isso a pessoa via "Nenhuma revenda encontrada" para uma loja
+    // que existe, sem saber o motivo. Nao da acesso a pedido/financeiro: so orcamento.
+    if (t && numerico && getUserTipo() !== 'cliente') {
+      try {
+        const r = await fetch('/api/push-pedido?target=orcamento', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (SESSION?.access_token || '') },
+          body: JSON.stringify({ acao: 'buscar_base', termo: t })
+        });
+        const j = r.ok ? await r.json() : { clientes: [] };
+        // Existe no ZEN mas ainda nao foi importado para o Hub: so orcamento ate o cadastro entrar.
+        if (!linhas.length && !(j.clientes || []).length && (j.zen || []).length) {
+          html += `<div style="padding:12px 10px 4px;font-size:11px;font-weight:600;color:#1d327b;text-transform:uppercase;letter-spacing:.4px">Encontrado no ZEN — ainda não está no Hub</div>
+            <div style="padding:0 10px 8px;font-size:11px;color:#718096">Dá para montar orçamento agora; o pedido só sai depois que o cadastro entrar no Hub.</div>`
+            + j.zen.map(c => linhaRevenda(c, `<button class="btn btn-outline btn-sm" style="white-space:nowrap" onclick="confirmarProspect('${c.cnpj}', '${(c.razao_social || c.nome || '').replace(/'/g, "\\'").replace(/</g, '&lt;')}', '${c.uf || ''}')">Montar orçamento</button>`)).join('');
+        }
+        const jaMostrados = new Set(linhas.map(c => c.id));
+        const fora = (j.clientes || []).filter(c => !jaMostrados.has(c.id));
+        if (fora.length) {
+          html += `<div style="padding:12px 10px 4px;font-size:11px;font-weight:600;color:#92400e;text-transform:uppercase;letter-spacing:.4px">Fora da sua carteira — só orçamento</div>
+            <div style="padding:0 10px 8px;font-size:11px;color:#92400e">Existem no cadastro Hub/ZEN, mas não são da sua carteira. Dá para montar orçamento; para fazer pedido, peça ao ADM de Vendas para incluir na sua carteira.</div>`
+            + fora.map(c => linhaRevenda(c, c.bloqueado
+              ? '<span style="font-size:11px;color:#991b1b;background:#fee2e2;padding:3px 8px;border-radius:10px;white-space:nowrap">bloqueada</span>'
+              : `<button class="btn btn-outline btn-sm" style="white-space:nowrap" onclick="confirmarProspect('${c.cnpj}', '${(c.razao_social || c.nome || '').replace(/'/g, "\\'").replace(/</g, '&lt;')}', '${c.uf || ''}')">Montar orçamento</button>`)).join('');
+        }
+      } catch (_) { /* a base e complemento: se falhar, fica so a carteira */ }
+    }
+
+    wrap.innerHTML = html || '<div style="padding:16px;color:#718096;font-size:13px">Nenhuma revenda encontrada.</div>';
   } catch (e) {
     wrap.innerHTML = '<div style="padding:16px;color:#dc2626;font-size:13px">Erro ao buscar revendas.</div>';
   }

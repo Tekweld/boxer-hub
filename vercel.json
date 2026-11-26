@@ -1,6 +1,6 @@
 {
   "functions": {
-    "api/sync-zen-clientes.js": { "maxDuration": 60 },
+    "api/sync-zen-clientes.js": { "maxDuration": 300 },
     "api/sync-estoque.js": { "maxDuration": 60 },
     "api/sync-pdm.js": { "maxDuration": 60 },
     "api/push-pedido.js": { "maxDuration": 60 },

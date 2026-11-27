@@ -601,7 +601,9 @@ async function buscarClientes(termo) {
       try { (await sbRpc('hub_fn_entidade_resumo', { p_keys: chavesMulti })).forEach(r => { resumo[r.entidade_key] = r; }); } catch (_) { /* sem resumo: lista simples */ }
     }
     let html = '';
-    porEntidade.forEach((lojas, k) => {
+    // grupos/empresas com varias lojas primeiro (maiores antes); lojas avulsas depois
+    const ordenadas = [...porEntidade.entries()].sort((x, y) => (Number(resumo[y[0]]?.lojas || 1) > 1) - (Number(resumo[x[0]]?.lojas || 1) > 1) || Number(resumo[y[0]]?.lojas || 1) - Number(resumo[x[0]]?.lojas || 1));
+    ordenadas.forEach(([k, lojas]) => {
       const r = resumo[k];
       if (r && (Number(r.lojas) > 1)) {
         const rotulo = k.startsWith('G:') ? 'Grupo' : 'Empresa';

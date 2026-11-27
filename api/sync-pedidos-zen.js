@@ -1283,6 +1283,14 @@ module.exports = async function handler(req, res) {
       r.erros.push({ etapa: 'carteira_vendas', detalhe: e.message.slice(0, 200) });
     }
 
+    // ---- 6. Perfil fiscal da operacao (bonificacao/devolucao) + data real do ZEN (2026-11-27) ----
+    try {
+      if (Date.now() - t0 < 70000) r.perfil_fiscal = await require('./_perfil_fiscal').processarPerfilFiscal(hubH, { prazoMs: 25000 });
+      else r.perfil_fiscal = { adiado: true };
+    } catch (e) {
+      r.erros.push({ etapa: 'perfil_fiscal', detalhe: e.message.slice(0, 200) });
+    }
+
     console.log('[PEDIDOS-ZEN]', JSON.stringify(r));
     return res.status(200).json({ ok: r.erros.length === 0 && !r.falhas_push.length, ...r });
 

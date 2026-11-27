@@ -55,7 +55,7 @@ module.exports = async function handler(req, res) {
       }
       const [orcamentos, pedidos, notas] = await Promise.all([
         hubGet('/orcamentos?ativo=eq.true&select=status,total_final,criado_em&order=criado_em.desc&limit=3000'),
-        hubGet('/hub_pedidos?ativo=eq.true&select=id,status,valor_total,criado_em&order=criado_em.desc&limit=3000'),
+        hubGet('/hub_pedidos?ativo=eq.true&tipo_operacao=eq.venda&select=id,status,valor_total,criado_em&order=criado_em.desc&limit=3000'),
         hubGet('/hub_notas_fiscais?ativo=eq.true&select=pedido_id,valor_total,data_emissao&order=data_emissao.desc&limit=3000')
       ]);
       const pedidosFaturadosIds = new Set(notas.map(n => n.pedido_id).filter(Boolean));

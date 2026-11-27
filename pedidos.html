@@ -1804,7 +1804,7 @@ function renderOrcamentoHtml(ORC) {
       <div class="card keep">
         <div class="sec-title">Condições</div>
         <div class="cond-grid">
-          <div class="cond-item"><b>Pagamento</b><span>${ORC.pagamento_tipo === 'avista' ? 'À vista' : (Array.isArray(ORC.dias_pagamento) && ORC.dias_pagamento.length ? 'Boleto ' + ORC.dias_pagamento.join('/') + ' dias' : 'Boleto em ' + ORC.parcelas + 'x')}</span></div>
+          <div class="cond-item"><b>Pagamento</b><span>${(()=>{const f=ORC.forma_pagamento||(ORC.pagamento_tipo==='avista'?'pix':'boleto');const L={pix:'PIX',transferencia:'Transferência',cartao_credito:'Cartão de crédito',credix:'Credix'};if(f==='pix'||f==='transferencia')return L[f]+' à vista'+(ORC.desconto_vista_pct?' ('+ORC.desconto_vista_pct+'% de desconto)':'');if(f==='cartao_credito'||f==='credix')return L[f]+(ORC.parcelas>1?' em '+ORC.parcelas+'x sem juros':' à vista');return Array.isArray(ORC.dias_pagamento)&&ORC.dias_pagamento.length?'Boleto '+ORC.dias_pagamento.join('/')+' dias':'Boleto em '+ORC.parcelas+'x';})()}</span></div>
           <div class="cond-item"><b>Frete</b><span>${FRETE_LABELS[ORC.frete_tipo] || 'A combinar'}</span></div>
           <div class="cond-item"><b>Entrega</b><span>Sujeita à disponibilidade</span></div>
         </div>
@@ -2338,89 +2338,109 @@ let _edicaoOrcamentoItens = [];
 // no "precisa ter ao menos um item"). Troca pra buscar os itens cheios na
 // hora (mesma acao 'itens' usada no detalhe), que de quebra ja traz
 // estoque/ipi/icms pra mostrar o resumo por situacao igual as outras telas.
+// ===== EDICAO COMPLETA DO ORCAMENTO (2026-11-27) =====
+// Pode ser feita varias vezes: cada salvamento guarda a versao anterior (comercial.orcamento_revisoes), atualiza a venda
+// no ZEN e o link/PDF passam a mostrar a revisao vigente. Sem novo aceite: o representante dono ou a equipe aprova.
+// Preco e SEMPRE calculado no servidor (acao 'editar' com preview:true recalcula sem gravar).
+let _edic = null;          // estado da edicao em andamento
+let _edicTimer = null;
+const _EDIC_FORMAS = { boleto: 'Boleto / Duplicata a prazo', cartao_credito: 'Cartão de crédito (até 10x sem juros)', pix: 'PIX / à vista', transferencia: 'Transferência / à vista', credix: 'Credix (até 4x)' };
+
 async function editarOrcamentoCarrinho(id) {
   const o = _orcamentosCache[id];
   if (!o) return;
+  let itens;
   try {
     const r = await chamarOrcamentoApi('itens', { id });
-    _edicaoOrcamentoItens = (r.itens || []).map(i => Object.assign({}, i));
+    itens = (r.itens || []).map(i => Object.assign({}, i));
   } catch (e) {
     toast('Erro ao carregar itens do orçamento: ' + e.message, 'error');
     return;
   }
-  renderModalEdicaoOrcamento(o);
+  const forma = o.forma_pagamento || (o.pagamento_tipo === 'avista' ? 'pix' : 'boleto');
+  _edic = {
+    id, o, itens, forma, parcelas: o.parcelas || 1,
+    dias: Array.isArray(o.dias_pagamento) && o.dias_pagamento.length ? o.dias_pagamento : null,
+    frete: o.frete_tipo || 'CIF', classe: o.classe, obs: o.observacoes || '',
+    total: Number(o.total_final) || 0, aviso: ''
+  };
+  _edic.planos = await carregarPlanosPrazoBoleto();
+  renderEdicaoOrc();
+  recalcularEdicaoOrc();
 }
 
-function edicaoOrcAlterarQtd(idx, valor) {
-  const q = Math.max(1, Math.min(999, parseInt(valor) || 1));
-  if (!_edicaoOrcamentoItens[idx]) return;
-  _edicaoOrcamentoItens[idx].qtd = q;
-  _edicaoOrcamentoItens[idx].subtotal = q * (+_edicaoOrcamentoItens[idx].unit || 0);
-  renderModalEdicaoOrcamento(_orcamentosCache[_edicaoOrcEditandoId]);
-}
-function edicaoOrcRemoverItem(idx) {
-  _edicaoOrcamentoItens[idx] = null;
-  renderModalEdicaoOrcamento(_orcamentosCache[_edicaoOrcEditandoId]);
+// guarda o que esta digitado nos campos antes de redesenhar
+function _edicLerCampos() {
+  if (!_edic) return;
+  const g = id => document.getElementById(id);
+  if (g('edicObs')) _edic.obs = g('edicObs').value;
 }
 
-let _edicaoOrcEditandoId = null;
-function renderModalEdicaoOrcamento(o) {
-  _edicaoOrcEditandoId = o.id;
-  const itensAtivos = _edicaoOrcamentoItens.map((i, idx) => ({ i, idx })).filter(x => x.i);
+function renderEdicaoOrc() {
+  _edicLerCampos();
+  const E = _edic, o = E.o;
+  const ativos = E.itens.map((i, idx) => ({ i, idx })).filter(x => x.i);
+  const total = ativos.reduce((s, x) => s + (Number(x.i.subtotal) || 0), 0);
+  const grupos = { ok: [0, 0], prev: [0, 0], sem: [0, 0] };
+  ativos.forEach(({ i }) => { if (grupos[i.estoque]) { grupos[i.estoque][0] += i.subtotal; grupos[i.estoque][1] += i.qtd; } });
+  const GL = { ok: 'Itens disponíveis', prev: 'Itens com previsão de chegada', sem: 'Itens sem previsão' };
+  const opFrete = ['CIF', 'FOB', 'RETIRADA_BOXER', 'CARRO_BOXER'];
+  if (o.uf === 'SP') opFrete.push('CAMINHAO_BOXER_SP');
+  const maxParc = E.forma === 'cartao_credito' ? 10 : E.forma === 'credix' ? 4 : 1;
+  let parcelasHtml;
+  if (E.forma === 'boleto') {
+    const diasStr = JSON.stringify(E.dias);
+    let idxSel = E.planos.findIndex(p => JSON.stringify(p.dias) === diasStr);
+    if (idxSel < 0) idxSel = E.dias ? -1 : 0;
+    parcelasHtml = `<select id="edicParcelas" onchange="edicPlano(this.value)">${idxSel < 0 && E.dias ? `<option value="-1" selected>Atual: ${esc(E.dias.join('/'))} dias</option>` : ''}${E.planos.map((p, k) => `<option value="${k}" ${k === idxSel ? 'selected' : ''}>${esc(p.nome)}</option>`).join('')}</select>`;
+  } else {
+    const sel = Math.min(E.parcelas || 1, maxParc);
+    parcelasHtml = `<select id="edicParcelas" onchange="edicParcelas(this.value)" ${maxParc === 1 ? 'disabled' : ''}>${Array.from({ length: maxParc }, (_, k) => `<option value="${k + 1}" ${sel === k + 1 ? 'selected' : ''}>${k + 1}x${maxParc > 1 ? ' sem juros' : ' (à vista)'}</option>`).join('')}</select>`;
+  }
   openModal(`
-    <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
-      <h3 style="font-size:18px;color:#1d327b">Editar orçamento ${esc(o.codigo)}</h3>
+    <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:10px">
+      <h3 style="font-size:18px;color:#1d327b">Editar orçamento ${esc(o.codigo)} <span style="font-size:12px;color:#718096;font-weight:500">· revisão ${Number(o.revisao) || 1} → ${(Number(o.revisao) || 1) + 1}</span></h3>
       <span style="cursor:pointer;font-size:20px;color:#718096" onclick="closeModal()">&times;</span>
     </div>
-    <div style="font-size:12px;color:#92400e;background:#fff7ed;border:1px solid #fed7aa;padding:10px 12px;border-radius:8px;margin-bottom:14px">
-      Salvar aqui recalcula os preços, atualiza o PDF/link do orçamento e, se já houver venda no ZEN, atualiza ela também.
-      ${o.status === 'aceito_cliente' ? 'Como o cliente já tinha aceito, o orçamento volta para "visualizado" -- ele precisa confirmar de novo.' : ''}
+    <div style="font-size:12px;color:#92400e;background:#fff7ed;border:1px solid #fed7aa;padding:10px 12px;border-radius:8px;margin-bottom:12px">
+      Ao salvar, a versão anterior fica guardada no histórico, o link/PDF passam a mostrar estes dados e a venda no ZEN é atualizada. Não precisa de novo aceite do cliente: aprove quando quiser.
     </div>
-    <div id="edicaoOrcItens" style="display:flex;flex-direction:column;gap:8px;max-height:30vh;overflow-y:auto;margin-bottom:10px">
-      ${itensAtivos.map(({ i, idx }) => {
+    <div class="form-row-inline" style="margin-bottom:10px">
+      <div class="form-row" style="margin-bottom:0"><label>Classe de preço do orçamento (${esc(o.segmento)}/${esc(o.uf)})</label>
+        <select onchange="edicClasse(this.value)">${[1, 2, 3].map(c => `<option value="${c}" ${Number(E.classe) === c ? 'selected' : ''}>Classe ${c}</option>`).join('')}</select></div>
+      <div class="form-row" style="margin-bottom:0"><label>Adicionar produto</label>
+        <input id="edicBusca" placeholder="Código ou nome…" oninput="edicBuscar(this.value)" autocomplete="off"></div>
+    </div>
+    <div id="edicResultados" style="margin-bottom:8px"></div>
+    <div id="edicItens" style="display:flex;flex-direction:column;gap:8px;max-height:34vh;overflow-y:auto;margin-bottom:10px">
+      ${ativos.map(({ i, idx }) => {
         const [label, cor] = ORC_ESTOQUE_LABEL[i.estoque] || ORC_ESTOQUE_LABEL.sem_info;
-        return `
-        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#f7fafc;border-radius:8px">
-          <div style="flex:1;font-size:13px">${esc(i.modelo || i.codigo)}<div style="font-size:11px;color:#718096">${esc(i.codigo)} · <span style="color:${cor}">${label}</span></div></div>
-          <div style="white-space:nowrap;text-align:right">${i.unit_tabela > 0 && Math.abs(i.unit_tabela - i.unit) > 0.01 ? `<div style="font-size:11px;color:#a0aec0;text-decoration:line-through">${fmtMoeda(i.unit_tabela)}</div>` : ''}<div style="font-size:13px;font-weight:700;color:#1d327b">${fmtMoeda(i.unit)}/un</div></div>
-          <input type="number" min="1" max="999" value="${i.qtd}" style="width:60px;padding:4px 6px"
-                 onchange="edicaoOrcAlterarQtd(${idx},this.value)">
-          <div style="font-size:13px;font-weight:600;color:#1d327b;white-space:nowrap;min-width:70px;text-align:right">${fmtMoeda(i.subtotal)}</div>
-          <span style="cursor:pointer;color:#e30613;font-size:18px" onclick="edicaoOrcRemoverItem(${idx})">&times;</span>
+        const tab = i.unit_tabela > 0 && Math.abs(i.unit_tabela - i.unit) > 0.01 ? `<s style="font-size:11px;color:#a0aec0;margin-right:4px">${fmtMoeda(i.unit_tabela)}</s>` : '';
+        return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#f7fafc;border-radius:8px;flex-wrap:wrap">
+          <div style="flex:1;min-width:150px;font-size:13px">${esc(i.modelo || i.codigo)}<div style="font-size:11px;color:#718096">${esc(i.codigo)} · <span style="color:${cor}">${label}</span></div></div>
+          <select style="width:76px;padding:4px" title="Tabela de preço do item" onchange="edicItemCampo(${idx},'tabela',this.value)">
+            <option value="">TABELA</option>${['F1', 'F2', 'F3', 'H1', 'H2', 'H3', 'E1', 'E2', 'E3'].map(t => `<option value="${t}" ${i.tabela_sigla === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
+          <input type="number" min="0" max="99" step="0.01" placeholder="Desc %" title="% de desconto adicional" value="${i.desconto_pct || ''}" style="width:72px;padding:4px" onchange="edicItemCampo(${idx},'desconto',this.value)">
+          <div style="white-space:nowrap;text-align:right;min-width:108px">${tab}<input id="edicPreco_${idx}" value="${String(Number(i.unit).toFixed(2)).replace('.', ',')}" inputmode="decimal" title="Preço unitário (digite para ajustar)" style="width:84px;text-align:right;padding:4px;font-weight:700;color:#1d327b" onchange="edicPreco(${idx},this.value)">${i.manual ? ` <a href="javascript:void(0)" style="font-size:11px;color:#718096" onclick="edicRestaurar(${idx})">restaurar</a>` : ''}</div>
+          <input type="number" min="1" max="999" value="${i.qtd}" style="width:60px;padding:4px" onchange="edicQtd(${idx},this.value)">
+          <div style="font-size:13px;font-weight:600;color:#1d327b;white-space:nowrap;min-width:78px;text-align:right">${fmtMoeda(i.subtotal)}</div>
+          <span style="cursor:pointer;color:#e30613;font-size:18px" onclick="edicRemover(${idx})">&times;</span>
         </div>`;
-      }).join('')}
+      }).join('') || '<div style="color:#718096;font-size:13px;padding:10px">Nenhum item. Busque um produto acima.</div>'}
     </div>
-    ${(() => {
-      const grupos = { ok: { valor: 0, qtd: 0 }, prev: { valor: 0, qtd: 0 }, sem: { valor: 0, qtd: 0 } };
-      let total = 0;
-      itensAtivos.forEach(({ i }) => { total += i.subtotal; if (grupos[i.estoque]) { grupos[i.estoque].valor += i.subtotal; grupos[i.estoque].qtd += i.qtd; } });
-      const GRUPO_LABEL = { ok: 'Itens disponíveis', prev: 'Itens com previsão de chegada', sem: 'Itens sem previsão' };
-      return `<div style="padding:10px 2px;margin-bottom:14px;border-top:1px solid #e2e8f0">
-        ${['ok', 'prev', 'sem'].map(k => grupos[k].valor > 0.004 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:#a0aec0;padding:2px 0">
-          <span>${GRUPO_LABEL[k]} <span style="color:#cbd5e0">(${grupos[k].qtd} un)</span></span><span>${fmtMoeda(grupos[k].valor)}</span>
-        </div>` : '').join('')}
-        <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;color:#1d327b;padding-top:8px;margin-top:4px;border-top:2px solid #1d327b">
-          <span>Total geral</span><span>${fmtMoeda(total)}</span>
-        </div>
-      </div>`;
-    })()}
+    <div style="padding:8px 2px;margin-bottom:12px;border-top:1px solid #e2e8f0">
+      ${['ok', 'prev', 'sem'].map(k => grupos[k][0] > 0.004 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:#a0aec0;padding:2px 0"><span>${GL[k]} <span style="color:#cbd5e0">(${grupos[k][1]} un)</span></span><span>${fmtMoeda(grupos[k][0])}</span></div>` : '').join('')}
+      <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;color:#1d327b;padding-top:8px;margin-top:4px;border-top:2px solid #1d327b"><span>Total geral <span id="edicCalculando" style="font-size:11px;color:#a0aec0;font-weight:500"></span></span><span>${fmtMoeda(total)}</span></div>
+      ${E.aviso ? `<div style="font-size:11px;color:#92400e;margin-top:6px">${esc(E.aviso)}</div>` : ''}
+    </div>
     <div class="form-row-inline">
-      <div class="form-row">
-        <label>Pagamento</label>
-        <select id="edicaoOrcPagamento">
-          <option value="avista" ${o.pagamento_tipo === 'avista' ? 'selected' : ''}>À vista</option>
-          <option value="boleto" ${o.pagamento_tipo !== 'avista' ? 'selected' : ''}>Boleto</option>
-        </select>
-      </div>
-      <div class="form-row">
-        <label>Parcelas (se boleto)</label>
-        <input id="edicaoOrcParcelas" type="number" min="1" max="3" value="${o.parcelas || 1}">
-      </div>
+      <div class="form-row"><label>Pagamento</label>
+        <select onchange="edicForma(this.value)">${Object.entries(_EDIC_FORMAS).map(([k, v]) => `<option value="${k}" ${E.forma === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+      <div class="form-row"><label>Parcelas / prazo</label>${parcelasHtml}</div>
     </div>
-    <div class="form-row">
-      <label>Observações</label>
-      <textarea id="edicaoOrcObs" rows="2">${esc(o.observacoes || '')}</textarea>
-    </div>
+    <div class="form-row"><label>Frete</label>
+      <select onchange="_edic.frete=this.value;recalcularEdicaoOrc()">${opFrete.map(c => `<option value="${c}" ${E.frete === c ? 'selected' : ''}>${esc(FRETE_LABELS[c])}</option>`).join('')}</select></div>
+    <div class="form-row"><label>Observações</label><textarea id="edicObs" rows="3">${esc(E.obs)}</textarea></div>
     <div class="form-actions">
       <button class="btn btn-outline" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" id="btnSalvarEdicaoOrc" onclick="salvarEdicaoOrcamento('${o.id}')">Salvar alterações</button>
@@ -2428,30 +2448,98 @@ function renderModalEdicaoOrcamento(o) {
   `);
 }
 
+function _edicPayload(preview) {
+  const E = _edic;
+  _edicLerCampos();
+  return {
+    id: E.id, preview: !!preview,
+    uf: E.o.uf, segmento: E.o.segmento, classe: Number(E.classe),
+    itens: E.itens.filter(Boolean).map(i => {
+      const it = { codigo: i.codigo, qtd: i.qtd, disp: i.estoque || 'sem_info', previsao: i.previsao || null };
+      if (i.manual) { it.preco = i.unit; } else { if (i.tabela_sigla) it.tabela = i.tabela_sigla; if (i.desconto_pct) it.desconto = i.desconto_pct; it.manual = false; }
+      return it;
+    }),
+    pagamento: { forma: E.forma, parcelas: E.forma === 'boleto' ? (E.dias ? E.dias.length : 1) : (E.parcelas || 1), dias_pagamento: E.forma === 'boleto' ? E.dias : null },
+    frete: { modalidade: E.frete },
+    observacoes: (E.obs || '').trim() || null
+  };
+}
+
+// recalcula no servidor (sem gravar) e atualiza precos/subtotais na tela
+function recalcularEdicaoOrc() {
+  clearTimeout(_edicTimer);
+  const el = document.getElementById('edicCalculando'); if (el) el.textContent = 'recalculando…';
+  _edicTimer = setTimeout(async () => {
+    if (!_edic || !_edic.itens.some(Boolean)) return;
+    try {
+      const j = await chamarOrcamentoApi('editar', _edicPayload(true));
+      const porCod = {}; (j.itens || []).forEach(x => { porCod[x.codigo] = x; });
+      _edic.itens.forEach(i => { if (i && porCod[i.codigo]) Object.assign(i, { unit: porCod[i.codigo].unit, unit_tabela: porCod[i.codigo].unit_tabela, subtotal: porCod[i.codigo].subtotal, tabela_sigla: porCod[i.codigo].tabela_sigla, desconto_pct: porCod[i.codigo].desconto_pct, manual: porCod[i.codigo].manual }); });
+      _edic.aviso = (j.avisos || []).filter(a => /minimo|bloqueado|segmento|teto/i.test(a)).join(' · ');
+      renderEdicaoOrc();
+    } catch (e) {
+      const el2 = document.getElementById('edicCalculando'); if (el2) el2.textContent = '(erro: ' + e.message.slice(0, 80) + ')';
+    }
+  }, 350);
+}
+
+function edicQtd(idx, v) { const i = _edic.itens[idx]; if (!i) return; i.qtd = Math.max(1, Math.min(999, parseInt(v) || 1)); i.subtotal = i.qtd * (+i.unit || 0); renderEdicaoOrc(); recalcularEdicaoOrc(); }
+function edicRemover(idx) { _edic.itens[idx] = null; renderEdicaoOrc(); recalcularEdicaoOrc(); }
+function edicPreco(idx, v) {
+  const n = parseFloat(String(v).replace(/\./g, '').replace(',', '.')); const i = _edic.itens[idx];
+  if (!i || !(n > 0)) { renderEdicaoOrc(); return; }
+  i.unit = n; i.manual = true; i.tabela_sigla = null; i.desconto_pct = null; i.subtotal = n * i.qtd; renderEdicaoOrc(); recalcularEdicaoOrc();
+}
+function edicRestaurar(idx) { const i = _edic.itens[idx]; if (!i) return; i.manual = false; i.tabela_sigla = null; i.desconto_pct = null; recalcularEdicaoOrc(); }
+function edicItemCampo(idx, campo, v) {
+  const i = _edic.itens[idx]; if (!i) return;
+  i.manual = false;
+  if (campo === 'tabela') i.tabela_sigla = v || null;
+  if (campo === 'desconto') i.desconto_pct = parseFloat(v) > 0 ? parseFloat(v) : null;
+  recalcularEdicaoOrc();
+}
+function edicClasse(v) { _edic.classe = Number(v); recalcularEdicaoOrc(); }
+function edicForma(v) {
+  _edicLerCampos();
+  _edic.forma = v; _edic.parcelas = 1;
+  _edic.dias = v === 'boleto' ? (_edic.planos[0] ? _edic.planos[0].dias : null) : null;
+  renderEdicaoOrc(); recalcularEdicaoOrc();
+}
+function edicPlano(k) { const p = _edic.planos[+k]; if (p) { _edic.dias = p.dias; _edic.parcelas = p.dias.length; } recalcularEdicaoOrc(); }
+function edicParcelas(v) { _edic.parcelas = +v || 1; recalcularEdicaoOrc(); }
+
+let _edicBuscaTimer = null;
+function edicBuscar(t) {
+  clearTimeout(_edicBuscaTimer);
+  const box = document.getElementById('edicResultados');
+  t = String(t || '').trim().replace(/[(),*%]/g, ' ').trim();
+  if (t.length < 2) { box.innerHTML = ''; return; }
+  _edicBuscaTimer = setTimeout(async () => {
+    try {
+      const rs = await sb('/hub_v_catalogo?or=(sku.ilike.*' + encodeURIComponent(t) + '*,nome.ilike.*' + encodeURIComponent(t) + '*)&select=sku,nome,status_estoque&limit=8');
+      box.innerHTML = rs.length ? rs.map(r => `<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;margin-bottom:4px;font-size:13px;cursor:pointer" onclick="edicAdicionar('${esc(r.sku)}','${esc(String(r.nome || '').replace(/'/g, ' '))}','${r.status_estoque === 'disponivel' ? 'ok' : 'sem'}')"><span>${esc(r.sku)} · ${esc(r.nome || '')}</span><span style="color:#25bbee">+ adicionar</span></div>`).join('') : '<div style="font-size:12px;color:#718096">Nenhum produto encontrado.</div>';
+    } catch (e) { box.innerHTML = '<div style="font-size:12px;color:#e30613">Erro na busca: ' + esc(e.message.slice(0, 80)) + '</div>'; }
+  }, 300);
+}
+function edicAdicionar(sku, nome, estoque) {
+  const ja = _edic.itens.find(i => i && String(i.codigo) === String(sku));
+  if (ja) { ja.qtd += 1; ja.subtotal = ja.qtd * (+ja.unit || 0); }
+  else _edic.itens.push({ codigo: sku, modelo: nome, qtd: 1, unit: 0, unit_tabela: 0, subtotal: 0, estoque, previsao: null, manual: false });
+  renderEdicaoOrc(); recalcularEdicaoOrc();
+}
+
 async function salvarEdicaoOrcamento(id) {
-  const o = _orcamentosCache[id];
   const btn = document.getElementById('btnSalvarEdicaoOrc');
-  const itens = _edicaoOrcamentoItens.filter(Boolean);
-  if (!itens.length) { toast('O orçamento precisa ter ao menos um item', 'error'); return; }
+  if (!_edic.itens.some(Boolean)) { toast('O orçamento precisa ter ao menos um item', 'error'); return; }
   btn.disabled = true; btn.textContent = 'Salvando...';
   try {
-    const payload = {
-      id,
-      uf: o.uf, segmento: o.segmento, classe: o.classe,
-      itens: itens.map(i => ({ codigo: i.codigo, qtd: i.qtd, disp: i.estoque || 'sem_info', previsao: i.previsao || null })),
-      pagamento: {
-        tipo: document.getElementById('edicaoOrcPagamento').value,
-        parcelas: +document.getElementById('edicaoOrcParcelas').value || 1
-      },
-      observacoes: document.getElementById('edicaoOrcObs').value.trim() || null
-    };
-    const j = await chamarOrcamentoApi('editar', payload);
-    toast('Orçamento ' + j.codigo + ' atualizado' + (j.reaceite ? ' -- cliente precisa aceitar de novo' : ''));
+    const j = await chamarOrcamentoApi('editar', _edicPayload(false));
+    toast('Orçamento ' + j.codigo + ' atualizado (revisão ' + ((Number(_edic.o.revisao) || 1) + 1) + ')' + (j.zen && !j.zen.ok ? ' — ATENÇÃO: ' + (j.zen.erro || 'ZEN não atualizado') : ''), j.zen && !j.zen.ok ? 'error' : 'success');
     closeModal();
+    _edic = null;
     loadPedidos();
   } catch (e) {
     toast('Erro ao editar orçamento: ' + e.message, 'error');
-  } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Salvar alterações'; }
   }
 }
@@ -2527,7 +2615,7 @@ async function espelharOrcamentoComoPedido(o, zenSaleId) {
       // espera o vocabulario do checkout (pix/boleto/...) -- sem traduzir,
       // todo orcamento a vista derrubava o INSERT (hub_pedidos_forma_
       // pagamento_check), achado ao vivo em 2026-11-16 (ORC-00014).
-      forma_pagamento: o.pagamento_tipo === 'avista' ? 'pix' : 'boleto',
+      forma_pagamento: o.forma_pagamento || (o.pagamento_tipo === 'avista' ? 'pix' : 'boleto'),
       parcelas: o.parcelas,
       // dias_pagamento/frete_modalidade nunca eram copiados do orcamento pro
       // espelho em hub_pedidos (achado 2026-11-25, reclamacao da Cristina) --

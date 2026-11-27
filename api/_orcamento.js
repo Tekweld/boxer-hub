@@ -198,6 +198,8 @@ module.exports = async function orcamento(req, res) {
       case 'completo': return res.status(200).json(await orcamentoCompleto(ctx, user, body.id));
       case 'itens': return res.status(200).json(await itensDetalhe(ctx, user, body.id));
 
+      case 'revisoes': return res.status(200).json(await revisoesDetalhe(ctx, user, body.id));
+
       default: return res.status(400).json({ error: 'acao invalida' });
 
     }
@@ -595,15 +597,22 @@ async function editar(ctx, user, b) {
 
 }
 
-async function aplicarEdicao(ctx, o, row, itens, avisos) {
+async function aplicarEdicao(ctx, o, row, itens, avisos, user) {
 
   const agora = new Date().toISOString();
 
-  const reaceite = o.status === 'aceito_cliente';
+  // Sem novo aceite (decisao do Andre, 2026-11-27): quem aprova e o representante dono ou a equipe Boxer.
+  const reaceite = false;
+
+  // Guarda a versao ANTERIOR como revisao (a edicao pode acontecer varias vezes: revisao 1, 2, 3...).
+  const revAtual = Number(o.revisao) || 1;
+  await orcWrite(ctx, 'POST', '/orcamento_revisoes', { orcamento_id: o.id, revisao: revAtual, usuario_id: user && user.id || null, usuario_nome: user && user.nome || null, snapshot: o });
 
   const patch = {
 
-    uf: row.uf, segmento: row.segmento, classe: row.classe, pagamento_tipo: row.pagamento_tipo, parcelas: row.parcelas,
+    uf: row.uf, segmento: row.segmento, classe: row.classe, pagamento_tipo: row.pagamento_tipo, forma_pagamento: row.forma_pagamento, parcelas: row.parcelas,
+
+    revisao: revAtual + 1, editado_em: agora, editado_por: user && user.id || null,
 
     dias_pagamento: row.dias_pagamento,
 
@@ -615,7 +624,7 @@ async function aplicarEdicao(ctx, o, row, itens, avisos) {
 
     lembrete_visto_em: null, lembrete_vence_em: null, teto_excedido: row.teto_excedido || null, liberacao_teto_em: null, liberacao_teto_por: null,
 
-    validade_em: row.validade_em, status: reaceite ? 'visualizado' : o.status, aceito_em: null, aceito_nome: null, atualizado_em: agora
+    validade_em: row.validade_em, atualizado_em: agora
 
   };
 
@@ -775,14 +784,20 @@ async function criar(ctx, user, b, edit) {
 
 
 
-  const avista = b.pagamento && b.pagamento.tipo === 'avista';
+  // Forma de pagamento (2026-11-27): boleto | cartao_credito | pix | transferencia | credix. PIX e transferencia = a vista
+  // (mesmo desconto de sempre); cartao ate 10x e Credix ate 4x sem juros; boleto segue o plano de prazo em dias.
+  const FORMAS_PAG = ['boleto', 'cartao_credito', 'pix', 'transferencia', 'credix'];
+  const formaIn = String((b.pagamento && b.pagamento.forma) || '').toLowerCase();
+  const forma = FORMAS_PAG.includes(formaIn) ? formaIn : ((b.pagamento && b.pagamento.tipo === 'avista') ? 'pix' : 'boleto');
+  const avista = forma === 'pix' || forma === 'transferencia';
 
   // Teto de 4 era de antes da reorganizacao dos planos de boleto em blocos
   // (2026-11-24, ver hub_planos_prazo_boleto) -- blocos de 28/30/15 dias vao
   // ate 6x hoje. Achado 2026-11-25 revisando o pagamento que nao chegava
   // certo no ZEN: isto aqui cortava silenciosamente plano de 5x/6x pra 4x
   // antes mesmo de gravar o orcamento.
-  const parcelas = avista ? 1 : Math.min(6, Math.max(1, parseInt(b.pagamento && b.pagamento.parcelas) || 1));
+  const maxParc = forma === 'cartao_credito' ? 10 : forma === 'credix' ? 4 : 6;
+  const parcelas = avista ? 1 : Math.min(maxParc, Math.max(1, parseInt(b.pagamento && b.pagamento.parcelas) || 1));
 
   const fator = avista ? 1 - cond.vista / 100 : 1;
 
@@ -812,7 +827,19 @@ async function criar(ctx, user, b, edit) {
 
     let unit = baseAtual;
 
-    if (precoValido && i.manual !== false) unit = r2(precoIn);
+    // Ajuste por item (edicao): TABELA especifica (F1..E3) e/ou % de desconto; preco digitado a mao (i.preco) vence os dois.
+    let siglaItem = null, descItem = 0;
+    const sg = String(i.tabela || '').toUpperCase();
+    if (/^[FHE][123]$/.test(sg)) {
+      const segI = { F: 'Física', H: 'Híbrido', E: 'Ecommerce' }[sg[0]];
+      const mm = await classeMult(ctx, segI, Number(sg[1]), p.porte);
+      if (mm == null) throw erro(400, 'Tabela ' + sg + ' sem preco para ' + (p.modelo || p.codigo));
+      unit = r2(tb * mm * fator); siglaItem = sg;
+    }
+    const dp = Number(i.desconto);
+    if (dp > 0 && dp < 100) { unit = r2(unit * (1 - dp / 100)); descItem = dp; }
+
+    if (precoValido && i.manual !== false) { unit = r2(precoIn); siglaItem = null; descItem = 0; }
 
     else if (precoValido && off) { if (Math.abs(precoIn - baseAtual) > 0.01) mudou.push(p.modelo || p.codigo); if (offOk) unit = r2(precoIn); }
 
@@ -832,7 +859,9 @@ async function criar(ctx, user, b, edit) {
 
       ncm: p.ncm || '', ipi: Number(p.ipi) || 0, icms: uf === 'SP' ? Number(p.icms) || 0 : 4,
 
-      imagem_url: p.imagem_url || '', estoque: dk, previsao: prev
+      imagem_url: p.imagem_url || '', estoque: dk, previsao: prev,
+
+      manual: !!(precoValido && i.manual !== false), tabela_sigla: siglaItem, desconto_pct: descItem || null
 
     });
 
@@ -1001,9 +1030,9 @@ async function criar(ctx, user, b, edit) {
 
     zen_person_id: zenPerson, vendedor_erp_id: vendedorErpId, req_id: b.req_id ? String(b.req_id).slice(0, 80) : null,
 
-    pagamento_tipo: avista ? 'avista' : 'boleto', parcelas, desconto_vista_pct: avista ? cond.vista : 0,
+    pagamento_tipo: avista ? 'avista' : 'boleto', forma_pagamento: forma, parcelas, desconto_vista_pct: avista ? cond.vista : 0,
 
-    dias_pagamento: (!avista && Array.isArray(b.pagamento && b.pagamento.dias_pagamento) && b.pagamento.dias_pagamento.length) ? b.pagamento.dias_pagamento.map(d => parseInt(d)).filter(d => d > 0) : null,
+    dias_pagamento: (forma === 'boleto' && Array.isArray(b.pagamento && b.pagamento.dias_pagamento) && b.pagamento.dias_pagamento.length) ? b.pagamento.dias_pagamento.map(d => parseInt(d)).filter(d => d > 0) : null,
 
     frete_tipo: freteTipo, frete_valor: freteValor,
 
@@ -1026,7 +1055,10 @@ async function criar(ctx, user, b, edit) {
 
 
 
-  if (edit) return aplicarEdicao(ctx, edit, row, itens, avisos);
+  // Previa da edicao (recalcula precos/totais no servidor sem gravar nada)
+  if (edit && b.preview) return { ok: true, preview: true, itens, total_itens: row.total_itens, total_final: row.total_final, frete_valor: row.frete_valor, desconto_vista_pct: row.desconto_vista_pct, avisos };
+
+  if (edit) return aplicarEdicao(ctx, edit, row, itens, avisos, user);
 
 
 
@@ -1109,6 +1141,14 @@ async function classeMult(ctx, seg, cls, porte) {
 
 // ---------- ZEN ----------
 
+const FORMA_LABEL = { boleto: 'boleto', cartao_credito: 'cartão de crédito', pix: 'PIX', transferencia: 'transferência', credix: 'Credix' };
+function textoPagamento(o) {
+  const forma = o.forma_pagamento || (o.pagamento_tipo === 'avista' ? 'pix' : 'boleto');
+  if (forma === 'pix' || forma === 'transferencia') return FORMA_LABEL[forma] + ' à vista' + (o.desconto_vista_pct ? ' (' + o.desconto_vista_pct + '% de desconto)' : '');
+  if (forma === 'cartao_credito' || forma === 'credix') return FORMA_LABEL[forma] + (o.parcelas > 1 ? ' em ' + o.parcelas + 'x sem juros' : ' à vista');
+  return Array.isArray(o.dias_pagamento) && o.dias_pagamento.length ? 'boleto ' + o.dias_pagamento.join('/') + ' dias' : 'boleto em ' + o.parcelas + 'x';
+}
+
 async function montarVendaZen(o, orc, itens) {
 
   const resolvidos = [];
@@ -1141,7 +1181,7 @@ async function montarVendaZen(o, orc, itens) {
 
     'Contato do cliente: ' + [o.cliente_contato, o.cliente_email, fmtTel(o.cliente_celular)].filter(Boolean).join(' · '),
 
-    'Pagamento: ' + (o.pagamento_tipo === 'avista' ? 'à vista (' + o.desconto_vista_pct + '% de desconto)' : (Array.isArray(o.dias_pagamento) && o.dias_pagamento.length ? 'boleto ' + o.dias_pagamento.join('/') + ' dias' : 'boleto em ' + o.parcelas + 'x')),
+    'Pagamento: ' + textoPagamento(o),
 
     // "Frete = <opcao>" (nao so o tipo ISSUER/RECIPIENT que o ZEN entende) --
     // unica forma de nao perder a granularidade da escolha (Carro Boxer x
@@ -1195,7 +1235,9 @@ async function montarVendaZen(o, orc, itens) {
   // o plano escolhido era exatamente a progressao padrao de 28 em 28.
   // Qualquer plano dos outros 4 blocos (15/30/60 dias, diretos) saia errado
   // no ZEN. Mesma correcao ja aplicada em push-pedido.js (montarPagamentos).
-  const pagamentos = o.pagamento_tipo === 'avista'
+  // PIX/transferencia (avista), cartao e Credix: uma linha a vista (quem financia e a adquirente/fintech; mesma regra de push-pedido.js)
+  const formaO = o.forma_pagamento || (o.pagamento_tipo === 'avista' ? 'pix' : 'boleto');
+  const pagamentos = (o.pagamento_tipo === 'avista' || formaO !== 'boleto')
 
     ? [{ type: 'BILLING_TITLE', term: 0 }]
 
@@ -1272,7 +1314,7 @@ async function criarVendaZen(o, orc, itens) {
 
 // perfil "Venda padrao" (aprovada direto no ZEN) vira "aprovado"; itens/valores ajustados la voltam para ca.
 
-const CAMPOS_LISTA = 'user_id,vendedor_nome,teto_excedido,liberacao_teto_em,liberacao_teto_por,id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,cliente_celular,cliente_email,cliente_contato,cliente_cidade,avisos,pagamento_tipo,parcelas,desconto_vista_pct,uf,segmento,classe,observacoes,itens';
+const CAMPOS_LISTA = 'user_id,vendedor_nome,teto_excedido,liberacao_teto_em,liberacao_teto_por,id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,cliente_celular,cliente_email,cliente_contato,cliente_cidade,avisos,pagamento_tipo,forma_pagamento,dias_pagamento,frete_tipo,revisao,parcelas,desconto_vista_pct,uf,segmento,classe,observacoes,itens';
 
 async function listar(ctx, user, leve, escopo) {
 
@@ -1337,6 +1379,21 @@ async function listar(ctx, user, leve, escopo) {
 // link publico. Mesmo filtro por user_id que listar() usa, nao RLS (a tabela
 
 // nao tem policy pra user comum, so service_role).
+
+// Historico de revisoes (versoes anteriores) de um orcamento: quem editou e como estava antes.
+async function revisoesDetalhe(ctx, user, id) {
+  if (!id) throw erro(400, 'id obrigatorio');
+  if (!(await orcamentoVisivel(ctx, user, id))) throw erro(404, 'Orcamento nao encontrado');
+  const rows = await sbGet(ctx, '/orcamento_revisoes?orcamento_id=eq.' + encodeURIComponent(id) + '&select=revisao,usuario_nome,criado_em,snapshot&order=revisao.desc', 'comercial');
+  return {
+    ok: true,
+    revisoes: rows.map(r => ({
+      revisao: r.revisao, editado_por: r.usuario_nome, substituida_em: r.criado_em,
+      total_final: r.snapshot && r.snapshot.total_final, itens: ((r.snapshot && r.snapshot.itens) || []).length,
+      pagamento: r.snapshot ? textoPagamento(r.snapshot) : null, frete_tipo: r.snapshot && r.snapshot.frete_tipo
+    }))
+  };
+}
 
 async function itensDetalhe(ctx, user, id) {
 

@@ -1101,8 +1101,8 @@ async function abrirRevisaoProspect(cart) {
           <input id="orcDestNome" type="text" maxlength="120" placeholder="Nome do contato">
         </div>
         <div class="form-row-inline">
-          <div class="form-row"><label>E-mail</label><input id="orcDestEmail" type="email" placeholder="contato@empresa.com.br"></div>
-          <div class="form-row"><label>Celular / WhatsApp</label><input id="orcDestCelular" type="text" placeholder="(11) 99999-9999"></div>
+          <div class="form-row"><label>E-mail <span style="font-weight:400;text-transform:none">(só para enviar o link)</span></label><input id="orcDestEmail" type="email" placeholder="contato@empresa.com.br"></div>
+          <div class="form-row"><label>Celular / WhatsApp <span style="font-weight:400;text-transform:none">(opcional)</span></label><input id="orcDestCelular" type="text" placeholder="(11) 99999-9999"></div>
         </div>
       </div>
       <div class="form-actions">
@@ -1308,11 +1308,11 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
       </div>
       <div class="form-row-inline">
         <div class="form-row">
-          <label>E-mail</label>
+          <label>E-mail <span style="font-weight:400;text-transform:none">(só para enviar o link)</span></label>
           <input id="orcDestEmail" type="email" value="${esc(cliente.email_principal || '')}">
         </div>
         <div class="form-row">
-          <label>Celular / WhatsApp</label>
+          <label>Celular / WhatsApp <span style="font-weight:400;text-transform:none">(opcional)</span></label>
           <input id="orcDestCelular" type="text" value="${esc(fmtTel(cliente.telefone || ''))}" placeholder="(11) 99999-9999">
         </div>
       </div>
@@ -1348,18 +1348,22 @@ function podeEnviarOrcamento() {
 // 24/11 o PDF tambem cria um orcamento de verdade, com codigo, entao precisa
 // do mesmo destinatario valido). Retorna null (e ja mostra o toast) se
 // invalido, nunca lanca excecao.
-function validarDestinatarioOrcamento() {
+// modo 'pdf': nada e obrigatorio (e-mail/celular so vao se estiverem certos). modo 'link': so o e-mail e obrigatorio (o cliente
+// recebe nele o codigo para abrir o link); celular e opcional, mas se preenchido tem que ser valido. (2026-11-27)
+function validarDestinatarioOrcamento(modo) {
   const nome = document.getElementById('orcDestNome').value.trim();
   const email = document.getElementById('orcDestEmail').value.trim();
   const celular = document.getElementById('orcDestCelular').value.trim();
-  if (!email || !/^\S+@\S+\.\S+$/.test(email)) { toast('Informe um e-mail valido para quem recebe o orcamento', 'error'); return null; }
+  const emailOk = /^\S+@\S+\.\S+$/.test(email);
+  if (modo !== 'pdf' && !emailOk) { toast('Informe um e-mail valido: o cliente recebe nele o codigo para abrir o link', 'error'); return null; }
   // Mesma regra do backend (telOk em api/_orcamento.js) checada aqui ANTES de
   // chamar o servidor -- achado real (Andre, 2026-11-19): o campo so checava
   // "nao vazio", entao um numero com 1 digito faltando passava na tela e so
   // quebrava depois do roundtrip, com o vendedor sem saber o motivo exato.
   const soDigitosCel = celular.replace(/\D/g, '');
-  if (soDigitosCel.length !== 10 && soDigitosCel.length !== 11) { toast('Celular invalido: informe DDD + numero, ex. (41) 99999-9999', 'error'); return null; }
-  return { nome, email, celular };
+  const celOk = soDigitosCel.length === 10 || soDigitosCel.length === 11;
+  if (modo !== 'pdf' && soDigitosCel.length > 0 && !celOk) { toast('Celular invalido: informe DDD + numero, ex. (41) 99999-9999', 'error'); return null; }
+  return { nome, email: emailOk ? email : '', celular: celOk ? celular : '' };
 }
 
 // Resolve uf/segmento/classe (override do catalogo ou politica do cadastro)
@@ -1605,7 +1609,7 @@ async function gerarPdfPreliminar() {
   if (!_revisao) return;
   const cart = getCart();
   if (!cart.length) { toast('Carrinho vazio, nada para gerar', 'error'); return; }
-  const destinatario = validarDestinatarioOrcamento();
+  const destinatario = validarDestinatarioOrcamento('pdf');
   if (!destinatario) return;
 
   const btn = document.getElementById('btnGerarPdfOrcamento');
@@ -1816,6 +1820,7 @@ function renderOrcamentoHtml(ORC) {
 async function copiarLinkOrcamento(id) {
   const o = _orcamentosCache[id];
   if (!o) return;
+  if (o.status === 'rascunho_pdf' && !o.cliente_email) { toast('Este orçamento não tem e-mail do cliente: o link só abre com o código enviado ao e-mail. Use Editar para informar o e-mail.', 'error'); return; }
   try { await navigator.clipboard.writeText(o.link); toast('Link copiado'); } catch (_) { toast('Nao foi possivel copiar; selecione o link e copie', 'error'); }
   if (o.status === 'rascunho_pdf') {
     try { await chamarOrcamentoApi('marcar_enviado', { id }); o.status = 'enviado'; loadPedidos(); } catch (_) {}

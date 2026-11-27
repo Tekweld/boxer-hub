@@ -682,9 +682,17 @@ async function criar(ctx, user, b, edit) {
 
   if (!docOk(cnpj)) throw erro(400, 'CNPJ/CPF do cliente invalido: confira os numeros');
 
-  if (!cl.email || !/^\S+@\S+\.\S+$/.test(cl.email)) throw erro(400, 'Informe o e-mail do cliente');
+  // E-mail so e exigido para o LINK (o cliente recebe um codigo nele para abrir o orcamento). Gerar PDF (pdf_preview) e
+  // edicao de orcamento ainda 'so PDF' nao exigem nada (2026-11-27). Celular e sempre opcional; se vier, tem que ser valido.
+  const exigeEmail = !b.pdf_preview && !(edit && edit.status === 'rascunho_pdf');
+  const emailInformado = cl.email && String(cl.email).trim();
+  if (exigeEmail && (!emailInformado || !/^\S+@\S+\.\S+$/.test(emailInformado))) throw erro(400, 'Informe o e-mail do cliente');
+  if (!exigeEmail && emailInformado && !/^\S+@\S+\.\S+$/.test(emailInformado)) cl.email = '';
 
-  if (!telOk(cl.celular)) throw erro(400, 'Celular do cliente invalido: use DDD + numero, ex.: (19) 99999-9999');
+  if (cl.celular && String(cl.celular).trim() && !telOk(cl.celular)) {
+    if (exigeEmail) throw erro(400, 'Celular do cliente invalido: use DDD + numero, ex.: (19) 99999-9999');
+    cl.celular = '';
+  }
 
   if (b.vendedor && b.vendedor.telefone && !telOk(b.vendedor.telefone)) throw erro(400, 'Seu telefone esta invalido: use DDD + numero, ex.: (19) 99999-9999');
 
@@ -964,7 +972,7 @@ async function criar(ctx, user, b, edit) {
 
     cliente_nome: String(cl.nome).trim(), cliente_fantasia: cl.fantasia || null, cliente_cnpj: cnpj, cliente_ie: cl.ie || null,
 
-    cliente_email: String(cl.email).trim().toLowerCase(), cliente_celular: soDigitos(cl.celular), cliente_telefone: soDigitos(cl.telefone) || null,
+    cliente_email: cl.email ? String(cl.email).trim().toLowerCase() : null, cliente_celular: soDigitos(cl.celular) || null, cliente_telefone: soDigitos(cl.telefone) || null,
 
     cliente_contato: cl.contato || null, cliente_cidade: cl.cidade || null, cliente_uf: cl.uf || uf, cliente_endereco: endereco,
 
@@ -1758,8 +1766,9 @@ async function marcarEnviadoSeRascunho(ctx, id) {
 }
 async function marcarEnviado(ctx, user, id) {
   if (!id) throw erro(400, 'id obrigatorio');
-  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + filtroDono(user) + '&select=id,status', 'comercial'))[0];
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + filtroDono(user) + '&select=id,status,cliente_email', 'comercial'))[0];
   if (!o) throw erro(404, 'Orcamento nao encontrado');
+  if (o.status === 'rascunho_pdf' && !o.cliente_email) throw erro(409, 'Este orcamento nao tem e-mail do cliente: o link so abre com o codigo enviado ao e-mail. Informe o e-mail (Editar) antes de enviar o link.');
   await marcarEnviadoSeRascunho(ctx, o.id);
   return { ok: true, status: o.status === 'rascunho_pdf' ? 'enviado' : o.status };
 }

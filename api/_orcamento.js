@@ -56,7 +56,29 @@ const ZEN_COMPANY_ID = 1009;      // TEKSP -- representa a Boxer
 // so muda para 'enviado' por acao posterior (copiar link, e-mail, WhatsApp).
 const ST_ABERTOS = ['rascunho_pdf', 'enviado', 'visualizado', 'aceito_cliente'];
 // Dono do orcamento OU admin/gerente (confirmar, cancelar, arquivar: "representante, equipe Boxer ou admin").
-const filtroDono = (user) => (['admin', 'manager'].includes(user.role) ? '' : '&user_id=eq.' + user.id);
+// Equipe Boxer (admin, gerente, analista, financeiro) ve e age em orcamento de qualquer usuario (decisao do Andre, 2026-11-27).
+const ST_STAFF = ['admin', 'manager', 'analyst', 'financial'];
+const ehStaff = (user) => ST_STAFF.includes(user.role);
+const filtroDono = (user) => (ehStaff(user) ? '' : '&user_id=eq.' + user.id);
+// Representante: ve os proprios + os de clientes da carteira dele (RPC); staff: todos; escopo 'meus' limita aos proprios.
+async function filtroVisao(ctx, user, escopo) {
+  if (escopo === 'meus') return '&user_id=eq.' + user.id;
+  if (ehStaff(user)) return '';
+  const r = await fetch(SB_URL + '/rest/v1/rpc/hub_fn_orcamentos_visiveis_ids', {
+    method: 'POST', headers: sbH(ctx, { 'Content-Profile': 'comercial', 'Accept-Profile': 'comercial' }),
+    body: JSON.stringify({ p_user: user.id, p_limite: 150 })
+  });
+  const ids = r.ok ? await r.json() : [];
+  return ids.length ? '&id=in.(' + ids.join(',') + ')' : '&user_id=eq.' + user.id;
+}
+async function orcamentoVisivel(ctx, user, id) {
+  if (ehStaff(user)) return true;
+  const r = await fetch(SB_URL + '/rest/v1/rpc/hub_fn_orcamento_visivel', {
+    method: 'POST', headers: sbH(ctx, { 'Content-Profile': 'comercial', 'Accept-Profile': 'comercial' }),
+    body: JSON.stringify({ p_user: user.id, p_orcamento: id })
+  });
+  return r.ok ? (await r.json()) === true : false;
+}
 const ZEN_SALE_PROFILE_ID = 1001; // workflow "Venda padrao"
 
 const ZEN_WORKFLOW_ID = 1001;
@@ -153,7 +175,7 @@ module.exports = async function orcamento(req, res) {
 
       case 'criar': return res.status(200).json(await criar(ctx, user, body));
 
-      case 'listar': return res.status(200).json(await listar(ctx, user, body.leve === true));
+      case 'listar': return res.status(200).json(await listar(ctx, user, body.leve === true, body.escopo));
 
       case 'aprovar': return res.status(200).json(await aprovar(ctx, user, body.id));
 
@@ -549,7 +571,7 @@ async function editar(ctx, user, b) {
 
   if (!b.id) throw erro(400, 'id obrigatorio');
 
-  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(b.id) + '&user_id=eq.' + user.id + '&select=*', 'comercial'))[0];
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(b.id) + filtroDono(user) + '&select=*', 'comercial'))[0];
 
   if (!o) throw erro(404, 'Orcamento nao encontrado');
 
@@ -1250,11 +1272,11 @@ async function criarVendaZen(o, orc, itens) {
 
 // perfil "Venda padrao" (aprovada direto no ZEN) vira "aprovado"; itens/valores ajustados la voltam para ca.
 
-const CAMPOS_LISTA = 'teto_excedido,liberacao_teto_em,liberacao_teto_por,id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,cliente_celular,cliente_email,cliente_contato,cliente_cidade,avisos,pagamento_tipo,parcelas,desconto_vista_pct,uf,segmento,classe,observacoes,itens';
+const CAMPOS_LISTA = 'user_id,vendedor_nome,teto_excedido,liberacao_teto_em,liberacao_teto_por,id,codigo,token,cliente_nome,cliente_cnpj,total_itens,total_final,frete_valor,status,validade_em,criado_em,visualizacoes,ultima_visualizacao_em,aceito_em,aceito_nome,aprovado_em,cancelado_em,cancelado_por,arquivado,zen_sale_id,zen_status,zen_etapa,zen_erro,cliente_celular,cliente_email,cliente_contato,cliente_cidade,avisos,pagamento_tipo,parcelas,desconto_vista_pct,uf,segmento,classe,observacoes,itens';
 
-async function listar(ctx, user, leve) {
+async function listar(ctx, user, leve, escopo) {
 
-  const rows = await sbGet(ctx, '/orcamentos?user_id=eq.' + user.id + '&ativo=eq.true&order=criado_em.desc&limit=150&select=' + CAMPOS_LISTA, 'comercial');
+  const rows = await sbGet(ctx, '/orcamentos?ativo=eq.true' + (await filtroVisao(ctx, user, escopo)) + '&order=criado_em.desc&limit=150&select=' + CAMPOS_LISTA, 'comercial');
 
   let aviso_sync = null;
 
@@ -1320,7 +1342,8 @@ async function itensDetalhe(ctx, user, id) {
 
   if (!id) throw erro(400, 'id obrigatorio');
 
-  const row = (await sbGet(ctx, '/orcamentos?id=eq.' + id + '&user_id=eq.' + user.id + '&select=itens,frete_valor,total_final', 'comercial'))[0];
+  if (!(await orcamentoVisivel(ctx, user, id))) throw erro(404, 'Orcamento nao encontrado');
+  const row = (await sbGet(ctx, '/orcamentos?id=eq.' + id + '&select=itens,frete_valor,total_final', 'comercial'))[0];
 
   if (!row) throw erro(404, 'Orcamento nao encontrado');
 
@@ -1711,7 +1734,7 @@ async function enviarEmailCliente(ctx, user, id) {
 
   if (!id) throw erro(400, 'id obrigatorio');
 
-  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&user_id=eq.' + user.id +
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + filtroDono(user) +
 
     '&select=id,codigo,token,cliente_nome,cliente_email,total_final,validade_em,vendedor_nome,vendedor_empresa,vendedor_telefone', 'comercial'))[0];
 
@@ -1816,7 +1839,8 @@ async function marcarEnviado(ctx, user, id) {
 // Linha completa do orcamento (itens, cliente, condicoes) para reabrir o PDF a partir do detalhe.
 async function orcamentoCompleto(ctx, user, id) {
   if (!id) throw erro(400, 'id obrigatorio');
-  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + filtroDono(user) + '&select=*', 'comercial'))[0];
+  if (!(await orcamentoVisivel(ctx, user, id))) throw erro(404, 'Orcamento nao encontrado');
+  const o = (await sbGet(ctx, '/orcamentos?id=eq.' + encodeURIComponent(id) + '&select=*', 'comercial'))[0];
   if (!o) throw erro(404, 'Orcamento nao encontrado');
   return { ok: true, orcamento: Object.assign({}, o, { link: LINK_ORCAMENTO + o.token }) };
 }

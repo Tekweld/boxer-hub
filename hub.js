@@ -546,8 +546,8 @@ async function buscarClientes(termo) {
   // A RLS ja limita: representante so ve a carteira dele, staff ve todos.
   // hub_enderecos embutido para mostrar cidade/UF/rua na lista -- sem isso
   // quem tem 5 filiais com o mesmo nome (ex: Luitex) nao sabe qual escolher.
-  let url = '/hub_clientes?ativo=eq.true&select=id,nome_exibicao,cnpj,razao_social,uf,cidade,canal,bloqueado,erp_cliente_id,hub_enderecos(logradouro,numero,bairro,tipo)'
-          + '&order=nome_exibicao.asc&limit=40';
+  let url = '/hub_clientes?ativo=eq.true&select=id,nome_exibicao,cnpj,razao_social,uf,cidade,canal,bloqueado,erp_cliente_id,grupo_nome,entidade_key,hub_enderecos(logradouro,numero,bairro,tipo)'
+          + '&order=entidade_key.asc,nome_exibicao.asc&limit=80';
   const t = (termo || '').trim();
   const numerico = termoNumerico(t);
   const soDigitos = t.replace(/\D/g, '');
@@ -564,7 +564,8 @@ async function buscarClientes(termo) {
       if (soDigitos.length >= 4) parcelas.push('cnpj.ilike.*' + soDigitos + '*');
     } else {
       const seguro = t.replace(/[(),*]/g, '');
-      parcelas = ['nome_exibicao.ilike.*' + seguro + '*', 'razao_social.ilike.*' + seguro + '*'];
+      // Tambem pelo nome do GRUPO do ZEN (ex.: "Casa do Construtor" traz as lojas do grupo): regra de entidade do BAV.
+      parcelas = ['nome_exibicao.ilike.*' + seguro + '*', 'razao_social.ilike.*' + seguro + '*', 'grupo_nome.ilike.*' + seguro + '*'];
     }
     url += '&or=(' + parcelas.join(',') + ')';
   }
@@ -586,9 +587,33 @@ async function buscarClientes(termo) {
 
   try {
     const linhas = await sb(url);
-    let html = linhas.map(c => linhaRevenda(c, c.bloqueado
+    const extraAtuar = c => c.bloqueado
       ? '<span style="font-size:11px;color:#991b1b;background:#fee2e2;padding:3px 8px;border-radius:10px;white-space:nowrap">bloqueada</span>'
-      : `<button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="setClienteAtivo('${c.id}', '${(c.nome_exibicao || '').replace(/'/g, '&#39;').replace(/</g, '&lt;')}')">Atuar</button>`)).join('');
+      : `<button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="setClienteAtivo('${c.id}', '${(c.nome_exibicao || '').replace(/'/g, '&#39;').replace(/</g, '&lt;')}')">Atuar</button>`;
+
+    // Agrupa por ENTIDADE (grupo do ZEN -> CNPJ raiz -> loja, regra do BAV): cabecalho com o nome e o total de lojas
+    // (todas, mesmo as fora da sua carteira) antes das lojas encontradas.
+    const porEntidade = new Map();
+    linhas.forEach(c => { const k = c.entidade_key || ('C:' + c.id); if (!porEntidade.has(k)) porEntidade.set(k, []); porEntidade.get(k).push(c); });
+    let resumo = {};
+    const chavesMulti = [...porEntidade.keys()].filter(k => !k.startsWith('C:'));
+    if (chavesMulti.length) {
+      try { (await sbRpc('hub_fn_entidade_resumo', { p_keys: chavesMulti })).forEach(r => { resumo[r.entidade_key] = r; }); } catch (_) { /* sem resumo: lista simples */ }
+    }
+    let html = '';
+    porEntidade.forEach((lojas, k) => {
+      const r = resumo[k];
+      if (r && (Number(r.lojas) > 1)) {
+        const rotulo = k.startsWith('G:') ? 'Grupo' : 'Empresa';
+        const nomeEnt = (r.nome || '').replace(/</g, '&lt;');
+        const sub = Number(r.lojas) + ' lojas' + (Number(r.raizes) > 1 ? ' · ' + Number(r.raizes) + ' empresas' : '') + (lojas.length < Number(r.lojas) ? ' · ' + lojas.length + ' aparecem aqui' : '');
+        html += `<div style="padding:10px 10px 4px;background:#f0f7ff;border-bottom:1px solid #d0e3f7">
+          <span style="font-size:10px;font-weight:700;color:#1d327b;text-transform:uppercase;letter-spacing:.5px">${rotulo}</span>
+          <span style="font-size:13px;font-weight:700;color:#1d327b"> ${nomeEnt}</span>
+          <span style="font-size:11px;color:#718096"> · ${sub}</span></div>`;
+      }
+      html += lojas.map(c => linhaRevenda(c, extraAtuar(c))).join('');
+    });
 
     // Cliente que existe no cadastro Hub/ZEN mas esta FORA da carteira de quem busca (a RLS nao
     // mostra): so por CNPJ/ID. Sem isso a pessoa via "Nenhuma revenda encontrada" para uma loja

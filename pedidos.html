@@ -159,6 +159,7 @@ textarea:focus{border-color:#25bbee}
       <h2 class="page-title">Historico de Pedidos</h2>
       <div style="display:flex;gap:8px">
         <select id="filtroPeriodo" onchange="loadPedidos()" style="padding:6px 10px;border:1px solid #c3cfe2;border-radius:6px;font-family:Outfit;font-size:12px"></select>
+        <select id="filtroEscopoOrc" onchange="trocarEscopoOrc(this.value)" title="Quais orçamentos aparecem na lista" style="padding:6px 10px;border:1px solid #c3cfe2;border-radius:6px;font-family:Outfit;font-size:12px"><option value="todos">Orçamentos: todos que posso ver</option><option value="meus">Orçamentos: só os meus</option></select>
         <select id="filtroStatus" onchange="loadPedidos()" style="padding:6px 10px;border:1px solid #c3cfe2;border-radius:6px;font-family:Outfit;font-size:12px">
           <option value="">Todos os status</option>
           <option value="rascunho">Rascunho</option>
@@ -2102,7 +2103,7 @@ async function carregarOrcamentosParaLista(clienteId) {
     const r = await fetch('/api/push-pedido?target=orcamento', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (SESSION?.access_token || '') },
-      body: JSON.stringify({ acao: 'listar', leve: true })
+      body: JSON.stringify({ acao: 'listar', leve: true, escopo: (typeof _escopoOrc !== 'undefined' ? _escopoOrc : 'todos') })
     });
     if (!r.ok) return [];
     const j = await r.json();
@@ -2191,7 +2192,7 @@ async function loadPedidos() {
         const avisoCadastro = o.zen_status === 'sem_cliente_zen'
           ? ' <span class="orc-st-badge laranja" title="Verificar cadastro assim que o cliente existir no ZEN">aguardando cadastro</span>' : '';
         return {
-          tipo: 'orcamento', id: o.id, numero: o.codigo, cliente: o.cliente_nome,
+          tipo: 'orcamento', id: o.id, numero: o.codigo, cliente: o.cliente_nome + (o.user_id && o.user_id !== getUserId() && o.vendedor_nome ? ' · vendedor: ' + o.vendedor_nome : ''),
           erpId: o.zen_sale_id || null, oc: null,
           statusHtml: `<span class="orc-st-badge${classe ? ' ' + classe : ''}">${esc(label)}</span>${avisoCadastro}`,
           valor: o.total_final, data: o.criado_em
@@ -2261,6 +2262,14 @@ async function abrirOrcamentoDetalhe(id) {
     abrirOrcamentoDetalheHtml(o, label, classe, aberto, '<div style="font-size:13px;color:#991b1b">Erro ao carregar itens: ' + esc(e.message) + '</div>');
   }
 }
+// Escopo da lista de orcamentos: 'todos' (equipe Boxer: todos; representante: proprios + carteira) ou 'meus'.
+let _escopoOrc = 'todos';
+function trocarEscopoOrc(v) { _escopoOrc = v; loadPedidos(); }
+// Orcamento de outro vendedor so se le (representante); equipe Boxer/admin age em qualquer um.
+function podeAgirNoOrcamento(o) {
+  return !o.user_id || o.user_id === getUserId() || ['admin', 'manager', 'analyst', 'financial'].includes(getUserRole());
+}
+
 function abrirOrcamentoDetalheHtml(o, label, classe, aberto, itensHtml) {
   openModal(`
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
@@ -2305,10 +2314,10 @@ function abrirOrcamentoDetalheHtml(o, label, classe, aberto, itensHtml) {
       <button class="btn btn-outline btn-sm" id="btnEmailOrcDet_${o.id}" onclick="enviarEmailOrcamento('${o.id}', this)">Enviar por E-mail</button>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid #e2e8f0">
-      ${aberto && podeEnviarOrcamento() ? `<button class="btn btn-outline" onclick="closeModal();editarOrcamentoCarrinho('${o.id}')">Editar</button>` : ''}
-      ${aberto ? `<button class="btn btn-outline" onclick="cancelarOrcamento('${o.id}')">Cancelar orçamento</button>` : ''}
+      ${aberto && podeAgirNoOrcamento(o) && podeEnviarOrcamento() ? `<button class="btn btn-outline" onclick="closeModal();editarOrcamentoCarrinho('${o.id}')">Editar</button>` : ''}
+      ${aberto && podeAgirNoOrcamento(o) ? `<button class="btn btn-outline" onclick="cancelarOrcamento('${o.id}')">Cancelar orçamento</button>` : ''}
       ${!aberto && o.status !== 'aprovado' ? `<button class="btn btn-outline" onclick="arquivarOrcamento('${o.id}')">Arquivar</button>` : ''}
-      ${aberto ? `<button class="btn btn-primary" onclick="aprovarOrcamento('${o.id}')">${o.status === 'aceito_cliente' ? 'Confirmar e gerar pedido no ZEN' : 'Gerar pedido no ZEN'}</button>` : ''}
+      ${aberto && podeAgirNoOrcamento(o) ? `<button class="btn btn-primary" onclick="aprovarOrcamento('${o.id}')">${o.status === 'aceito_cliente' ? 'Confirmar e gerar pedido no ZEN' : 'Gerar pedido no ZEN'}</button>` : ''}
       <button class="btn btn-outline" onclick="closeModal()">Fechar</button>
     </div>
   `);

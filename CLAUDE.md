@@ -31,6 +31,8 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 | `api/push-pedido.js` | Envia o pedido submetido ao ZEN (sale + itens), grava `code`/canal/observacoes/`paymentMethods`, CONFERE a venda lida de volta (`api/_zen_venda.js`) e registra "Conferido/Corrigido/Divergencia no ERP" na timeline. Tambem despacha `?target=orcamento|indicadores|historico|authlog|comissoes` (limite de 12 Serverless Functions no plano Hobby) |
 | `api/_zen_venda.js` | Regras UNICAS de como uma venda do Hub vira venda no ZEN: mapa de frete → `freightType`, `paymentMethods` como fonte das parcelas, texto das observacoes, `conferirVenda` (le, compara e corrige por PUT). Prefixo `_` = nao e Serverless Function |
 | `api/_historico_etapas.js` | Traz do ZEN a data real e o historico de etapas dos pedidos importados (`origem='erp'`), em lotes, chamado por `sync-pedidos-zen.js` |
+| `api/_carteira_vendas.js` | Carteira por vendas ("vendeu, aparece"): varre `/sale/sale` por cursor de id e registra (vendedor, cliente) em `hub_carteira` (`origem='venda_zen'`), exceto time SAC (`hub_representantes.time_sac`, marcado no banco, nunca nomes no repo publico). Estado: `hub_sync_estado('carteira_vendas')` |
+| `api/_perfil_fiscal.js` | Perfil fiscal da operacao (`sale.fiscalProfileOperation`) -> `hub_pedidos.tipo_operacao` (venda/bonificacao/devolucao/outra) e data real do ZEN em `criado_em` (so `origem='erp'`). Estado: `hub_sync_estado('perfil_fiscal')`. Indicadores contam so `venda` |
 | `api/sync-pedidos-zen.js` | Cron de 15 min (06h-19h45 BRT): reempurra pedido sem `erp_pedido_id`, traz a etapa do workflow (fila justa por `erp_sincronizado_em`), entrega pos-aprovacao e drena o historico |
 | `netlify.toml` | Config de deploy Netlify |
 | `docs/` | Documentacao de planejamento (NAO MEXER) |
@@ -46,7 +48,7 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 
 | Tabela | Colunas-chave | Uso |
 |---|---|---|
-| `hub_clientes` | cnpj, razao_social, nome_fantasia, status_cadastro, limite_credito, limite_disponivel, limite_credito_fonte (grupo/pessoa — credito e do PersonGroup replicado em cada filial, ou da pessoa de verdade; decide se agregacao por grupo soma ou deduplica, ver `somarCreditoGrupo` em hub.js), grupo_erp_id, grupo_nome, tabela_preco_id, representante_id, erp_cliente_id, classe_comercial (override manual F1-F3/H1-H3/E1-E3, editavel em Admin>Clientes so por admin via `hub_fn_definir_classe_comercial` — ZEN nao aceita update de Person depois de criado, entao isso NUNCA sincroniza pro ZEN, so por sale.tags a cada pedido novo) | Cadastro do revendedor |
+| `hub_clientes` | cnpj, razao_social, nome_fantasia, status_cadastro, limite_credito, limite_disponivel, limite_credito_fonte (grupo/pessoa — credito e do PersonGroup replicado em cada filial, ou da pessoa de verdade; decide se agregacao por grupo soma ou deduplica, ver `somarCreditoGrupo` em hub.js), grupo_erp_id, grupo_nome, email_complementar (e-mail informado no orcamento; o sync NAO toca), credito_verificado_em (ultima consulta de credito no ZEN), tabela_preco_id, representante_id, erp_cliente_id, classe_comercial (override manual F1-F3/H1-H3/E1-E3, editavel em Admin>Clientes so por admin via `hub_fn_definir_classe_comercial` — ZEN nao aceita update de Person depois de criado, entao isso NUNCA sincroniza pro ZEN, so por sale.tags a cada pedido novo) | Cadastro do revendedor |
 | `hub_representantes` | nome, email, regiao, meta_mensal, comissao_percentual, erp_representante_id | Representantes comerciais |
 | `hub_enderecos` | cliente_id, tipo (principal/entrega/cobranca), cep-logradouro-cidade-uf | Enderecos do cliente |
 | `hub_produtos` | sku, nome, descricao, ncm, categoria_id, estoque_disponivel, estoque_minimo, previsao_chegada, ficha_tecnica (jsonb), erp_produto_id | Catalogo de produtos |
@@ -58,7 +60,7 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 | Tabela | Colunas-chave | Uso |
 |---|---|---|
 | `hub_perfis` | user_id, tipo (cliente/representante/funcionario/admin), role (dealer/rep/analyst/manager/financial/admin), nome, email, cliente_id, representante_id, area (vendas_adm/financeiro/operacoes/ti — so funcionario, roteia o canal de resolucao) | Perfil do usuario autenticado |
-| `hub_carteira` | representante_id, cliente_id, data_vinculo | Vinculo rep-cliente (admin configura) |
+| `hub_carteira` | representante_id, cliente_id, data_vinculo, origem (cadastro_zen/venda_zen/manual), ultima_venda_em | Vinculo rep-cliente (admin configura) |
 | `hub_pedidos` | numero (HUB-2026-00001), cliente_id, representante_id, status (rascunho→submetido→aprovado→faturado→enviado→entregue), origem (cliente/proxy_representante/admin/erp), valor_total, valor_frete, ordem_compra (→ `sale.code` no ZEN), forma_pagamento, parcelas, dias_pagamento (→ `paymentMethods`), frete_modalidade (→ `freightType`), canal_venda (Varejo/Hibrido/Ecommerce, snapshot do cliente), criado_por (auth.uid de quem montou), erp_pedido_id, erp_workflow_status, erp_historico_em (historico de etapas ja importado) | Pedidos |
 | `hub_pedido_itens` | pedido_id, produto_id, quantidade, preco_unitario, preco_final, subtotal_item | Itens do pedido |
 | `hub_notificacoes` | usuario_id, tipo, titulo, mensagem, referencia_tipo, referencia_id, lida | Notificacoes do sistema |
@@ -169,6 +171,11 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 12. **ZEN: `properties.paymentMethods` e a fonte das parcelas.** Gravar no POST da venda faz o ZEN criar os `salePayment`; postar `salePayment` por cima DUPLICA. Ver `docs/INTEGRACAO-ZEN-HUB.md` secao 8 e `BOXER/ZEN-ERP-CONHECIMENTO.md` 4.6.3
 13. **Vercel: o time esta no plano Pro desde 26/11/2026** (o Hobby estourou "Fluid Active CPU" e a Vercel pausou os deploys: site e API respondiam 402). O limite de 12 Serverless Functions descrito acima era do Hobby; mesmo assim manter funcoes novas em arquivos `_*.js` despachados por `push-pedido.js`/`sync-pedidos-zen.js`. Nao aumentar lote nem frequencia de cron sem olhar o consumo (Usage por projeto)
 14. **Frete: o Hub NAO cobra.** `hub_pedidos.valor_frete`/`orcamentos.frete_valor` sao so informacao para o time Boxer cobrar (fora do total e da reserva de credito; retirada/FOB = 0); vai ao ZEN nas observacoes. Nunca somar frete ao total
+15. **Titulo pago sai do filtro do sync.** `sync-financeiro` so le `status==APPROVED`; quem baixou o titulo nao e mais visto. A baixa e feita por `reconciliarTitulosSumidos` (rele por id). Nunca confiar em `hub_titulos.status='vencido'` sem essa reconciliacao: ele bloqueia boleto (`hub_fn_validar_politica`). `atualizado_em` e reescrito por trigger a cada UPDATE
+16. **Todo job de varredura do ZEN precisa de orcamento de tempo e pagina adaptativa** (100 -> 40 em faixa lenta) e `maxDuration` 300; curl do workflow com `--max-time` maior que a function. Nao fazer chamada ao ZEN por cliente sem teto de tempo + carimbo de verificacao (`credito_verificado_em`)
+17. **Orcamento:** PDF = mesmo orcamento do link (venda `WEB orcamento` PREPARING, status `rascunho_pdf`); PREPARED so em `aprovar`; o ACEITE do cliente NAO gera pedido. Orcamento enviado/PDF/link mostra so o valor com desconto (tabela riscada so em construcao/edicao e em pedido da revenda). E-mail so e obrigatorio para o link; PDF nao exige nada
+18. **Nomes de funcionarios (ex.: time SAC) e e-mails pessoais nunca entram no repositorio publico** — ficam no banco (`hub_representantes.time_sac`)
+19. **Estado de varredura** (`hub_sync_estado`): `carteira_vendas`, `perfil_fiscal`, `nf_historico`. Resetar cursor = `update ... set valor = jsonb_build_object('cursor', N)`
 
 ---
 

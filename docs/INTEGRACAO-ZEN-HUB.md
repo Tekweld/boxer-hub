@@ -541,3 +541,54 @@ como a Cristina (PATCH antigo = 0 linhas; função nova grava todos os campos), 
   não aumentar lote/frequência sem olhar o consumo, preferir trabalho pesado fora da Vercel (GitHub Actions),
   e evitar deploys por CLI em excesso.
 - Como saber que caiu: a rodada do GitHub Actions falha com `HTTP 402` e `curl https://hub.boxersoldas.com.br` devolve 402.
+
+## 9. Financeiro, carteira, perfil fiscal e orçamento (26–27/11/2026)
+
+### 9.1 Títulos: o Hub não "baixava" título pago
+- `api/sync-financeiro.js` só lê `flow==IN;status==APPROVED`. Título pago/baixado sai desse filtro e **ficava para sempre** no último estado
+  (`aberto`/`vencido`): cliente adimplente bloqueado no boleto (`hub_fn_validar_politica`: "título em atraso"). Caso Allumiaco.
+- Correção: `reconciliarTitulosSumidos` relê por **id** (sem filtro de status) os vencidos (parados >1 h) e abertos/parciais (>24 h) e grava o estado real;
+  cancelado = `ativo:false`; id que o ZEN não devolve só recebe o carimbo. Resultado: **1.834 → 128 vencidos reais**, nada parado há >2 dias.
+- `hub_titulos.atualizado_em` é **reescrito por trigger a cada UPDATE** (não dá para "furar fila" mexendo nele).
+- Workflows com `curl --max-time 120` cortavam a rodada: `sync-financeiro` e `sync-zen-clientes` agora 280 s; funções com `maxDuration` 300
+  (clientes, financeiro, pedidos, estoque, PDM).
+
+### 9.2 Sync de clientes (`api/sync-zen-clientes.js`)
+- Falhava em toda rodada (504). Causa: a etapa "inicializar limite de crédito" consultava o ZEN **cliente a cliente para ~6.700 sem limite, a cada rodada**.
+  Agora: fatias com limite de tempo (para aos 120 s), coluna `hub_clientes.credito_verificado_em` (reconsulta só após 2 dias) e relatório
+  (`verificados_agora`, `restantes`, `cortado_por_tempo`). Marcas `[ZEN][TEMPO]` nos logs. Clientes com limite: 1.096 → 1.411+. Rodada completa = 4 rodadas, todas HTTP 200.
+- E-mail: `hub_clientes.email_complementar` (o sync **não** toca) + RPC `hub_fn_email_cliente`; o ZEN **aceita** `PersonContact` tipo EMAIL
+  (`POST /catalog/person/personContact` {person:{id}, type:'EMAIL', description}) — provado e desfeito num cliente de teste. Ação `email_cliente`
+  em `api/_orcamento.js`: sem `email` lista os e-mails do ZEN para preencher o campo; com `email` grava no Hub e cria o contato no ZEN.
+
+### 9.3 Carteira "vendeu, aparece" (`api/_carteira_vendas.js`)
+- Regra: quem **vendeu** para o cliente tem o cliente na sua carteira (vários vendedores por cliente), exceto o time SAC (`hub_representantes.time_sac`,
+  marcado no banco; **sem nomes no repositório público**). `hub_carteira.origem` (`cadastro_zen`/`venda_zen`/`manual`) e `ultima_venda_em`.
+  Varredura de `/sale/sale` por cursor de id (filtro por vendedor estoura timeout no ZEN), estado em `hub_sync_estado('carteira_vendas')`,
+  chamada por `api/sync-pedidos-zen.js`. Carteira por venda **não** enfileira backfill de histórico. Troca de vendedor no ZEN: gatilho
+  `trg_hub_clientes_troca_representante`.
+- Busca de revenda (`hub.js::buscarClientes` + ação `buscar_base`): por nome, CNPJ (com/sem máscara, raiz de 8 dígitos) ou **ID do ZEN**; seção
+  "Fora da sua carteira — só orçamento" e consulta direta ao ZEN para CNPJ completo/ID que ainda não está no Hub.
+
+### 9.4 Perfil fiscal da operação e data do ZEN (`api/_perfil_fiscal.js`)
+- `sale.Sale.fiscalProfileOperation` (ex.: "Saída de brinde") → `hub_pedidos.erp_perfil_fiscal(_id)` e `tipo_operacao` (`venda`/`bonificacao`/`devolucao`/`outra`).
+  Perfis vistos: Venda, Venda não contribuinte, Remessa conserto, Brinde, Remessa demonstração, Baixa estoque. Indicadores contam só `venda`.
+  Devolução que no ZEN é nota de **entrada** ainda não está coberta.
+- A mesma varredura grava `sale.date` em `criado_em` dos pedidos `origem='erp'` (o Hub mostrava a data da importação, 19/11); relatório `datas_corrigidas`.
+  Cursor `hub_sync_estado('perfil_fiscal')` começa em 14.500 (menor id de venda no Hub: 14.563). Página 100, cai para 40 em faixa lenta.
+
+### 9.5 Orçamento
+- **Gerar PDF = mesmo orçamento do link**: cria a venda no ZEN na etapa **WEB orçamento** (PREPARING, perfil Orçamento) e fica `rascunho_pdf` ("PDF gerado");
+  só vira `enviado` por ação posterior (`marcar_enviado`, copiar link, e-mail). PREPARED **só** em "Gerar pedido no ZEN" (`aprovar`, que também cria a venda
+  se o orçamento antigo não tinha). **O aceite do cliente NÃO gera pedido** (só marca `aceito_cliente` e avisa o representante).
+- `ST_ABERTOS` inclui `rascunho_pdf`; `filtroDono`: dono ou admin/manager confirma/cancela/arquiva. Ação `completo` reabre o PDF do detalhe.
+- Preço: orçamento enviado/PDF/link mostra **só o valor com desconto**; carrinho e edição do orçamento mostram tabela riscada + desconto em destaque;
+  detalhe de pedido só risca se `origem='cliente'`.
+- Validação: PDF não exige e-mail/celular; link exige só e-mail (o cliente recebe código de 6 dígitos nele); celular opcional.
+- PDM diário só de produtos novos: `.github/workflows/sync-pdm-novos.yml` (06h BRT) → `POST /api/sync-pdm?somente_novos=1` (sem `erp_produto_id` ou criado há <14 dias).
+
+### 9.6 Em aberto (27/11)
+- Varredura de vendas (carteira + perfil fiscal) é lenta (~1.500 vendas/h) porque roda dentro do sync de pedidos e o agendador do GitHub atrasa/pula rodadas.
+  Proposta: job dedicado (workflow encadeado, 280 s/chamada) e varredura única para os dois.
+- ~870 clientes ainda sem verificação de crédito (terminam nas próximas rodadas). Fluxo completo de e-mail pela tela e PDF de cliente sem e-mail: só provados por API.
+- O spec do ZEN é **público**: `GET https://api.zenerp.app.br/platform/openapi.json` (2,2 MB).

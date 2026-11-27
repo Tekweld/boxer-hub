@@ -171,6 +171,7 @@ module.exports = async function orcamento(req, res) {
 
       case 'verificar_cadastro': return res.status(200).json(await verificarCadastro(ctx, user, body.id));
 
+      case 'email_cliente': return res.status(200).json(await emailCliente(ctx, user, body));
       case 'marcar_enviado': return res.status(200).json(await marcarEnviado(ctx, user, body.id));
       case 'completo': return res.status(200).json(await orcamentoCompleto(ctx, user, body.id));
       case 'itens': return res.status(200).json(await itensDetalhe(ctx, user, body.id));
@@ -285,7 +286,7 @@ async function autenticar(req) {
 
   // acesso (tabela-teste.html vs Hub), nunca deveria gatear nada aqui.
 
-  return { id: caller.id, email: caller.email, nome: acesso.nome || caller.email, role: acesso.role, empresa: acesso.empresa || null };
+  return { id: caller.id, email: caller.email, nome: acesso.nome || caller.email, role: acesso.role, empresa: acesso.empresa || null, token: auth };
 
 }
 
@@ -1759,6 +1760,46 @@ async function enviarEmailCliente(ctx, user, id) {
 
 
 // ---------- aviso ao representante (publico, so por token) ----------
+
+// E-mail do cliente (2026-11-27). Sem 'email': lista os e-mails que o ZEN ja tem para a pessoa (contatos tipo EMAIL),
+// para preencher o campo sem digitar. Com 'email': grava em hub_clientes.email_complementar (RPC com o JWT do usuario, que
+// confere o acesso ao cliente) e cadastra o mesmo e-mail no ZEN como contato (PersonContact EMAIL), se ainda nao existir.
+// Falha no ZEN nunca perde o e-mail: fica no Hub e a resposta diz o que aconteceu.
+async function emailCliente(ctx, user, b) {
+  const id = String(b.cliente_id || '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw erro(400, 'cliente_id invalido');
+  const c = (await sbGet(ctx, '/hub_clientes?id=eq.' + id + '&select=id,erp_cliente_id,email_principal,email_complementar', 'comercial'))[0];
+  if (!c) throw erro(404, 'Cliente nao encontrado');
+  const pessoa = c.erp_cliente_id && /^\d+$/.test(String(c.erp_cliente_id)) ? Number(c.erp_cliente_id) : null;
+  const doZen = async () => {
+    if (!pessoa) return [];
+    const cs = await zenGet('/catalog/person/personContact', { q: 'person.id==' + pessoa, max: 50, limite: 50 });
+    return cs.filter(x => x.type === 'EMAIL' && x.description).map(x => String(x.description).trim().toLowerCase());
+  };
+  if (!b.email) {
+    let zen = [];
+    try { zen = await doZen(); } catch (_) {}
+    const lista = [c.email_principal, c.email_complementar].concat(zen).filter(e => e && /^\S+@\S+\.\S+$/.test(e)).map(e => e.toLowerCase());
+    return { ok: true, emails: [...new Set(lista)] };
+  }
+  const email = String(b.email).trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw erro(400, 'E-mail invalido');
+  const rr = await fetch(SB_URL + '/rest/v1/rpc/hub_fn_email_cliente', {
+    method: 'POST', headers: { apikey: SB_ANON, Authorization: user.token, 'Content-Type': 'application/json', 'Content-Profile': 'comercial', 'Accept-Profile': 'comercial' },
+    body: JSON.stringify({ p_cliente: id, p_email: email })
+  });
+  const hub = rr.ok ? await rr.json() : { ok: false, erro: 'Supabase ' + rr.status };
+  if (!hub.ok) throw erro(hub.erro === 'Acesso negado' ? 403 : 400, hub.erro || 'Nao foi possivel salvar o e-mail');
+  const out = { ok: true, hub: true, zen: 'sem_cadastro_zen' };
+  if (pessoa) {
+    try {
+      const existentes = await doZen();
+      if (existentes.includes(email) || String(c.email_principal || '').toLowerCase() === email) out.zen = 'ja_existia';
+      else { await zenCall('POST', '/catalog/person/personContact', { person: { id: pessoa }, type: 'EMAIL', description: email }); out.zen = 'criado'; }
+    } catch (e) { out.zen = 'erro'; out.zen_erro = String(e.message).slice(0, 160); }
+  }
+  return out;
+}
 
 // PDF gerado ('rascunho_pdf') so vira 'enviado' por acao posterior do representante: e-mail, copiar link ou WhatsApp.
 async function marcarEnviadoSeRascunho(ctx, id) {

@@ -975,7 +975,7 @@ async function _enviarPedidoInterno() {
     }, 0);
     const [politica, cliente, endereco] = await Promise.all([
       sbRpc('hub_fn_validar_politica', { p_pedido_id: pedido.id }),
-      sb('/hub_clientes?id=eq.' + clienteId + '&select=limite_credito,limite_disponivel,uf,razao_social,nome_fantasia,cnpj,email_principal,telefone,canal')
+      sb('/hub_clientes?id=eq.' + clienteId + '&select=limite_credito,limite_disponivel,uf,razao_social,nome_fantasia,cnpj,email_principal,email_complementar,telefone,canal')
         .then(r => r[0] || {})
         // Credito por grupo empresarial: sobrescreve limite/disponivel da
         // filial pelo valor agregado do grupo (hub_fn_validar_credito),
@@ -1309,7 +1309,8 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
       <div class="form-row-inline">
         <div class="form-row">
           <label>E-mail <span style="font-weight:400;text-transform:none">(só para enviar o link)</span></label>
-          <input id="orcDestEmail" type="email" value="${esc(cliente.email_principal || '')}">
+          <input id="orcDestEmail" type="email" value="${esc(cliente.email_principal || cliente.email_complementar || '')}">
+          <div id="orcDestEmailDica" style="font-size:11px;color:#718096;margin-top:4px">${cliente.email_principal || cliente.email_complementar ? '' : 'Cliente sem e-mail no cadastro. O e-mail informado aqui será salvo no cadastro dele (Hub e ZEN).'}</div>
         </div>
         <div class="form-row">
           <label>Celular / WhatsApp <span style="font-weight:400;text-transform:none">(opcional)</span></label>
@@ -1327,6 +1328,34 @@ function abrirRevisao(pedidoId, politica, cliente, endereco, cart, precos) {
               ${bloqueado ? 'disabled title="Resolva os bloqueios acima"' : ''}>Confirmar e Enviar Pedido${getUserTipo() === 'cliente' ? '' : ' para ZEN'}</button>
     </div>
   `);
+  if (podeEnviarOrcamento() && !cliente.email_principal && !cliente.email_complementar) preencherEmailDoZen();
+}
+
+// Cliente sem e-mail no Hub: tenta achar no ZEN (contatos tipo EMAIL) e preenche o campo para nao precisar digitar.
+async function preencherEmailDoZen() {
+  const clienteId = getClienteAtivo();
+  if (!clienteId) return;
+  try {
+    const r = await chamarOrcamentoApi('email_cliente', { cliente_id: clienteId });
+    const campo = document.getElementById('orcDestEmail'), dica = document.getElementById('orcDestEmailDica');
+    if (!campo || campo.value) return;
+    if (r.emails && r.emails.length) {
+      campo.value = r.emails[0];
+      if (dica) dica.textContent = 'Preenchido com o e-mail que o ZEN já tem para este cliente' + (r.emails.length > 1 ? ' (há outros: ' + r.emails.slice(1, 4).join(', ') + ')' : '') + '.';
+    }
+  } catch (_) { /* segue sem sugestao */ }
+}
+
+// Grava no cadastro (Hub + ZEN) o e-mail informado para o link, se o cliente ainda nao o tinha.
+async function salvarEmailNoCadastro(clienteId, email, atuais) {
+  if (!clienteId || !email) return;
+  const ja = (atuais || []).filter(Boolean).map(e => String(e).toLowerCase());
+  if (ja.includes(String(email).toLowerCase())) return;
+  try {
+    const r = await chamarOrcamentoApi('email_cliente', { cliente_id: clienteId, email });
+    if (r.zen === 'criado') toast('E-mail salvo no cadastro do cliente (Hub e ZEN)');
+    else if (r.zen === 'erro') toast('E-mail salvo no Hub; não foi possível gravar no ZEN agora', 'error');
+  } catch (_) { /* nao atrapalha o envio do orcamento */ }
 }
 
 // "Enviar Orcamento" so existe pra quem esta montando pedido para OUTRA
@@ -1457,6 +1486,7 @@ async function enviarOrcamento() {
     // rascunho criado antes da revisao (so para calcular preco/credito) fica
     // sem uso; apaga pra nao acumular rascunho orfao a cada orcamento
     // enviado. CNPJ novo (prospect) nunca cria esse rascunho (pedidoId null).
+    salvarEmailNoCadastro(getClienteAtivo(), destinatario.email, [_revisao.cliente && _revisao.cliente.email_principal, _revisao.cliente && _revisao.cliente.email_complementar]);
     if (_revisao.pedidoId) { try { await sb('/hub_pedidos?id=eq.' + _revisao.pedidoId, 'DELETE'); } catch (_) {} }
     if (_rascunhoOrigemId) { try { await sb('/hub_orcamento_rascunhos?id=eq.' + _rascunhoOrigemId, 'DELETE'); } catch (_) {} _rascunhoOrigemId = null; }
     clearPedidoEmEdicao();

@@ -33,13 +33,13 @@ async function processarPerfilFiscal(hubH, { prazoMs = 30000 } = {}) {
   try { for (const f of await zenGet('/fiscal/fiscalProfileOperation', { max: 200, limite: 200 })) descPorId.set(String(f.id), f.description || f.code || null); }
   catch (e) { saida.erros.push('perfis: ' + e.message.slice(0, 100)); }
 
+  let pag = 100; // tamanho da pagina: encolhe em faixa lenta e FICA encolhido ate o fim da rodada
   while (Date.now() - inicio < prazoMs) {
     let vendas;
-    let pag = PAGINA;
     try { vendas = await zenGet('/sale/sale', { q: 'id>' + cursor, order: 'id', max: pag, limite: pag }); }
     catch (e) {
       // faixa lenta: tenta de novo com pagina menor antes de desistir da rodada
-      pag = 40;
+      pag = 40; // mantem 40 nas proximas paginas desta rodada
       try { vendas = await zenGet('/sale/sale', { q: 'id>' + cursor, order: 'id', max: pag, limite: pag }); }
       catch (e2) { saida.erros.push('zen: ' + e2.message.slice(0, 120)); break; }
     }

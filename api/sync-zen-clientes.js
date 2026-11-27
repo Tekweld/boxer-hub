@@ -434,6 +434,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, ...resumo, representantes_distintos: repsPorErpId.size, amostra: bodies.slice(0, 3).map(mascarar) });
     }
 
+    console.log('[ZEN][TEMPO] leitura das pessoas concluida em ' + Math.round((Date.now() - t0) / 1000) + 's');
     // 2b — Upsert de hub_representantes a partir do personSalesperson de cada
     // cliente (2026-10-27: tabela estava vazia -- ver pendencia). Area de
     // atuacao/regiao fica em aberto por ora (depende de planilha futura);
@@ -493,6 +494,7 @@ module.exports = async function handler(req, res) {
       else { semRep.push(b); }
     }
 
+    console.log('[ZEN][TEMPO] representantes concluidos em ' + Math.round((Date.now() - t0) / 1000) + 's');
     // 3 — Upsert por erp_cliente_id (idempotente: pode rodar quantas vezes quiser)
     // Dois grupos separados (ver nota acima) -- cada um homogeneo nas chaves.
     let gravados = 0;
@@ -520,6 +522,7 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    console.log('[ZEN][TEMPO] upsert de hub_clientes concluido em ' + Math.round((Date.now() - t0) / 1000) + 's');
     // 3.5 — Espelha em hub_carteira (achado em 2026-11-03: hub_pode_acessar_cliente
     // e toda a RLS de representante dependem de hub_carteira, NAO de
     // hub_clientes.representante_id -- sem isto a tabela ficava sempre vazia e
@@ -537,6 +540,7 @@ module.exports = async function handler(req, res) {
       else console.error('[ZEN] lote hub_carteira falhou:', (await r.text()).slice(0, 300));
     }
 
+    console.log('[ZEN][TEMPO] carteira concluida em ' + Math.round((Date.now() - t0) / 1000) + 's');
     console.log('[ZEN] gravados:', gravados, 'de', bodies.length, '| representantes:', representantesGravados, '| carteira:', carteiraGravados);
 
     // 4 — Inicializar limite de credito para quem nunca recebeu (clientes
@@ -548,6 +552,7 @@ module.exports = async function handler(req, res) {
     // limite_disponivel na hora, e este sync nao sabe quanto foi reservado).
     const credito = await inicializarCreditoFaltante(bodies, hubH, dryRun, t0 + 230000);
 
+    console.log('[ZEN][TEMPO] credito concluido em ' + Math.round((Date.now() - t0) / 1000) + 's: ' + JSON.stringify(credito));
     // Endereco NAO e sincronizado aqui: ver api/sync-enderecos.js. Tentado como
     // etapa 5 deste handler e deu 504 aos 61s -- a varredura das pessoas nos 3
     // canais consome o maxDuration inteiro antes de chegar no endereco, entao a

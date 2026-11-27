@@ -60,7 +60,7 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 | Tabela | Colunas-chave | Uso |
 |---|---|---|
 | `hub_perfis` | user_id, tipo (cliente/representante/funcionario/admin), role (dealer/rep/analyst/manager/financial/admin), nome, email, cliente_id, representante_id, area (vendas_adm/financeiro/operacoes/ti — so funcionario, roteia o canal de resolucao) | Perfil do usuario autenticado |
-| `hub_carteira` | representante_id, cliente_id, data_vinculo, origem (cadastro_zen/venda_zen/manual), ultima_venda_em | Vinculo rep-cliente (admin configura) |
+| `hub_carteira` | representante_id, cliente_id, data_vinculo, origem (cadastro_zen/venda_zen/manual/grupo), ultima_venda_em | Vinculo rep-cliente (admin configura) |
 | `hub_pedidos` | numero (HUB-2026-00001), cliente_id, representante_id, status (rascunho→submetido→aprovado→faturado→enviado→entregue), origem (cliente/proxy_representante/admin/erp), valor_total, valor_frete, ordem_compra (→ `sale.code` no ZEN), forma_pagamento, parcelas, dias_pagamento (→ `paymentMethods`), frete_modalidade (→ `freightType`), canal_venda (Varejo/Hibrido/Ecommerce, snapshot do cliente), criado_por (auth.uid de quem montou), erp_pedido_id, erp_workflow_status, erp_historico_em (historico de etapas ja importado) | Pedidos |
 | `hub_pedido_itens` | pedido_id, produto_id, quantidade, preco_unitario, preco_final, subtotal_item | Itens do pedido |
 | `hub_notificacoes` | usuario_id, tipo, titulo, mensagem, referencia_tipo, referencia_id, lida | Notificacoes do sistema |
@@ -176,6 +176,8 @@ Nunca usar service_role key no codigo. Anon key e segura para frontend.
 17. **Orcamento:** PDF = mesmo orcamento do link (venda `WEB orcamento` PREPARING, status `rascunho_pdf`); PREPARED so em `aprovar`; o ACEITE do cliente NAO gera pedido. Orcamento enviado/PDF/link mostra so o valor com desconto (tabela riscada so em construcao/edicao e em pedido da revenda). E-mail so e obrigatorio para o link; PDF nao exige nada
 18. **Nomes de funcionarios (ex.: time SAC) e e-mails pessoais nunca entram no repositorio publico** — ficam no banco (`hub_representantes.time_sac`)
 19. **Estado de varredura** (`hub_sync_estado`): `carteira_vendas`, `perfil_fiscal`, `nf_historico`. Resetar cursor = `update ... set valor = jsonb_build_object('cursor', N)`
+20. **Entidade de cliente (regra do BAV):** grupo do ZEN -> CNPJ raiz -> loja (`hub_clientes.entidade_key`: `G:`/`E:`/`C:`). Representante com uma loja de uma entidade ve E age em todas: a carteira e expandida com `origem='grupo'` (`hub_fn_carteira_grupo_sincronizar`, gatilhos). Nao reescrever o RLS: ele ja depende de `hub_carteira`. Revenda nao muda. Nunca criar vinculo 'grupo' que ancore outro grupo
+21. **Orcamentos:** equipe Boxer (admin/manager/analyst/financial) ve e age em todos; representante ve os proprios + os da carteira (`hub_fn_orcamentos_visiveis_ids`) e so age nos proprios. `public.tabela_acesso()` e compartilhada com a tabela de precos
 
 ---
 

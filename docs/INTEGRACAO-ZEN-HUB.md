@@ -592,3 +592,17 @@ como a Cristina (PATCH antigo = 0 linhas; função nova grava todos os campos), 
   Proposta: job dedicado (workflow encadeado, 280 s/chamada) e varredura única para os dois.
 - ~870 clientes ainda sem verificação de crédito (terminam nas próximas rodadas). Fluxo completo de e-mail pela tela e PDF de cliente sem e-mail: só provados por API.
 - O spec do ZEN é **público**: `GET https://api.zenerp.app.br/platform/openapi.json` (2,2 MB).
+
+### 9.7 Entidade (grupo/empresa/loja) e acesso por entidade (27/11)
+- **Regra do BAV** (`bav-boxer/docs/arquitetura-base-cliente.md`): loja = CNPJ 14 dígitos; empresa = CNPJ raiz (8); rede = `personGroup` do ZEN.
+  **Entidade = grupo do ZEN → senão CNPJ raiz → senão a loja.** `hub_clientes.entidade_key` (`G:<grupo>` | `E:<raiz>` | `C:<id>`), mantida por gatilho.
+  Medido (7.779 clientes): 6.802 entidades; 6.318 lojas únicas; 475 grupos ZEN (343 redes com várias raízes, 89 com 1 raiz) + 52 empresas só por raiz; 13 raízes com loja
+  dentro e outra fora do grupo (inconsistência do cadastro ZEN); 61 grupos com 2+ representantes.
+- **Busca de revenda**: acha pelo nome do grupo; resultado agrupado ("GRUPO X · N lojas · M empresas") via `hub_fn_entidade_resumo`.
+- **Acesso por entidade (decisão do André: ver E agir)**: em vez de reescrever o RLS, a **carteira é expandida** — `hub_fn_carteira_grupo_sincronizar` cria vínculos
+  `hub_carteira.origem='grupo'` para as demais lojas de cada entidade em que o representante tem uma loja *âncora* (`cadastro_zen`/`venda_zen`/`manual`). Sem cascata;
+  perdeu a âncora → vínculos de grupo desativam; loja nova na entidade entra sozinha (gatilhos em `hub_carteira` e `hub_clientes`, guarda `hub.grupo_sync`).
+  Todo RLS que já usa a carteira (pedidos, títulos, NFs, endereços, solicitações, cadastro, orçamentos) passa a valer por entidade. Revenda (dealer) **não** muda.
+  Efeito inicial: +392 vínculos (ex.: representante com 818 → 915 lojas). Não enfileira backfill de histórico.
+- **Orçamentos**: equipe Boxer (admin, gerente, analista, financeiro) vê/age em todos; representante vê os próprios + os da carteira (inclui grupo); analista passou a ter
+  acesso ao orçamento (`public.tabela_acesso()` aceita `analyst`).

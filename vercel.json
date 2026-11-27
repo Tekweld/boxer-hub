@@ -1,11 +1,11 @@
 {
   "functions": {
     "api/sync-zen-clientes.js": { "maxDuration": 300 },
-    "api/sync-estoque.js": { "maxDuration": 60 },
-    "api/sync-pdm.js": { "maxDuration": 60 },
+    "api/sync-estoque.js": { "maxDuration": 300 },
+    "api/sync-pdm.js": { "maxDuration": 300 },
     "api/push-pedido.js": { "maxDuration": 60 },
     "api/sync-financeiro.js": { "maxDuration": 300 },
-    "api/sync-pedidos-zen.js": { "maxDuration": 120 }
+    "api/sync-pedidos-zen.js": { "maxDuration": 300 }
   },
   "crons": [
     { "path": "/api/sync-pdm?target=produtos", "schedule": "0 7 * * 1" }

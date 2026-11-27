@@ -492,6 +492,22 @@ module.exports = async function handler(req, res) {
     });
     console.log(`[SYNC] ${Object.keys(bomFotoMap).length} BOM itens com foto`);
 
+    // MODO "so novos" (?somente_novos=1, rodado todo dia pelo workflow sync-pdm-novos): processa apenas produto do PDM
+    // que o Hub ainda nao sincronizou (sem erp_produto_id) ou criado ha menos de 14 dias (a ficha/foto pode chegar depois
+    // do cadastro). O sync completo continua semanal (segunda) e refaz todo o resto.
+    const somenteNovos = String(req.query?.somente_novos || '') === '1';
+    let novosHubIds = null;
+    if (somenteNovos) {
+      const hubTodos = await fetchAll(HUB_URL + '/rest/v1/hub_produtos?select=id,sku,erp_produto_id,criado_em', hubH('GET'), 'hub_produtos (novos)');
+      const limiteNovo = Date.now() - 14 * 86400000;
+      const jaSincronizados = new Set(hubTodos.filter(h => h.erp_produto_id && Date.parse(h.criado_em) < limiteNovo).map(h => normSku(h.sku)));
+      const antes = pdmProdutos.length;
+      for (let i = pdmProdutos.length - 1; i >= 0; i--) if (jaSincronizados.has(normSku(pdmProdutos[i].codigo))) pdmProdutos.splice(i, 1);
+      novosHubIds = new Set(hubTodos.filter(h => pdmProdutos.some(p => normSku(p.codigo) === normSku(h.sku))).map(h => h.id));
+      console.log(`[SYNC][NOVOS] ${pdmProdutos.length} produto(s) novo(s) de ${antes} no PDM`);
+      if (!pdmProdutos.length) return res.status(200).json({ ok: true, modo: 'somente_novos', novos: 0 });
+    }
+
     // 3 — Sincronizar produtos (categorias vem da view via public.categorias)
     const pdmIdToSku = {};
     pdmProdutos.forEach(p => pdmIdToSku[p.id] = normSku(p.codigo));
@@ -551,7 +567,7 @@ module.exports = async function handler(req, res) {
     console.log('[SYNC] Limpando anexos antigos...');
     // Set, nao array: o lookup roda dentro de tres loops sobre milhares de itens.
     const validHubIds = new Set(
-      todosHubProdutos.filter(p => validProdutoIds.has(p.id)).map(p => p.id)
+      todosHubProdutos.filter(p => validProdutoIds.has(p.id) && (!novosHubIds || novosHubIds.has(p.id))).map(p => p.id)
     );
 
     console.log(`[SYNC] ${validHubIds.size} produtos com preço ativo (catálogo: ${todosHubProdutos.length}, PDM: ${hubProdutos.length})`);

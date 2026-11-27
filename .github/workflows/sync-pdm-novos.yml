@@ -1,0 +1,42 @@
+# PDM diario SO para produtos novos (2026-11-27): traz ficha tecnica, fotos e documentos de produto que o Hub ainda
+# nao sincronizou (sem erp_produto_id) ou criado ha menos de 14 dias. O sync completo do PDM continua semanal
+# (segunda, Vercel Cron). Roda depois do sync de precos (que cria produto novo ao ganhar preco): 06h BRT.
+name: Sync PDM (produtos novos)
+
+on:
+  schedule:
+    - cron: '0 9 * * *' # 06h BRT
+  workflow_dispatch:
+
+concurrency:
+  group: sync-pdm-novos
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar /api/sync-pdm?somente_novos=1
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET nao configurado nos secrets do repositorio."
+            exit 1
+          fi
+
+          corpo=$(mktemp)
+          codigo=$(curl -sS -o "$corpo" -w '%{http_code}' \
+            -X POST 'https://hub.boxersoldas.com.br/api/sync-pdm?somente_novos=1' \
+            -H "x-cron-secret: $CRON_SECRET" \
+            --max-time 280)
+
+          echo "HTTP $codigo"
+          cat "$corpo"
+          echo
+
+          # 200 = ok; 207 = gravou mas algum anexo falhou (o corpo diz qual): ambos nao derrubam o job
+          if [ "$codigo" != "200" ] && [ "$codigo" != "207" ]; then
+            echo "::error::sync-pdm (novos) respondeu $codigo"
+            exit 1
+          fi

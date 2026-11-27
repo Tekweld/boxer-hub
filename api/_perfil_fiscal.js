@@ -6,6 +6,8 @@
 const { zenGet } = require('./_zen');
 const HUB_URL = 'https://bmepxcnrsofofoswubuu.supabase.co';
 const PAGINA = 200;
+// O menor id de venda que existe no Hub e 14563 (medido em 2026-11-27): varrer de 0 so cai em faixa lenta do ZEN sem ganho.
+const CURSOR_INICIAL = 14500;
 
 const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 // Classificacao pelo texto do perfil. O que nao for claramente venda/bonificacao/devolucao vira 'outra' (e o texto
@@ -24,7 +26,7 @@ async function processarPerfilFiscal(hubH, { prazoMs = 30000 } = {}) {
   const inicio = Date.now();
   const estRes = await fetch(HUB_URL + '/rest/v1/hub_sync_estado?chave=eq.perfil_fiscal&select=valor', { headers: hubH('GET') });
   const est = estRes.ok ? (await estRes.json())[0]?.valor : null;
-  let cursor = Number(est?.cursor || 0);
+  let cursor = Number(est?.cursor || CURSOR_INICIAL);
 
   // id -> descricao dos perfis (a venda pode trazer so a referencia, sem o texto)
   const descPorId = new Map();
@@ -33,8 +35,14 @@ async function processarPerfilFiscal(hubH, { prazoMs = 30000 } = {}) {
 
   while (Date.now() - inicio < prazoMs) {
     let vendas;
-    try { vendas = await zenGet('/sale/sale', { q: 'id>' + cursor, order: 'id', max: PAGINA, limite: PAGINA }); }
-    catch (e) { saida.erros.push('zen: ' + e.message.slice(0, 120)); break; }
+    let pag = PAGINA;
+    try { vendas = await zenGet('/sale/sale', { q: 'id>' + cursor, order: 'id', max: pag, limite: pag }); }
+    catch (e) {
+      // faixa lenta: tenta de novo com pagina menor antes de desistir da rodada
+      pag = 40;
+      try { vendas = await zenGet('/sale/sale', { q: 'id>' + cursor, order: 'id', max: pag, limite: pag }); }
+      catch (e2) { saida.erros.push('zen: ' + e2.message.slice(0, 120)); break; }
+    }
     if (!vendas.length) { saida.em_dia = true; break; }
     saida.paginas++; saida.vendas += vendas.length;
     const lote = [];
@@ -54,7 +62,7 @@ async function processarPerfilFiscal(hubH, { prazoMs = 30000 } = {}) {
       method: 'POST', headers: { ...hubH('POST'), Prefer: 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ chave: 'perfil_fiscal', valor: { cursor, atualizado: new Date().toISOString() } })
     });
-    if (vendas.length < PAGINA) { saida.em_dia = true; break; }
+    if (vendas.length < pag) { saida.em_dia = true; break; }
   }
   saida.cursor = cursor;
   return saida;

@@ -546,7 +546,7 @@ module.exports = async function handler(req, res) {
     // (hub_solicitacoes_credito), nunca por este sync, pra nao apagar credito
     // ja reservado em pedidos submetidos (hub_fn_submeter_pedido decrementa
     // limite_disponivel na hora, e este sync nao sabe quanto foi reservado).
-    const credito = await inicializarCreditoFaltante(bodies, hubH, dryRun);
+    const credito = await inicializarCreditoFaltante(bodies, hubH, dryRun, t0 + 230000);
 
     // Endereco NAO e sincronizado aqui: ver api/sync-enderecos.js. Tentado como
     // etapa 5 deste handler e deu 504 aos 61s -- a varredura das pessoas nos 3
@@ -564,7 +564,9 @@ module.exports = async function handler(req, res) {
   }
 };
 
-async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
+// deadline: instante (ms) em que a etapa PARA e devolve o que fez (a function tem 300 s; passar disso dava 504 e o workflow
+// ficava em falha toda rodada). Cada cliente sem limite so e reconsultado no ZEN depois de 2 dias (credito_verificado_em).
+async function inicializarCreditoFaltante(bodies, hubH, dryRun, deadline) {
   const ids = bodies.map(b => b.erp_cliente_id).filter(Boolean);
   if (!ids.length) return { verificados: 0 };
 
@@ -578,7 +580,7 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
   for (let i = 0; i < ids.length; i += 300) {
     const lote = ids.slice(i, i + 300);
     const r = await fetch(
-      HUB_URL + '/rest/v1/hub_clientes?erp_cliente_id=in.(' + lote.join(',') + ')&select=erp_cliente_id,limite_credito,limite_disponivel',
+      HUB_URL + '/rest/v1/hub_clientes?erp_cliente_id=in.(' + lote.join(',') + ')&select=erp_cliente_id,limite_credito,limite_disponivel,credito_verificado_em',
       { headers: hubH('GET') }
     );
     if (!r.ok) {
@@ -599,6 +601,8 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
   const semLimite = atuais
     .filter(c => !c.limite_credito || +c.limite_credito === 0
       || (+c.limite_credito > 0 && +c.limite_credito === +c.limite_disponivel))
+    .filter(c => !c.credito_verificado_em || Date.parse(c.credito_verificado_em) < Date.now() - 2 * 86400000)
+    .sort((a, b) => (Date.parse(a.credito_verificado_em) || 0) - (Date.parse(b.credito_verificado_em) || 0))
     .map(c => c.erp_cliente_id);
 
   if (!semLimite.length) return { verificados: atuais.length, sem_limite: 0, consulta_erros: consultaErros.length ? consultaErros : undefined };
@@ -627,7 +631,11 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
     return achado != null ? Number(achado) : null;
   };
 
+  const verificadosAgora = [];
+  let cortadoPorTempo = false;
   for (const erpId of semLimite) {
+    if (Date.now() > deadline) { cortadoPorTempo = true; break; }
+    verificadosAgora.push(erpId);
     try {
       const grupoId = grupoPorCliente[erpId];
       let par = null; // { credito, saldo }
@@ -668,6 +676,13 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
   }
 
   const encontrados = Object.keys(porId).filter(id => porId[id].saldo > 0);
+  if (!dryRun) {
+    for (let i = 0; i < verificadosAgora.length; i += 100) {
+      await fetch(HUB_URL + '/rest/v1/hub_clientes?erp_cliente_id=in.(' + verificadosAgora.slice(i, i + 100).join(',') + ')', {
+        method: 'PATCH', headers: hubH('PATCH'), body: JSON.stringify({ credito_verificado_em: new Date().toISOString() })
+      });
+    }
+  }
   if (dryRun) {
     return { verificados: atuais.length, sem_limite: semLimite.length, encontrados_no_zen: encontrados.length, dry_run: true };
   }
@@ -685,6 +700,9 @@ async function inicializarCreditoFaltante(bodies, hubH, dryRun) {
     verificados: atuais.length,
     sem_limite: semLimite.length,
     encontrados_no_zen: encontrados.length,
+    verificados_agora: verificadosAgora.length,
+    restantes: semLimite.length - verificadosAgora.length,
+    cortado_por_tempo: cortadoPorTempo || undefined,
     atualizados,
     consulta_erros: consultaErros.length ? consultaErros : undefined
   };

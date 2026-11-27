@@ -29,11 +29,17 @@ async function processarCarteiraVendas(hubH, { prazoMs = 40000, cursorInicial = 
   const repPorErp = new Map();
   for (const r of await repRes.json()) if (r.erp_representante_id) repPorErp.set(String(r.erp_representante_id), r);
 
+  let pag = 100;
   while (Date.now() - inicio < prazoMs) {
     let vendas;
     try {
-      vendas = await zenGet('/sale/sale', { q: 'id>' + cursor, order: 'id', max: PAGINA, limite: PAGINA });
-    } catch (e) { saida.erros.push('zen: ' + e.message.slice(0, 120)); break; }
+      vendas = await zenGet('/sale/sale', { q: 'id>' + cursor, order: 'id', max: pag, limite: pag });
+    } catch (e) {
+      // faixa lenta do ZEN: pagina menor (e continua menor ate o fim da rodada) antes de desistir
+      pag = 40;
+      try { vendas = await zenGet('/sale/sale', { q: 'id>' + cursor, order: 'id', max: pag, limite: pag }); }
+      catch (e2) { saida.erros.push('zen: ' + e2.message.slice(0, 120)); break; }
+    }
     if (!vendas.length) { saida.em_dia = true; break; }
     saida.paginas++;
     saida.vendas += vendas.length;
@@ -82,7 +88,7 @@ async function processarCarteiraVendas(hubH, { prazoMs = 40000, cursorInicial = 
       method: 'POST', headers: { ...hubH('POST'), Prefer: 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ chave: 'carteira_vendas', valor: { cursor, atualizado: new Date().toISOString() } })
     });
-    if (vendas.length < PAGINA) { saida.em_dia = true; break; }
+    if (vendas.length < pag) { saida.em_dia = true; break; }
   }
   saida.cursor = cursor;
   return saida;

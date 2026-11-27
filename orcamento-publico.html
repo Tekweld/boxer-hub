@@ -359,14 +359,14 @@ function render() {
         <thead><tr><th>Produto</th><th>Estoque</th><th>Qtd</th><th>Impostos</th><th>Unitário</th><th>Total</th></tr></thead>
         <tbody>${itens.map(i => {
           const [label, cls] = ESTOQUE[i.estoque] || ESTOQUE.sem_info;
-          const riscado = i.unit_tabela > 0 && Math.abs(i.unit_tabela - i.unit) > 0.01
-            ? `<div style="font-size:11px;color:#a0aec0;text-decoration:line-through">${fmtMoeda(i.unit_tabela)}</div>` : '';
+          // Orcamento mostra SO o valor com desconto (regra do Andre, 2026-11-27): o preco de tabela riscado so existe
+          // em pedido feito pela propria revenda.
           return `<tr>
             <td data-l="Produto"><span class="prod-cel">${i.imagem_url ? '<span class="prod-foto"><img src="' + esc(i.imagem_url) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></span>' : ''}<span><div>${esc(i.modelo || i.codigo)}</div><div style="font-size:10px;color:#a0aec0">${esc(i.codigo)}</div></span></span></td>
             <td data-l="Estoque"><span class="est ${cls}">${label}${i.previsao ? ' · ' + fmtPrevisaoQuinzena(i.previsao) : ''}</span></td>
             <td data-l="Qtd">${i.qtd}</td>
             <td data-l="Impostos" style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'}<span class="so-print"> · </span><br class="so-tela">ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
-            <td data-l="Unitário">${riscado}${fmtMoeda(i.unit)}</td>
+            <td data-l="Unitário">${fmtMoeda(i.unit)}</td>
             <td data-l="Total">${fmtMoeda(i.subtotal)}</td>
           </tr>`;
         }).join('')}</tbody>

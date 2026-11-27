@@ -644,6 +644,8 @@ async function renderCarrinho() {
         const unit = precoDe(item);
         const basePreco = precoBaseDe(item);
         const tabela = +(precos[item.produto_id]?.preco_tabela || 0);
+        // Telas de CONSTRUCAO/edicao mostram o preco de tabela riscado + o valor com desconto em destaque (2026-11-27).
+        // O que SAI para o cliente (orcamento/PDF/link) mostra so o valor com desconto.
         const riscadoHtml = tabela > 0 && Math.abs(tabela - unit) > 0.01
           ? `<s style="color:#a0aec0;font-size:11px;margin-right:4px">${fmtMoeda(tabela)}</s>` : '';
         const siglaGrade = siglaDoItemGrade(item);
@@ -673,7 +675,7 @@ async function renderCarrinho() {
           <div class="cart-item-info">
             <div class="cart-item-sku">${esc(item.sku)}</div>
             <div class="cart-item-nome">${esc(item.nome || item.sku)}</div>
-            <div class="cart-item-preco">${riscadoHtml}${precoHtml} un</div>
+            <div class="cart-item-preco">${riscadoHtml}<span style="font-weight:700;color:#1d327b;font-size:14px">${precoHtml}</span> un</div>
             ${badgeEstoque}
           </div>
           ${gradeHtml}
@@ -1746,13 +1748,13 @@ function renderOrcamentoHtml(ORC) {
           <thead><tr><th>Produto</th><th>Estoque</th><th>Qtd</th><th>Impostos</th><th>Unitário</th><th>Total</th></tr></thead>
           <tbody>${ORC.itens.map(i => {
             const [label, cor] = ESTOQUE[i.estoque] || ESTOQUE.sem_info;
-            const riscado = i.unit_tabela > 0 && Math.abs(i.unit_tabela - i.unit) > 0.01 ? `<div style="font-size:11px;color:#a0aec0;text-decoration:line-through">${fmtMoeda(i.unit_tabela)}</div>` : '';
+            // so o valor com desconto (orcamento nunca mostra o preco de tabela riscado)
             return `<tr>
               <td data-l="Produto"><span class="prod-cel">${i.imagem_url ? '<span class="prod-foto"><img src="' + escHub(i.imagem_url) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></span>' : ''}<span><div>${escHub(i.modelo || i.codigo)}</div><div style="font-size:10px;color:#a0aec0">${escHub(i.codigo)}</div></span></span></td>
               <td data-l="Estoque"><span class="est" style="color:${cor}">${label}${i.previsao ? ' · ' + fmtPrevisaoQuinzena(i.previsao) : ''}</span></td>
               <td data-l="Qtd">${i.qtd}</td>
               <td data-l="Impostos" style="font-size:11px;color:#718096">IPI ${i.ipi != null ? i.ipi + '%' : '—'}<span class="so-print"> · </span><br class="so-tela">ICMS ${i.icms != null ? i.icms + '%' : '—'}</td>
-              <td data-l="Unitário">${riscado}${fmtMoeda(i.unit)}</td>
+              <td data-l="Unitário">${fmtMoeda(i.unit)}</td>
               <td data-l="Total">${fmtMoeda(i.subtotal)}</td>
             </tr>`;
           }).join('')}</tbody>
@@ -2336,7 +2338,7 @@ function renderModalEdicaoOrcamento(o) {
         return `
         <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#f7fafc;border-radius:8px">
           <div style="flex:1;font-size:13px">${esc(i.modelo || i.codigo)}<div style="font-size:11px;color:#718096">${esc(i.codigo)} · <span style="color:${cor}">${label}</span></div></div>
-          <div style="font-size:11px;color:#718096;white-space:nowrap">${fmtMoeda(i.unit)}/un</div>
+          <div style="white-space:nowrap;text-align:right">${i.unit_tabela > 0 && Math.abs(i.unit_tabela - i.unit) > 0.01 ? `<div style="font-size:11px;color:#a0aec0;text-decoration:line-through">${fmtMoeda(i.unit_tabela)}</div>` : ''}<div style="font-size:13px;font-weight:700;color:#1d327b">${fmtMoeda(i.unit)}/un</div></div>
           <input type="number" min="1" max="999" value="${i.qtd}" style="width:60px;padding:4px 6px"
                  onchange="edicaoOrcAlterarQtd(${idx},this.value)">
           <div style="font-size:13px;font-weight:600;color:#1d327b;white-space:nowrap;min-width:70px;text-align:right">${fmtMoeda(i.subtotal)}</div>
@@ -2593,7 +2595,8 @@ async function openPedido(id) {
           // nao batia com o subtotal ao lado. Ver mesma logica em
           // catalogo.html (precoRiscadoHtml).
           const tabela = +i.preco_unitario || 0, final = +(i.preco_final ?? tabela);
-          const riscado = tabela > 0 && Math.abs(tabela - final) >= 0.01
+          // preco de tabela riscado so em pedido feito pela propria revenda (origem 'cliente'); demais usuarios veem so o valor com desconto
+          const riscado = pedido.origem === 'cliente' && tabela > 0 && Math.abs(tabela - final) >= 0.01
             ? `<span style="color:#a0aec0;text-decoration:line-through;font-size:11px;margin-right:5px">${fmtMoeda(tabela)}</span>` : '';
           return `<tr>
           <td>${i.sku || i.hub_produtos?.sku || ''}<br><span id="pedItemPrev-${i.id}" style="font-size:10px;color:#2563eb"></span></td>

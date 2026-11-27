@@ -550,7 +550,7 @@ module.exports = async function handler(req, res) {
     // (hub_solicitacoes_credito), nunca por este sync, pra nao apagar credito
     // ja reservado em pedidos submetidos (hub_fn_submeter_pedido decrementa
     // limite_disponivel na hora, e este sync nao sabe quanto foi reservado).
-    const credito = await inicializarCreditoFaltante(bodies, hubH, dryRun, t0 + 230000);
+    const credito = await inicializarCreditoFaltante(bodies, hubH, dryRun, t0 + 120000);
 
     console.log('[ZEN][TEMPO] credito concluido em ' + Math.round((Date.now() - t0) / 1000) + 's: ' + JSON.stringify(credito));
     // Endereco NAO e sincronizado aqui: ver api/sync-enderecos.js. Tentado como
